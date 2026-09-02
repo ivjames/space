@@ -149,11 +149,14 @@ function nextObjectId(objects, kind) {
 // bare `periapsis`/`apoapsis` fields — so a deploy still records a sane
 // orbit against a resolver that hasn't landed phase 2's `insertion` field
 // yet (the concurrent-edit case this whole file is written to tolerate).
+// A deployed object circularizes at the periapsis it was inserted with:
+// a station core or satellite has its own thrusters for that, and it keeps
+// a lazy deploy (say 189 x 1850 km) from leaving an ellipse no later
+// launch can afford to match. What the player's insertion decides is the
+// altitude, which is the number that matters for every rendezvous after.
 function objectOrbitFrom(outcome) {
-  if (outcome.insertion) {
-    return { periapsis: outcome.insertion.periapsis, apoapsis: outcome.insertion.apoapsis };
-  }
-  return { periapsis: outcome.periapsis ?? null, apoapsis: outcome.apoapsis ?? null };
+  const periapsis = outcome.insertion ? outcome.insertion.periapsis : (outcome.periapsis ?? null);
+  return { periapsis, apoapsis: periapsis };
 }
 
 // recordLaunch(state, mission, outcome, draws = 0) -> new state

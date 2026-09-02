@@ -251,7 +251,8 @@ test('recordLaunch applies mission.deploys on a successful outcome, id from kind
   assert.equal(obj.kind, 'core');
   assert.equal(obj.name, 'Station core');
   assert.equal(obj.periapsis, 210000);
-  assert.equal(obj.apoapsis, 300000);
+  // Deployed objects circularize at their periapsis (state.js objectOrbitFrom).
+  assert.equal(obj.apoapsis, 210000);
   assert.equal(typeof obj.phase, 'number');
   assert.ok(obj.phase >= 0 && obj.phase < 1);
   assert.equal(obj.dockedTo, null);
@@ -291,7 +292,7 @@ test('recordLaunch prefers outcome.insertion over bare periapsis/apoapsis for a 
   };
   const next = recordLaunch(state, mission, outcome);
   assert.equal(next.objects[0].periapsis, 205000);
-  assert.equal(next.objects[0].apoapsis, 298000);
+  assert.equal(next.objects[0].apoapsis, 205000);
 });
 
 test('recordLaunch on a dock success deploys the module already docked to the target, marking nothing else', () => {

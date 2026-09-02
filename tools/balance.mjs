@@ -769,6 +769,7 @@ function greedyTier2LaunchesToGoal() {
     launches += 1;
     reputationCurve.push({
       tier2Launch: launches - tier1Launches, mission: best.id, reputation: state.reputation, funds: state.funds,
+      ownedBefore: state.owned.length,
     });
 
     for (;;) {
@@ -805,9 +806,23 @@ if (!tier2Greedy.reached) {
   console.log(`  did not reach the tier 2 goal (stopped after ${tier2Greedy.tier2Launches} tier 2 launches)`);
 } else {
   console.log(`  tier 1 launches: ${tier2Greedy.tier1Launches} (reputation at tier 2 start: ${tier2Greedy.tier1Reputation})`);
-  console.log(`  tier 2 launches: ${tier2Greedy.tier2Launches} (target: 30-60, per ARCHITECTURE.md)`);
+  console.log(`  tier 2 launches: ${tier2Greedy.tier2Launches} (target: 15-60, dry streak <= 4, per ARCHITECTURE.md)`);
   console.log(`  final reputation: ${tier2Greedy.finalReputation}`);
 
+  // Dry streak: consecutive launches with no purchase and no new rung. The
+  // owner's grind complaint is exactly this number; keep it at 4 or under.
+  {
+    let streak = 0; let worst = 0; let prevMission = null;
+    const rows = tier2Greedy.reputationCurve;
+    for (let i = 0; i < rows.length; i += 1) {
+      const bought = i + 1 < rows.length ? rows[i + 1].ownedBefore > rows[i].ownedBefore : false;
+      const newRung = rows[i].mission !== prevMission;
+      prevMission = rows[i].mission;
+      streak = (bought || newRung) ? 0 : streak + 1;
+      if (streak > worst) worst = streak;
+    }
+    console.log(`  longest dry streak (no purchase, no new rung): ${worst} launches (keep <= 4)`);
+  }
   console.log('\n  reputation curve (tier 2 leg, one row per launch):');
   for (const r of tier2Greedy.reputationCurve) {
     console.log(`    launch ${r.tier2Launch}: ${r.mission} -> reputation ${r.reputation}, funds ${r.funds}`);

@@ -534,7 +534,7 @@ templates stay in the pool as cheap fillers.
 and tier 2 nodes) reaching each tier 2 mission, searched over `turn` in
 steps of 0.05 and fuelFraction 1; the full-tree orbit (periapsis with the
 best turn); and a greedy player who starts from the tier 1 greedy end state
-and reaches the tier 2 goal, reported in launches. Target 30 to 60 launches
+and reaches the tier 2 goal, reported in launches. Target 15 to 60 launches (dry streak 4 or under)
 for tier 2. `data.test.js` asserts: some set reaches the orbit goal; every
 tier 2 mission is reachable; greedy tier 2 launches ≤ 80; no purchase
 order strands liftoff TWR below 1.05.
@@ -572,8 +572,9 @@ state.objects = [
 ]
 ```
 
-A mission with `deploys: { kind, name }` adds an object on success, with the
-achieved orbit's elements. `unique: true` on a template means it is offered
+A mission with `deploys: { kind, name }` adds an object on success, in a
+circular orbit at the achieved periapsis (the object circularizes itself; an
+elliptical deploy would otherwise be unmatchable by a later launch). `unique: true` on a template means it is offered
 only while no undocked object of that kind exists. A template with
 `requiresObject: 'core'` is offered only while one exists. Contracts get
 `state` as they already do; `generateContracts` applies both rules.
@@ -801,7 +802,7 @@ the node is owned. The floor contract stays tier 1's.
 `tools/balance.mjs` gains tier 3: with the core deployed at its template
 orbit, the cheapest prereq-valid set reaching each tier 3 rung (searching
 `turn` and `window` coarsely), the greedy player from the tier 2 end state
-through the tier 3 goal (target 30 to 60 launches), the delta-v budget of
+through the tier 3 goal (target 15 to 60 launches, dry streak 4 or under), the delta-v budget of
 the top stage after insertion for the cheapest set (must cover match +
 phase(≤ 30°) + approach with margin), and the TWR sweep extended to tier 3
 sets. `data.test.js` asserts reachability of every tier 3 rung and greedy
