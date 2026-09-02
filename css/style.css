@@ -8,7 +8,7 @@
   --bg: #0a0a0a;
   --fg: #e8e8e8;
   --accent: #00d4ff;
-  --muted: #666;
+  --muted: #8d8d8d;
   --border: #333;
   --success: #00d4ff;
   --fail: #ff6b6b;
@@ -23,13 +23,19 @@
   }
 }
 
+html {
+  /* Every font-size below is in rem, so this one number sets the type
+     scale: a touch above the original 14px on phones, larger on tablets. */
+  font-size: 15px;
+}
+@media (min-width: 700px) { html { font-size: 17px; } }
+
 html, body {
   width: 100%;
   height: 100%;
   background-color: var(--bg);
   color: var(--fg);
   font-family: 'Courier New', monospace;
-  font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
@@ -39,6 +45,10 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+  /* Designed for one thumb; on a tablet or desktop it stays a column in the
+     middle of the screen instead of stretching a phone layout across it. */
+  max-width: 640px;
+  margin: 0 auto;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
@@ -76,18 +86,18 @@ html, body {
 
 /* Typography utilities */
 .readout {
-  font-size: 24px;
+  font-size: 1.714rem;
   font-weight: bold;
   letter-spacing: 2px;
 }
 
 .hint {
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--muted);
 }
 
 .ticker {
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--muted);
   font-family: 'Courier New', monospace;
 }
@@ -123,11 +133,11 @@ html, body {
 }
 
 .row.owned {
-  opacity: 0.6;
+  opacity: 0.78;
 }
 
 .row.locked {
-  opacity: 0.4;
+  opacity: 0.7;
 }
 
 .row.buyable:active {
@@ -168,7 +178,7 @@ html, body {
   border: none;
   border-radius: 4px;
   font-family: 'Courier New', monospace;
-  font-size: 14px;
+  font-size: 1rem;
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;
   -webkit-tap-highlight-color: transparent;
@@ -188,7 +198,7 @@ html, body {
   background-color: var(--accent);
   color: var(--bg);
   font-weight: bold;
-  font-size: 16px;
+  font-size: 1.143rem;
   letter-spacing: 1px;
   border: none;
   border-radius: 4px;
@@ -220,7 +230,7 @@ html, body {
   color: var(--accent);
   border: 1px solid var(--accent);
   border-radius: 4px;
-  font-size: 14px;
+  font-size: 1rem;
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;
   -webkit-tap-highlight-color: transparent;
@@ -300,7 +310,10 @@ canvas {
    ========================================================================== */
 
 /* Nothing may push the layout sideways. */
-#app, #screen, #hud, #actions { max-width: 100vw; }
+#screen, #hud, #actions { max-width: 100vw; }
+@media (min-width: 700px) {
+  #app { border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+}
 .screen { padding: 0; }
 .pad { padding: 16px; }
 
@@ -315,13 +328,13 @@ canvas {
 }
 
 .hud-label {
-  font-size: 10px;
+  font-size: 0.714rem;
   letter-spacing: 1.5px;
   color: var(--muted);
 }
 
 .hud-value {
-  font-size: 18px;
+  font-size: 1.286rem;
   font-weight: bold;
   line-height: 1.2;
   letter-spacing: 1px;
@@ -330,7 +343,7 @@ canvas {
 /* ---- Type --------------------------------------------------------------- */
 
 .title {
-  font-size: 18px;
+  font-size: 1.286rem;
   font-weight: bold;
   letter-spacing: 1px;
   margin-bottom: 4px;
@@ -351,7 +364,7 @@ canvas {
 }
 
 .row-title {
-  font-size: 14px;
+  font-size: 1rem;
   font-weight: bold;
   letter-spacing: 0.5px;
 }
@@ -367,7 +380,7 @@ canvas {
 .cost { white-space: nowrap; }
 
 .row-note {
-  font-size: 10px;
+  font-size: 0.714rem;
   letter-spacing: 1px;
   text-transform: uppercase;
 }
@@ -379,7 +392,7 @@ canvas {
 }
 
 .cost {
-  font-size: 15px;
+  font-size: 1.071rem;
   font-weight: bold;
   color: var(--accent);
 }
@@ -400,7 +413,7 @@ canvas {
 }
 
 .tag {
-  font-size: 10px;
+  font-size: 0.714rem;
   letter-spacing: 1px;
   border: 1px solid var(--border);
   border-radius: 3px;
@@ -438,13 +451,13 @@ canvas {
 }
 
 .stats dt {
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--muted);
   letter-spacing: 1px;
 }
 
 .stats dd {
-  font-size: 15px;
+  font-size: 1.071rem;
   font-weight: bold;
   text-align: right;
 }
@@ -462,14 +475,14 @@ canvas {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  font-size: 12px;
+  font-size: 0.857rem;
   letter-spacing: 1px;
   color: var(--muted);
   margin-bottom: 4px;
 }
 
 .field-value {
-  font-size: 18px;
+  font-size: 1.286rem;
   font-weight: bold;
   color: var(--accent);
   letter-spacing: 1px;
@@ -554,7 +567,7 @@ ul.ticker {
 
 .readout {
   margin: 10px 0;
-  font-size: 20px;
+  font-size: 1.429rem;
   letter-spacing: 1px;
   overflow-wrap: anywhere;
 }
@@ -571,7 +584,7 @@ ul.ticker {
 .ledger {
   display: flex;
   gap: 16px;
-  font-size: 15px;
+  font-size: 1.071rem;
   font-weight: bold;
   margin-bottom: 8px;
 }
@@ -586,7 +599,7 @@ ul.ticker {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  font-size: 12px;
+  font-size: 0.857rem;
   font-weight: bold;
   letter-spacing: 2px;
   text-transform: uppercase;
@@ -648,7 +661,7 @@ ul.ticker {
 
 .tier-divider {
   list-style: none;
-  font-size: 10px;
+  font-size: 0.714rem;
   letter-spacing: 2px;
   color: var(--muted);
   padding: 10px 12px 2px;
