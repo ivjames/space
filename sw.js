@@ -62,36 +62,29 @@ self.addEventListener('activate', event => {
   );
 });
 
-// Fetch: cache-first for same-origin GET, fallback to network
+// Fetch: stale-while-revalidate for same-origin GET. The cached copy is
+// served immediately (offline works), and the network copy refreshes the
+// cache in the background, so a deploy is live on the *next* load without a
+// cache-name bump. First-time requests go to the network.
 self.addEventListener('fetch', event => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Only cache same-origin GET requests
   if (request.method !== 'GET' || url.origin !== location.origin) {
     return;
   }
 
   event.respondWith(
-    caches.match(request).then(response => {
-      // Return cached response if available
-      if (response) {
-        return response;
-      }
-      // Fall back to network
-      return fetch(request).then(response => {
-        // Only cache successful same-origin responses
-        if (response.ok && url.origin === location.origin) {
-          const responseToCache = response.clone();
-          caches.open(CACHE_NAME).then(cache => {
-            cache.put(request, responseToCache);
-          });
-        }
-        return response;
-      });
-    }).catch(() => {
-      // Network error; return cached response or offline fallback
-      return caches.match(request);
-    })
+    caches.open(CACHE_NAME).then(cache =>
+      cache.match(request).then(cached => {
+        const refresh = fetch(request).then(response => {
+          if (response && response.ok) {
+            cache.put(request, response.clone());
+          }
+          return response;
+        }).catch(() => cached);
+        return cached || refresh;
+      })
+    )
   );
 });

@@ -21,6 +21,9 @@
   </div>
 
   <script>
+  // Stamped with the deployed commit by `space deploy`; 'dev' otherwise.
+  const BUILD = 'dev';
+  window.__BUILD = BUILD;
     // Register service worker over http(s), not file://
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       window.addEventListener('load', () => {
