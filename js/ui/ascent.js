@@ -91,6 +91,8 @@ const SKY_EASE = 1.6;
 /** Darkness at which stars start to show, and at which they are at full alpha. */
 const STAR_ON_DARK = 0.50;
 const STAR_FULL_DARK = 0.96;
+/** Stars in the field; the CSS-pixel canvas is ~360x480 so this is dense but not noisy. */
+const STAR_COUNT = 260;
 
 /** Daytime sky, top of view -> horizon. */
 const DAY_TOP = [47, 127, 214];        // #2f7fd6
@@ -197,7 +199,10 @@ function makeStars(count, w, h) {
   };
   const stars = [];
   for (let i = 0; i < count; i += 1) {
-    stars.push({ x: rand() * w, y: rand() * h, r: 0.4 + rand() * 0.9, a: 0.25 + rand() * 0.5 });
+    // Skewed toward many faint pinpricks with a few bright ones, so density
+    // reads as depth rather than noise.
+    const k = rand() ** 2.2;
+    stars.push({ x: rand() * w, y: rand() * h, r: 0.3 + k * 1.3, a: 0.18 + k * 0.72 });
   }
   return stars;
 }
@@ -390,7 +395,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     padY = h - GROUND_H;
     liftAlt = Math.max(0, (padY - anchorY) * mPerPx);
     // Only when the box actually changed: the starfield is fixed for a flight.
-    if (changed || stars.length === 0) stars = makeStars(48, w, h);
+    if (changed || stars.length === 0) stars = makeStars(STAR_COUNT, w, h);
   }
 
   // ---- camera ------------------------------------------------------------
