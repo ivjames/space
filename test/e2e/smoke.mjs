@@ -512,6 +512,8 @@ async function runSmokeTest() {
       }
 
       // Objects in orbit (tier 3+)
+      const lastOrbital = await page.evaluate(() => { const o = window.__space?.screens?.view?.outcome; return o?.orbital ? { insertion: o.insertion, dvAvailable: o.orbital.dvAvailable, dvUsed: o.orbital.dvUsed, stoppedAt: o.orbital.stoppedAt, phaseErrorDeg: o.orbital.phaseErrorDeg, closestApproach: o.closestApproach } : null; });
+      if (lastOrbital) console.log('Last orbital phase:', JSON.stringify(lastOrbital));
       if (state.objects && state.objects.length > 0) {
         console.log(`Objects in orbit:`);
         state.objects.forEach(obj => {

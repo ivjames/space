@@ -154,8 +154,14 @@ function nextObjectId(objects, kind) {
 // a lazy deploy (say 189 x 1850 km) from leaving an ellipse no later
 // launch can afford to match. What the player's insertion decides is the
 // altitude, which is the number that matters for every rendezvous after.
-function objectOrbitFrom(outcome) {
-  const periapsis = outcome.insertion ? outcome.insertion.periapsis : (outcome.periapsis ?? null);
+// If the mission asked for an orbit, the object settles at that design
+// altitude rather than wherever the delivery flight peaked: a core delivered
+// on an "orbit >= 160 km" contract sits at 160 km, so every later rendezvous
+// is against a known orbit, not against the luck of one ascent.
+function objectOrbitFrom(outcome, mission) {
+  const design = mission?.requirement?.orbit?.periapsis;
+  const achieved = outcome.insertion ? outcome.insertion.periapsis : (outcome.periapsis ?? null);
+  const periapsis = typeof design === 'number' && achieved != null && achieved >= design ? design : achieved;
   return { periapsis, apoapsis: periapsis };
 }
 
@@ -206,7 +212,7 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
   if (outcome.success && mission.deploys) {
     const { kind, name } = mission.deploys;
     const id = nextObjectId(objects, kind);
-    const { periapsis, apoapsis } = objectOrbitFrom(outcome);
+    const { periapsis, apoapsis } = objectOrbitFrom(outcome, mission);
     // A dock mission's outcome carries the docked-to target's id in
     // orbital.target.id (ARCHITECTURE.md's Outcome shape); every other
     // deploying mission (satellite, core) never sets outcome.docked, so

@@ -1339,8 +1339,8 @@ test('a greedy player reaches the tier 3 goal (dock) in at most 80 tier 3 launch
             name: best.deploys.name,
             // Deployed objects circularize at their periapsis (state.js does
             // the same), so a lazy deploy does not leave an unmatchable ellipse.
-            periapsis: outcome.insertion?.periapsis ?? outcome.periapsis ?? null,
-            apoapsis: outcome.insertion?.periapsis ?? outcome.periapsis ?? null,
+            periapsis: best.requirement.orbit?.periapsis ?? outcome.insertion?.periapsis ?? outcome.periapsis ?? null,
+            apoapsis: best.requirement.orbit?.periapsis ?? outcome.insertion?.periapsis ?? outcome.periapsis ?? null,
             phase: 0,
             dockedTo,
             launchedAt: { tier: 3, launch: launches - tier2LaunchesTaken },

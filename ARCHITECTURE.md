@@ -573,8 +573,10 @@ state.objects = [
 ```
 
 A mission with `deploys: { kind, name }` adds an object on success, in a
-circular orbit at the achieved periapsis (the object circularizes itself; an
-elliptical deploy would otherwise be unmatchable by a later launch). `unique: true` on a template means it is offered
+circular orbit at the mission's required periapsis when it has an orbit
+requirement (the object settles at its design altitude), else at the
+achieved periapsis. Objects are always circular: an elliptical or
+arbitrarily high deploy would be unmatchable by a later launch. `unique: true` on a template means it is offered
 only while no undocked object of that kind exists. A template with
 `requiresObject: 'core'` is offered only while one exists. Contracts get
 `state` as they already do; `generateContracts` applies both rules.
