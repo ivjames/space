@@ -22,14 +22,14 @@ npm run e2e
 PW_MODULES=/path/to/pw/node_modules npm run e2e
 
 # Or with custom settings:
-PW_MODULES=... SMOKE_OUT=/tmp/screenshots SMOKE_PORT=9000 SMOKE_LOOPS=30 npm run e2e
+PW_MODULES=... SMOKE_OUT=/tmp/screenshots SMOKE_PORT=9000 SMOKE_MAX_ITER=30 npm run e2e
 ```
 
 Environment variables:
 - `PW_MODULES`: path to node_modules containing playwright-core (default: scratchpad)
 - `SMOKE_OUT`: directory for screenshots (default: scratchpad)
 - `SMOKE_PORT`: starting http.server port (default: 8090)
-- `SMOKE_LOOPS`: max gameplay loops (default: 60)
+- `SMOKE_MAX_ITER`: max gameplay loops (default: 60)
 
 ## What it needs
 

@@ -3,47 +3,57 @@
 // `buildVehicle(baseVehicle, [])` (no effects) is exactly what the player
 // launches on their very first flight.
 //
-// Sizing target (set by the implementer, see ARCHITECTURE.md / task brief):
-// flying straight up, the starter should clear the tier 1 floor contract
-// (20 km) comfortably but fall well short of the tier 1 goal (100 km), so
-// the tree (js/data/tree.js) has real work to do.
+// Sizing target (see ARCHITECTURE.md / task brief): flying straight up, the
+// starter should clear the tier 1 floor contract (10 km) with margin —
+// roughly 1.3x-1.5x the floor altitude at fuelFraction 1.0, so a loadout of
+// fuelFraction 0.8 still clears it — but fall well short of the tier 1 goal
+// (100 km), so the tree (js/data/tree.js) has real work to do.
+//
+// These numbers are sized against the REAL resolver (js/core/resolver.js),
+// not the ideal-delta-v shortcut: a straight-up ascent pays gravity losses
+// for the whole burn (a lowish-TWR sounding rocket spends ~20-30 s under
+// thrust, losing roughly g0 * burnTime of delta-v to gravity alone) plus
+// drag, which is far more than the resolver's `LOSS_ALLOWANCE` (15%, a game
+// number quoted for the "short by X m/s" readout, not a physical loss
+// model — see resolver.js's doc comment on that constant). Sizing content
+// from the 15% figure instead of the simulation is exactly the bug this
+// file used to have: a nominal ~28 km ideal-dv estimate flew as ~10.4 km in
+// the actual sim. So these values are verified with `node tools/balance.mjs`
+// (which drives `resolveLaunch` directly, reliability forced to 1 for
+// determinism) rather than hand-derived from Tsiolkovsky alone.
 //
 // Delta-v budget, Tsiolkovsky: dv = isp * g0 * ln(m0 / m1), g0 = 9.80665.
 //
 //   dry mass   40 kg
 //   prop mass  30 kg
 //   payload     5 kg
-//   isp       170 s
+//   isp       200 s
 //
 //   m0 = dry + prop + payload = 75 kg
 //   m1 = dry + payload        = 45 kg
-//   dv = 170 * 9.80665 * ln(75/45) = 170 * 9.80665 * 0.5108 ≈ 851.6 m/s
+//   dv = 200 * 9.80665 * ln(75/45) = 200 * 9.80665 * 0.5108 ≈ 1001.9 m/s
 //
-// Altitude reached flying straight up (ideal, then derated for the fixed
-// gravity/drag loss allowance the resolver documents, ~15%):
-//
-//   effective dv  ≈ 851.6 / 1.15 ≈ 740.5 m/s
-//   altitude      = effective_dv^2 / (2 * 9.80665) ≈ 27 950 m  (~28 km)
-//
-// That lands in the 20-30 km target band: clears the 20 km floor contract
-// with margin, nowhere near the 100 km tier goal (which needs ~1600 m/s,
-// see js/data/tree.js for the same arithmetic against the full tree).
+// `node tools/balance.mjs` reports the resolver's actual max altitude for
+// this vehicle: ~13 996 m at fuelFraction 1.0 (~1.40x the 10 km floor) and
+// ~10 521 m at fuelFraction 0.8 (still clears the floor, ~5% margin) —
+// comfortably clear of the floor, nowhere near the 100 km tier goal.
 //
 // Thrust-to-weight at liftoff (full prop + payload, before any burn):
 //
 //   weight = m0 * g0 = 75 * 9.80665 ≈ 735.5 N
-//   TWR    = 1500 / 735.5 ≈ 2.04
+//   TWR    = 1800 / 735.5 ≈ 2.45
 //
-// A small sounding-rocket engine: modest chemical isp, TWR a bit over 2 so
-// it clears the pad with room to spare (real amateur/university sounding
-// rockets sit in roughly this range).
+// A small sounding-rocket engine: modest chemical isp, TWR comfortably over
+// 2 so it clears the pad with room to spare and most of its delta-v isn't
+// eaten by gravity losses during the burn (real amateur/university sounding
+// rockets sit in roughly this TWR range).
 export const baseVehicle = {
   stages: [
     {
       dryMass: 40, // kg, airframe + engine + avionics, empty
       propMass: 30, // kg, propellant loaded
-      thrust: 1500, // N, sea-level thrust
-      isp: 170, // s, specific impulse
+      thrust: 1800, // N, sea-level thrust
+      isp: 200, // s, specific impulse
       reliability: 0.85, // 0..1, ignition + burn roll base rate
     },
   ],

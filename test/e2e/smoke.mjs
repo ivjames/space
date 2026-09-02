@@ -6,10 +6,10 @@
  * Usage: PW_MODULES=... node test/e2e/smoke.mjs
  *
  * Environment variables:
- *   PW_MODULES    - path to node_modules with playwright-core (default: scratchpad)
- *   SMOKE_OUT     - directory for screenshots (default: scratchpad)
- *   SMOKE_PORT    - http.server port (default: 8090)
- *   SMOKE_LOOPS   - max gameplay loops (default: 60)
+ *   PW_MODULES      - path to node_modules with playwright-core (default: scratchpad)
+ *   SMOKE_OUT       - directory for screenshots (default: scratchpad)
+ *   SMOKE_PORT      - http.server port (default: 8090)
+ *   SMOKE_MAX_ITER  - max gameplay loops (default: 60)
  */
 
 import { createRequire } from 'module';
@@ -26,7 +26,7 @@ const scratchpad = '/tmp/claude-0/-home-user-lab980-com/fb44f581-df79-5961-ae88-
 const PW_MODULES = process.env.PW_MODULES || path.join(scratchpad, 'pw/node_modules');
 const SMOKE_OUT = process.env.SMOKE_OUT || scratchpad;
 const SMOKE_PORT = parseInt(process.env.SMOKE_PORT || '8090', 10);
-const MAX_LOOPS = parseInt(process.env.SMOKE_LOOPS || '60', 10);
+const MAX_LOOPS = parseInt(process.env.SMOKE_MAX_ITER || '60', 10);
 const TIMEOUT = 10000; // 10 second timeout for selectors
 
 // Import playwright-core dynamically
@@ -223,12 +223,17 @@ async function runSmokeTest() {
       await takeScreenshot('launch');
 
       // Tap canvas to skip animation
-      console.log('Tapping canvas to skip...');
+      console.log('Tapping canvas to skip playback...');
       const canvas = await page.$('canvas#ascent');
       if (canvas) {
         await canvas.click();
         await new Promise(resolve => setTimeout(resolve, 500));
       }
+
+      // Click continue button to advance from launch to result
+      console.log('Clicking continue to go to result...');
+      const continueFromLaunch = await waitForSelector('[data-action="continue"]', TIMEOUT);
+      await continueFromLaunch.click();
 
       // Wait for result screen
       console.log('Waiting for result screen...');
@@ -247,23 +252,42 @@ async function runSmokeTest() {
         throw new Error('Readout is empty');
       }
 
-      // Check if we've won
-      const winScreen = await page.$('[data-screen="win"]');
-      if (winScreen) {
+      // Click continue on result screen to go to either contracts or win
+      console.log('Clicking continue to proceed from result...');
+      const resultContinueBtn = await waitForSelector('[data-action="continue"]', TIMEOUT);
+      await resultContinueBtn.click();
+
+      // Wait for either contracts or win screen
+      let screenAfterResult = 'unknown';
+      let attempts = 0;
+      while (screenAfterResult === 'unknown' && attempts < 5) {
+        attempts++;
+        const contracts = await page.$('[data-screen="contracts"]');
+        const win = await page.$('[data-screen="win"]');
+        if (contracts) screenAfterResult = 'contracts';
+        else if (win) screenAfterResult = 'win';
+        else await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      if (screenAfterResult === 'win') {
         console.log('Win screen detected!');
         await takeScreenshot('win');
         won = true;
 
-        // Tap continue to confirm the win flow
-        const continueBtn = await waitForSelector('[data-action="continue"]', TIMEOUT);
-        await continueBtn.click();
+        // Click continue to finish from win screen
+        const winContinueBtn = await waitForSelector('[data-action="continue"]', TIMEOUT);
+        await winContinueBtn.click();
         break;
       }
 
-      // Click continue to go to tree
-      console.log('Clicking continue to go to tree...');
-      const continueBtn = await waitForSelector('[data-action="continue"]', TIMEOUT);
-      await continueBtn.click();
+      if (screenAfterResult !== 'contracts') {
+        throw new Error(`Expected contracts screen after result, got ${screenAfterResult}`);
+      }
+
+      // We're on contracts screen. Click tree tab to go to tree screen
+      console.log('Clicking tree tab to view tech tree...');
+      const treeTab = await waitForSelector('[data-tab="tree"]', TIMEOUT);
+      await treeTab.click();
 
       // Wait for tree screen
       console.log('Waiting for tree screen...');
@@ -282,9 +306,13 @@ async function runSmokeTest() {
       }
 
       // Click back to return to contracts
-      console.log('Clicking back button...');
+      console.log('Clicking back button to return to contracts...');
       const backBtn = await waitForSelector('[data-action="back"]', TIMEOUT);
       await backBtn.click();
+
+      // Wait for contracts screen to loop
+      console.log('Waiting for contracts screen...');
+      await waitForSelector('[data-screen="contracts"]', TIMEOUT);
     }
 
     if (loopCount >= MAX_LOOPS && !won) {
