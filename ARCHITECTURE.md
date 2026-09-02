@@ -277,8 +277,8 @@ export const tierGoals = { 1: { requirement: { altitude: 100000 }, name: 'Reach 
   action is a full-width button at the bottom.
 - `ascent.js` plays `outcome.samples` and `outcome.timeline` on a canvas
   with a **follow camera**: world space is metres, the vertical scale is
-  fixed (one canvas height spans 1.5x the mission target, so every flight of
-  a mission plays at the same zoom), and the rocket rests 58% up the screen
+  one constant for the whole game (`VIEW_SPAN_M`, 15 km per canvas height;
+  labelled ticks every 5 km, faint minor ticks every 1 km), and the rocket rests 58% up the screen
   once it has climbed that far — below it the pad is in view, above it the
   world scrolls down past the rocket. Altitude reads off the world, not a
   gauge: km tick lines and a dashed `TARGET n km` line drawn in world space,
@@ -291,8 +291,9 @@ export const tierGoals = { 1: { requirement: { altitude: 100000 }, name: 'Reach 
   timeline events at or before it, and `outcome.failure` once `failure.t`
   is reached — never `maxAltitude`, `success`, `shortBy`, `readout`,
   `samples.length` or a future event. Both the scale and the playback rate
-  are therefore outcome-independent: the scale comes from the mission target
-  alone, and the rate is a constant 8x real time while a stage burns, 24x
+  are therefore outcome-independent: the scale is a game-wide constant (not
+  the apogee, and not the target either, which would still show how a flight
+  compares to what is asked before it ends), and the rate is a constant 8x real time while a stage burns, 24x
   after the last burnout or a failure (never flight-length / fixed duration,
   which would play a short flight fast). The only look-ahead is the time of
   the timeline's last event, used solely to know when to stop.

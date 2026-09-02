@@ -13,12 +13,14 @@
 // any timeline event still in the future.
 //
 // That closes the two ways this screen used to give the game away:
-//   - SCALE. Metres-per-pixel comes from the MISSION TARGET alone
-//     (opts.requirement) and never changes during a flight, so the same
-//     mission always plays at the same zoom whatever happens. A gauge scaled
-//     to the apogee announces the result in the first second; one that grows
-//     when the rocket nears the top announces it just as loudly, and by not
-//     growing announces the opposite.
+//   - SCALE. Metres-per-pixel is ONE CONSTANT for the whole game
+//     (VIEW_SPAN_M per canvas height) — not the apogee, not the target. A
+//     gauge scaled to the apogee announces the result in the first second;
+//     one that grows when the rocket nears the top announces it just as
+//     loudly, and by not growing announces the opposite; and one scaled to
+//     the target still tells the player how a flight compares to what is
+//     asked before it has finished. The camera follows the rocket, so a
+//     fixed zoom works at any altitude.
 //   - TIMING. The playback rate is a constant — 8x real time while a stage is
 //     burning, 24x once the last burnout or a failure has passed, both events
 //     the player has already read in the ticker. Never flightLength/duration,
@@ -39,7 +41,12 @@ const BURN_RATE = 8;
 /** Multiplier applied once nothing is burning any more: 8 -> 24. */
 const COAST_MULT = 3;
 /** One canvas height spans this many times the mission target altitude. */
-const VIEW_SPAN = 1.5;
+// World metres shown per canvas height. Fixed for every flight of every
+// mission; the follow camera makes altitude a matter of scrolling, not zoom.
+const VIEW_SPAN_M = 15000;
+// Labelled tick spacing and unlabelled minor spacing, also fixed.
+const TICK_STEP_M = 5000;
+const MINOR_STEP_M = 1000;
 /** Rocket's resting height on screen, as a fraction up from the bottom. */
 const SCREEN_ANCHOR = 0.58;
 /** Altitude, m, at which the sky is fully open (stars at full brightness). */
@@ -47,7 +54,6 @@ const SKY_OPEN_ALT = 60000;
 /** Ground strip height, px. */
 const GROUND_H = 22;
 /** "Nice" tick spacings, km. */
-const TICK_STEPS_KM = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
 
 function cssVar(el, name, fallback) {
   const v = getComputedStyle(el).getPropertyValue(name).trim();
@@ -74,16 +80,6 @@ function formatAlt(m) {
   return `${Math.round(m)} m`;
 }
 
-/**
- * Tick spacing for a mission: about a fifth of the target, snapped to a round
- * number of km. Derived from the target only — like the scale, it is the same
- * for every flight of the same mission.
- */
-export function tickStepFor(requirement) {
-  const wantKm = Math.max(requirement, 1000) / 5 / 1000;
-  const km = TICK_STEPS_KM.find((s) => s >= wantKm - 1e-9) ?? TICK_STEPS_KM[TICK_STEPS_KM.length - 1];
-  return km * 1000;
-}
 
 /**
  * Altitude at simulated time `t`, linearly interpolated between samples.
@@ -165,9 +161,8 @@ export function playOutcome(canvas, outcome, opts = {}) {
 
   const requirement = Math.max(opts.requirement ?? 0, 0);
   const stageCount = Math.max(opts.stages ?? 1, 1);
-  const tickStep = tickStepFor(requirement);
-  // Metres of world per canvas height, from the target and nothing else.
-  const viewSpan = Math.max(requirement, 1000) * VIEW_SPAN;
+  const tickStep = TICK_STEP_M;
+  const viewSpan = VIEW_SPAN_M;
 
   const baseRate = opts.speed ?? BURN_RATE;
   const onEvent = typeof opts.onEvent === 'function' ? opts.onEvent : () => {};
@@ -271,6 +266,22 @@ export function playOutcome(canvas, outcome, opts = {}) {
     if (last < first || last - first > 60) return;
 
     ctx.save();
+    // Minor ticks first, faint and unlabelled, so the labelled ones sit on top.
+    const mFirst = Math.max(1, Math.ceil(Math.max(yToAlt(h), 0) / MINOR_STEP_M));
+    const mLast = Math.floor(yToAlt(0) / MINOR_STEP_M);
+    ctx.strokeStyle = colors.border;
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 1;
+    for (let k = mFirst; k <= mLast; k += 1) {
+      const alt = k * MINOR_STEP_M;
+      if (alt % tickStep === 0) continue;
+      const y = Math.round(altToY(alt)) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
     ctx.font = '9px "Courier New", monospace';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'bottom';
