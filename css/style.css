@@ -291,3 +291,343 @@ canvas {
 #screen::-webkit-scrollbar-thumb:active {
   background-color: var(--muted);
 }
+
+/* ==========================================================================
+   Phase 0 UI layer (js/ui/*). Appended: everything above is the shell's own
+   vocabulary — variables, .row, .tabs, .btn* — and is used, not replaced.
+   Rules here are the pieces the screens needed on top of it.
+   Target: one thumb on a 360x740 portrait viewport, no horizontal scroll.
+   ========================================================================== */
+
+/* Nothing may push the layout sideways. */
+#app, #screen, #hud, #actions { max-width: 100vw; }
+.screen { padding: 0; }
+.pad { padding: 16px; }
+
+/* ---- HUD ---------------------------------------------------------------- */
+
+.hud-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  min-width: 0;
+}
+
+.hud-label {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+}
+
+.hud-value {
+  font-size: 18px;
+  font-weight: bold;
+  line-height: 1.2;
+  letter-spacing: 1px;
+}
+
+/* ---- Type --------------------------------------------------------------- */
+
+.title {
+  font-size: 18px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+
+.goal-line { margin-bottom: 12px; }
+.foot { margin-top: 12px; }
+.good { color: var(--accent); }
+.bad { color: var(--fail); }
+.muted { color: var(--muted); }
+
+/* ---- Rows (contracts + tree nodes) -------------------------------------- */
+
+.row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.row-title {
+  font-size: 14px;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+
+/* The side column is a price tag, not a sentence: cap it so a long note can
+   never squeeze the row's title down to one character per line. */
+.row-side {
+  flex: 0 0 auto;
+  max-width: 34%;
+  text-align: right;
+}
+
+.cost { white-space: nowrap; }
+
+.row-note {
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.row-reason {
+  margin-top: 3px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.cost {
+  font-size: 15px;
+  font-weight: bold;
+  color: var(--accent);
+}
+
+.row.owned .cost { color: var(--muted); }
+.row-desc { margin-top: 2px; }
+.row-effects { margin-top: 2px; color: var(--accent); opacity: 0.8; }
+.row.locked .row-effects { color: var(--muted); opacity: 1; }
+
+.row.selected {
+  background-color: rgba(0, 212, 255, 0.08);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.row.contract, .row.node {
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.tag {
+  font-size: 10px;
+  letter-spacing: 1px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  color: var(--muted);
+  vertical-align: middle;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+.row.shake { animation: shake 0.3s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .row.shake { animation: none; }
+}
+
+/* ---- Stat blocks -------------------------------------------------------- */
+
+.stats {
+  margin: 14px 0;
+  border-top: 1px solid var(--border);
+}
+
+.stats > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.stats dt {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 1px;
+}
+
+.stats dd {
+  font-size: 15px;
+  font-weight: bold;
+  text-align: right;
+}
+
+/* ---- Delta-v gauge ------------------------------------------------------ */
+
+.gauge { margin: 14px 0; }
+.gauge-fill.short { background-color: var(--fail); }
+
+/* ---- Loadout slider ----------------------------------------------------- */
+
+.field { margin-top: 20px; }
+
+.field-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.field-value {
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--accent);
+  letter-spacing: 1px;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 44px; /* thumb target, not track height */
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 28px;
+  height: 28px;
+  margin-top: -12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+}
+
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ---- Launch ------------------------------------------------------------- */
+
+.ascent-wrap {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  /* Clamped so the ticker underneath is on screen without scrolling on a
+     360x740 phone; the renderer reads the box it actually gets. */
+  max-height: 58vh;
+  background-color: #05060a;
+  border-bottom: 1px solid var(--border);
+}
+
+#ascent {
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+ul.ticker {
+  list-style: none;
+  max-height: 128px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin-bottom: 8px;
+}
+
+.tick {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 1px 0;
+}
+
+.tick.failure { color: var(--fail); }
+.tick.goal, .tick.liftoff { color: var(--accent); }
+
+/* ---- Result / win ------------------------------------------------------- */
+
+.readout {
+  margin: 10px 0;
+  font-size: 20px;
+  letter-spacing: 1px;
+  overflow-wrap: anywhere;
+}
+
+.readout.success { color: var(--accent); }
+.readout.failure { color: var(--fail); }
+
+.points {
+  margin: 4px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--accent);
+}
+
+.ledger {
+  display: flex;
+  gap: 16px;
+  font-size: 15px;
+  font-weight: bold;
+  margin-bottom: 8px;
+}
+
+.win-pad { padding-top: 32px; }
+
+/* ---- Tree --------------------------------------------------------------- */
+
+.branch { margin-bottom: 20px; }
+
+.branch-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding: 8px 0 4px;
+  border-bottom: 1px solid var(--accent);
+}
+
+/* ---- Actions ------------------------------------------------------------ */
+
+.actions-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.actions-row .btn-primary {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.actions-row .btn-secondary {
+  flex: 0 0 auto;
+  min-height: 56px;
+}
+
+/* ---- Corrupt-save notice ------------------------------------------------ */
+
+[data-screen="notice"] .btn-primary { margin-top: 16px; }
+
+.notice-msg {
+  margin: 8px 0 12px;
+  color: var(--fail);
+  overflow-wrap: anywhere;
+}
+
+/* Light scheme: the shared --accent is a bright cyan, and the shell paints
+   .btn-primary's label with --bg, which is near-white there. Darken just the
+   label so the primary action stays legible without touching the variable. */
+@media (prefers-color-scheme: light) {
+  .btn-primary { color: #052a35; }
+  .btn-primary:active { background-color: #00b8e0; }
+}
