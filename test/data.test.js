@@ -19,6 +19,8 @@ const tier1Nodes = nodes.filter((n) => (n.tier ?? 1) === 1);
 const tier1Missions = missions.filter((m) => (m.tier ?? 1) === 1);
 const tier2Nodes = nodes.filter((n) => (n.tier ?? 1) === 2);
 const tier2Missions = missions.filter((m) => m.tier === 2);
+const tier3Nodes = nodes.filter((n) => (n.tier ?? 1) === 3);
+const tier3Missions = missions.filter((m) => m.tier === 3);
 
 test('the tier 1 tree data loads without throwing', () => {
   assert.doesNotThrow(() => loadTree(nodes));
@@ -806,4 +808,428 @@ test('a greedy player reaches the tier 2 goal in 30-60 tier 2 launches, crossing
         `at or after the goal-reaching vehicle was bought (launch ${finalLaunch})`,
     );
   }
+});
+
+// =========================================================================
+// TIER 3 — orbital maneuvering (ARCHITECTURE.md, "Phase 2 -- tier 3,
+// orbital maneuvering"). PROVISIONAL data (js/data/tree.js's and
+// js/data/missions.js's own top-of-section comments explain why): the
+// structural assertions below hold regardless of the resolver's state and
+// run unconditionally. The resolver-driven ones need js/core/resolver.js's
+// orbital phase and js/core/orbit.js — both being written concurrently
+// with this file, in the same build, by another module — so they probe
+// for a `closestApproach` field on a real outcome first and test.skip with
+// an explanatory message when it's absent, rather than crashing on a
+// mission requirement shape (`rendezvous`/`dock`) or an `opts.target` the
+// current resolver doesn't understand yet. Once that lands, drop the guard
+// (delete the `if (!PHASE2_RESOLVER)` block in each) — this is the "balance
+// pass removes the guard" comment ARCHITECTURE.md's own task brief calls
+// for.
+// =========================================================================
+
+test('tier 3 nodes exist: 12 to 14 of them, across all four branches', () => {
+  assert.ok(
+    tier3Nodes.length >= 12 && tier3Nodes.length <= 14,
+    `got ${tier3Nodes.length} tier 3 nodes`,
+  );
+  const branchesSeen = new Set(tier3Nodes.map((n) => n.branch));
+  assert.deepEqual([...branchesSeen].sort(), ['guidance', 'propulsion', 'reliability', 'structure']);
+});
+
+test('struct-module exists, is tier 3, and carries the id js/data/missions.js\'s dock template requires by name', () => {
+  const node = fullTree.byId.get('struct-module');
+  assert.ok(node, 'struct-module should exist in the tree data');
+  assert.equal(node.tier, 3);
+  assert.equal(node.branch, 'structure');
+});
+
+test('every tier 3 node\'s prerequisite sits at or below its own tier (loadTree(nodes) above already proves this; restated directly against tier 3)', () => {
+  for (const node of tier3Nodes) {
+    for (const req of node.requires ?? []) {
+      const reqTier = fullTree.byId.get(req).tier ?? 1;
+      assert.ok(reqTier <= 3, `${node.id} (tier 3) requires ${req} (tier ${reqTier})`);
+    }
+  }
+});
+
+// Phase 2's five new vehicle stats (js/data/components.js: restarts, nav,
+// docking, rcs, dockBonus) are each actually set by SOME tier 3 node, and
+// the full tier 3 tree reaches the values ARCHITECTURE.md's own node
+// sketch describes: restarts 1 (prop-10) + 2 (prop-11) = 3; nav climbs to
+// 3 (guide-5, the last of the guide-3/4/5 chain); docking set 1
+// (struct-9); rcs set 1 (prop-12); dockBonus > 0 (rel-8).
+test('the five phase 2 vehicle stats are each set/raised by some tier 3 node', () => {
+  const fullOwned = nodes.map((n) => n.id);
+  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
+  assert.equal(vehicle.restarts, 3, 'restarts: prop-10 (set 1) + prop-11 (add 2)');
+  assert.equal(vehicle.nav, 3, 'nav: guide-3/4/5 chain should reach 3');
+  assert.equal(vehicle.docking, 1, 'docking: struct-9 (set 1)');
+  assert.equal(vehicle.rcs, 1, 'rcs: prop-12 (set 1)');
+  assert.ok(vehicle.dockBonus > 0, 'dockBonus: rel-8 should raise it above 0');
+});
+
+test('restarts stays 0 until prop-10 is owned, and multi-restart plumbing needs restart-1 first', () => {
+  const bare = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: [] }));
+  assert.equal(bare.restarts, 0);
+  const prop10Owned = [...(fullTree.byId.get('prop-10').requires ?? []), 'prop-10'];
+  const withPropTen = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: prop10Owned }));
+  assert.equal(withPropTen.restarts, 1);
+  assert.ok((fullTree.byId.get('prop-11').requires ?? []).includes('prop-10'), 'prop-11 should require prop-10');
+});
+
+test('multi-restart plumbing (prop-11) costs top-stage reliability, and restart qualification (rel-7) recovers it', () => {
+  function ownedWithPrereqs(id) {
+    const seen = new Set();
+    const owned = [];
+    function add(nodeId) {
+      if (seen.has(nodeId)) return;
+      seen.add(nodeId);
+      for (const req of fullTree.byId.get(nodeId).requires ?? []) add(req);
+      owned.push(nodeId);
+    }
+    add(id);
+    return owned;
+  }
+  const withoutRestarts = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: ownedWithPrereqs('struct-6') }));
+  const baseReliability = withoutRestarts.stages[2].reliability;
+
+  const withMultiRestart = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: ownedWithPrereqs('prop-11') }));
+  assert.ok(
+    withMultiRestart.stages[2].reliability < baseReliability,
+    'prop-11 alone should lower top-stage reliability relative to not owning it',
+  );
+
+  const withBoth = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: ownedWithPrereqs('rel-7') }));
+  assert.ok(
+    Math.abs(withBoth.stages[2].reliability - baseReliability) < 1e-6,
+    `rel-7 should cancel prop-11's cut back out (got ${withBoth.stages[2].reliability}, base ${baseReliability})`,
+  );
+});
+
+test('the propellant reserve node (prop-13) adds both propellant AND dry mass to the top stage (sibling tradeoff)', () => {
+  const node = fullTree.byId.get('prop-13');
+  const propEffect = node.effects.find((e) => e.stat === 'stages.2.propMass');
+  const dryEffect = node.effects.find((e) => e.stat === 'stages.2.dryMass');
+  assert.ok(propEffect && propEffect.op === 'add' && propEffect.value > 0, 'prop-13 should add top-stage propellant');
+  assert.ok(dryEffect && dryEffect.op === 'add' && dryEffect.value > 0, 'prop-13 should also add top-stage dry mass');
+});
+
+const REQUIREMENT_SHAPES = ['altitude', 'downrange', 'orbit', 'rendezvous', 'dock'];
+
+test('every tier 3 mission has exactly one of the five requirement shapes', () => {
+  assert.equal(tier3Missions.length, 5, `expected exactly 5 tier 3 missions (satellite, core, rdv-1, rdv-2, dock), got ${tier3Missions.length}`);
+  for (const m of tier3Missions) {
+    const shapes = REQUIREMENT_SHAPES.filter((k) => m.requirement[k] !== undefined);
+    assert.equal(shapes.length, 1, `${m.id} should have exactly one requirement shape, got [${shapes}]`);
+  }
+});
+
+test('the tier 3 ladder matches ARCHITECTURE.md exactly: satellite, core, rdv-1, rdv-2, dock', () => {
+  assert.deepEqual(tier3Missions.map((m) => m.id), ['satellite', 'core', 'rdv-1', 'rdv-2', 'dock']);
+});
+
+test('satellite deploys a satellite and is repeatable (no unique flag)', () => {
+  const m = missions.find((mm) => mm.id === 'satellite');
+  assert.deepEqual(m.deploys, { kind: 'satellite', name: m.deploys.name });
+  assert.equal(m.unique, undefined);
+});
+
+test('core deploys a (unique) station core', () => {
+  const m = missions.find((mm) => mm.id === 'core');
+  assert.equal(m.deploys.kind, 'core');
+  assert.equal(m.unique, true);
+});
+
+test('rdv-1/rdv-2 are rendezvous missions gated on requiresObject: core, rdv-2 tighter than rdv-1', () => {
+  const rdv1 = missions.find((mm) => mm.id === 'rdv-1');
+  const rdv2 = missions.find((mm) => mm.id === 'rdv-2');
+  assert.equal(rdv1.requiresObject, 'core');
+  assert.equal(rdv2.requiresObject, 'core');
+  assert.equal(rdv1.requirement.rendezvous.target, 'core');
+  assert.equal(rdv2.requirement.rendezvous.target, 'core');
+  assert.ok(
+    rdv2.requirement.rendezvous.within < rdv1.requirement.rendezvous.within,
+    'rdv-2 should require a tighter closest approach than rdv-1',
+  );
+});
+
+test('dock is the goal mission: { dock: { target: \'core\' } }, deploys the module docked, gated on both requiresObject and requiresNode', () => {
+  const m = missions.find((mm) => mm.id === 'dock');
+  assert.deepEqual(m.requirement, { dock: { target: 'core' } });
+  assert.equal(m.deploys.kind, 'module');
+  assert.equal(m.requiresObject, 'core');
+  assert.equal(m.requiresNode, 'struct-module');
+});
+
+test('tier 3 mission payouts are well above tier 2\'s', () => {
+  const maxTier2Payout = Math.max(...tier2Missions.map((m) => m.payout));
+  for (const m of tier3Missions) {
+    assert.ok(
+      m.payout > maxTier2Payout,
+      `${m.id}'s payout ${m.payout} should exceed tier 2's max payout ${maxTier2Payout}`,
+    );
+  }
+});
+
+test('tierGoals[3] is a dock requirement targeting the core', () => {
+  assert.ok(tierGoals[3]);
+  assert.deepEqual(tierGoals[3].requirement, { dock: { target: 'core' } });
+});
+
+// ---------------------------------------------------------------------
+// Resolver-driven TIER 3 assertions. Guarded: skip with an explanatory
+// message rather than fail when the checkout's resolver doesn't produce a
+// `closestApproach` field yet (js/core/resolver.js's orbital phase hasn't
+// landed). The probe mirrors tools/balance.mjs's own PHASE2_RESOLVER
+// check.
+// ---------------------------------------------------------------------
+
+const PHASE2_RESOLVER = (() => {
+  try {
+    const fullOwned = nodes.map((n) => n.id);
+    const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
+    const target = {
+      id: 'core-1', kind: 'core', name: 'probe', periapsis: 200000, apoapsis: 200000, phase: 0, dockedTo: null,
+    };
+    const outcome = resolveLaunch(
+      forceReliability(vehicle),
+      { requirement: { rendezvous: { target: 'core', within: 5000 } } },
+      { fuelFraction: 1, turn: 0.3, window: 0 },
+      makeRng(SEED),
+      { target },
+    );
+    return typeof outcome.closestApproach === 'number' || outcome.closestApproach === null;
+  } catch {
+    return false;
+  }
+})();
+
+const PHASE2_SKIP_MESSAGE = 'js/core/resolver.js does not produce closestApproach yet (phase 2 orbital phase not landed) '
+  + '-- this test is exercised once it does; the balance pass then removes this guard';
+
+test('every tier 3 mission is reachable by the full tree (simulated, target = core at its template orbit)', (t) => {
+  if (!PHASE2_RESOLVER) {
+    t.skip(PHASE2_SKIP_MESSAGE);
+    return;
+  }
+  const fullOwned = nodes.map((n) => n.id);
+  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
+  const coreMission = missions.find((m) => m.id === 'core');
+  const target = {
+    id: 'core-1',
+    kind: 'core',
+    name: 'Station core',
+    periapsis: coreMission.requirement.orbit.periapsis,
+    apoapsis: coreMission.requirement.orbit.periapsis,
+    phase: 0,
+    dockedTo: null,
+  };
+  const WINDOW_STEPS = Array.from({ length: 21 }, (_, i) => i * 0.05);
+  for (const m of tier3Missions) {
+    if (m.requirement.orbit !== undefined) {
+      const metrics = bestMetricsOverTurns(vehicle, 1);
+      assert.ok(missionMetBy(m, metrics), `full tree does not reach ${m.id} (${JSON.stringify(m.requirement)})`);
+      continue;
+    }
+    let best = null;
+    for (const turn of TURN_STEPS) {
+      for (const w of WINDOW_STEPS) {
+        const rng = makeRng(SEED);
+        const outcome = resolveLaunch(forceReliability(vehicle), m, { fuelFraction: 1, turn, window: w }, rng, { target });
+        if (m.requirement.dock !== undefined) {
+          if (outcome.docked) { best = true; break; }
+        } else if (typeof outcome.closestApproach === 'number') {
+          if (best === null || outcome.closestApproach < best) best = outcome.closestApproach;
+        }
+      }
+      if (best === true) break;
+    }
+    if (m.requirement.dock !== undefined) {
+      assert.equal(best, true, `full tree never docks for ${m.id} over the turn/window scan`);
+    } else {
+      assert.ok(best !== null && best <= m.requirement.rendezvous.within, `full tree's best closest approach for ${m.id} was ${best}, needs <= ${m.requirement.rendezvous.within}`);
+    }
+  }
+});
+
+test('a greedy player reaches the tier 3 goal (dock) in at most 80 tier 3 launches, continuing from the tier 2 end state', (t) => {
+  if (!PHASE2_RESOLVER) {
+    t.skip(PHASE2_SKIP_MESSAGE);
+    return;
+  }
+  // Greedy tier 1 + tier 2 end state (same shape as the tier 2 greedy test
+  // above), then a tier 3 leg: fly the best reachable tier 3 mission (or
+  // the floor), spend down on the cheapest node that gets the vehicle
+  // closer to docking the core, repeat. Buys guide-1/struct-4/... as
+  // needed exactly like the tier 2 greedy test.
+  const DECISION_TURN = 0.3;
+  const DECISION_WINDOW = 0;
+  const floorMission = missions.find((m) => m.floor);
+  const tier1Goal = tierGoals[1].requirement.altitude;
+  const goalPeriapsisT2 = tierGoals[2].requirement.orbit.periapsis;
+  const MAX_LAUNCHES = 250;
+
+  let state = { owned: [], funds: 0, resources: {}, reputation: 0, tier: 1, objects: [] };
+  let launches = 0;
+
+  let altitude = maxAltitudeOf(buildVehicle(baseVehicle, collectEffects(fullTree, state)), 1);
+  while (altitude < tier1Goal && launches < MAX_LAUNCHES) {
+    let best = floorMission;
+    for (const m of tier1Missions) {
+      if (m.requirement.altitude <= altitude
+        && (m.minReputation === undefined || state.reputation >= m.minReputation)
+        && m.payout > best.payout) best = m;
+    }
+    state = credit(state, { funds: best.payout, reputation: best.repGain });
+    launches += 1;
+    for (;;) {
+      let pick = null;
+      for (const node of fullTree.nodes) {
+        if (!canBuy(fullTree, state, node.id)) continue;
+        const candidate = { ...state, owned: [...state.owned, node.id] };
+        const a = maxAltitudeOf(buildVehicle(baseVehicle, collectEffects(fullTree, candidate)), 1);
+        if (a > altitude + 1e-6) {
+          if (!pick || (node.cost.funds ?? 0) < (pick.node.cost.funds ?? 0)) pick = { node, a };
+        }
+      }
+      if (!pick) break;
+      state = buy(fullTree, state, pick.node.id);
+      altitude = pick.a;
+    }
+  }
+
+  state = { ...state, tier: 2 };
+  let metrics = bestMetricsOverTurns(buildVehicle(baseVehicle, collectEffects(fullTree, state)), 1);
+  while ((metrics.bestPeriapsis ?? -Infinity) < goalPeriapsisT2 && launches < MAX_LAUNCHES) {
+    let best = floorMission;
+    for (const m of missions) {
+      if (m.tier > state.tier) continue;
+      if (m.minReputation !== undefined && state.reputation < m.minReputation) continue;
+      if (missionMetBy(m, metrics) && m.payout > best.payout) best = m;
+    }
+    state = credit(state, { funds: best.payout, reputation: best.repGain });
+    launches += 1;
+    for (;;) {
+      let pick = null;
+      const baseMetric = (() => {
+        const rng = makeRng(SEED);
+        const outcome = resolveLaunch(forceReliability(buildVehicle(baseVehicle, collectEffects(fullTree, state))), NO_CEILING_ORBIT, { fuelFraction: 1, turn: DECISION_TURN }, rng, {});
+        return outcome.periapsis ?? -Infinity;
+      })();
+      for (const node of fullTree.nodes) {
+        if (!canBuy(fullTree, state, node.id)) continue;
+        const candidate = { ...state, owned: [...state.owned, node.id] };
+        const rng = makeRng(SEED);
+        const outcome = resolveLaunch(forceReliability(buildVehicle(baseVehicle, collectEffects(fullTree, candidate))), NO_CEILING_ORBIT, { fuelFraction: 1, turn: DECISION_TURN }, rng, {});
+        const mm = outcome.periapsis ?? -Infinity;
+        if (mm > baseMetric + 1) {
+          if (!pick || (node.cost.funds ?? 0) < (pick.cost.funds ?? 0)) pick = node;
+        }
+      }
+      if (!pick) break;
+      state = buy(fullTree, state, pick.id);
+    }
+    metrics = bestMetricsOverTurns(buildVehicle(baseVehicle, collectEffects(fullTree, state)), 1);
+  }
+  const tier2LaunchesTaken = launches;
+
+  // Tier 3 leg.
+  state = { ...state, tier: 3, objects: [] };
+  const tier3LaunchStart = launches;
+
+  function findTargetLocal(objects, kind) {
+    for (let i = objects.length - 1; i >= 0; i -= 1) {
+      if (objects[i].kind === kind && objects[i].dockedTo == null) return objects[i];
+    }
+    return null;
+  }
+
+  function dockedGoalMet(objects) {
+    return objects.some((o) => o.dockedTo != null);
+  }
+
+  while (!dockedGoalMet(state.objects) && launches < MAX_LAUNCHES) {
+    const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, state));
+    const target = findTargetLocal(state.objects, 'core');
+
+    // Pick the best-paying reachable mission: object-gated missions need
+    // their target/node prerequisite; rendezvous/dock missions need a
+    // resolveLaunch probe against the current target.
+    let best = floorMission;
+    for (const m of missions) {
+      if (m.tier > state.tier) continue;
+      if (m.minReputation !== undefined && state.reputation < m.minReputation) continue;
+      if (m.requiresObject && !target && !(m.requiresObject === 'core' && target)) {
+        if (!state.objects.some((o) => o.kind === m.requiresObject)) continue;
+      }
+      if (m.requiresNode && !state.owned.includes(m.requiresNode)) continue;
+      if (m.requirement.orbit !== undefined) {
+        const metricsHere = bestMetricsOverTurns(vehicle, 1);
+        if (missionMetBy(m, metricsHere) && m.payout > best.payout) best = m;
+      } else if (m.requirement.rendezvous !== undefined || m.requirement.dock !== undefined) {
+        if (!target) continue;
+        const rng = makeRng(SEED);
+        const outcome = resolveLaunch(forceReliability(vehicle), m, { fuelFraction: 1, turn: DECISION_TURN, window: DECISION_WINDOW }, rng, { target });
+        const met = m.requirement.dock !== undefined ? outcome.docked === true : (typeof outcome.closestApproach === 'number' && outcome.closestApproach <= m.requirement.rendezvous.within);
+        if (met && m.payout > best.payout) best = m;
+      }
+    }
+
+    // Fly it for real (real rng draw count doesn't matter here, only the
+    // outcome), applying its effect on state the way recordLaunch would:
+    // credit funds/reputation, and on a deploying success, add the object.
+    const rng = makeRng(SEED + launches);
+    let outcome;
+    if (best.requirement.rendezvous !== undefined || best.requirement.dock !== undefined) {
+      outcome = target
+        ? resolveLaunch(forceReliability(vehicle), best, { fuelFraction: 1, turn: DECISION_TURN, window: DECISION_WINDOW }, rng, { target })
+        : { success: false, maxAltitude: 0, readout: 'no target' };
+    } else {
+      outcome = resolveLaunch(forceReliability(vehicle), best, { fuelFraction: 1, turn: DECISION_TURN }, rng, {});
+    }
+    state = credit(state, outcome.success ? { funds: best.payout, reputation: best.repGain } : { reputation: -(best.repLoss ?? 0) });
+    launches += 1;
+    if (outcome.success && best.deploys) {
+      const count = state.objects.filter((o) => o.kind === best.deploys.kind).length;
+      const id = `${best.deploys.kind}-${count + 1}`;
+      const dockedTo = outcome.docked ? (outcome.orbital?.target?.id ?? target?.id ?? null) : null;
+      state = {
+        ...state,
+        objects: [
+          ...state.objects,
+          {
+            id,
+            kind: best.deploys.kind,
+            name: best.deploys.name,
+            periapsis: outcome.insertion?.periapsis ?? outcome.periapsis ?? null,
+            apoapsis: outcome.insertion?.apoapsis ?? outcome.apoapsis ?? null,
+            phase: 0,
+            dockedTo,
+            launchedAt: { tier: 3, launch: launches - tier2LaunchesTaken },
+          },
+        ],
+      };
+    }
+
+    // Spend down on the cheapest still-affordable node, repeatedly, until
+    // nothing is. Unlike the tier 1/2 legs above (which only buy a node
+    // when it measurably improves a single scalar metric), tier 3's
+    // "helps" is spread across five different stats feeding a multi-step
+    // burn sequence — cheapest-affordable-first is the simpler, still
+    // defensible greedy stand-in used here; PROVISIONAL along with the
+    // rest of this section, see the tier 3 balance note above.
+    for (;;) {
+      let pick = null;
+      for (const node of fullTree.nodes) {
+        if (!canBuy(fullTree, state, node.id)) continue;
+        if (!pick || (node.cost.funds ?? 0) < (pick.cost.funds ?? 0)) pick = node;
+      }
+      if (!pick) break;
+      state = buy(fullTree, state, pick.id);
+    }
+  }
+
+  assert.ok(dockedGoalMet(state.objects), `greedy player never docked within ${MAX_LAUNCHES} total launches`);
+  const tier3Launches = launches - tier3LaunchStart;
+  assert.ok(tier3Launches <= 80, `greedy player took ${tier3Launches} tier 3 launches, expected <= 80`);
 });

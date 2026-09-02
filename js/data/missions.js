@@ -194,9 +194,107 @@ export const missions = [
     repLoss: 4,
     minReputation: 75,
   },
+
+  // -----------------------------------------------------------------------
+  // TIER 3 — orbital maneuvering. ARCHITECTURE.md, "js/data/missions.js —
+  // tier 3 ladder": exactly this five-mission set, in this order.
+  // PROVISIONAL, same caveat as js/data/tree.js's tier 3 nodes: there is no
+  // phase 2 resolver yet to run `node tools/balance.mjs` against (it
+  // understands neither the `rendezvous`/`dock` requirement shapes nor
+  // `opts.target`), so payouts/reputation gates below are a plausible
+  // continuation of tier 2's numbers, not a verified ladder. Re-balance
+  // once the resolver lands (tools/balance.mjs's TIER 3 section).
+  //
+  //   satellite   orbit >= 150 km, deploys a satellite, REPEATABLE — the
+  //               tier's income filler (tier 2 had none; tier 3 needs one
+  //               because every other rung below gates on an object or a
+  //               node that isn't there on day one of the tier). No
+  //               minReputation: immediately offerable at tier 3, the same
+  //               role sound-1/orbit-down-1 played entering their tiers.
+  //   core        orbit >= 200 km, deploys the (unique) station core —
+  //               the prerequisite EVERY other tier 3 rung below needs,
+  //               via requiresObject: 'core'.
+  //   rdv-1       rendezvous within 5 km of the core — the first
+  //               navigation rung, needs nav >= 1 (guide-3, radar) to be
+  //               remotely affordable in restarts/delta-v.
+  //   rdv-2       rendezvous within 500 m — an order of magnitude tighter,
+  //               needs the star tracker (guide-4) or better.
+  //   dock        the tier goal: dock to the core, deploying (and docking)
+  //               the lab module. Gated on BOTH requiresObject: 'core' (a
+  //               target to dock to) and requiresNode: 'struct-module'
+  //               (the module hardware itself) — the two-gate shape
+  //               ARCHITECTURE.md calls out by name for this exact rung.
+  //
+  // Payouts continue above tier 2's ceiling (12 000); repGain/repLoss and
+  // minReputation climb through the range reputation can actually reach by
+  // tier 3 (tier 2 gates top out at 75), same "keeps mattering into the new
+  // tier" reasoning as tier 2's own note.
+  {
+    id: 'satellite',
+    tier: 3,
+    name: 'Comsat deployment',
+    profile: 'orbit',
+    requirement: { orbit: { periapsis: 150000 } },
+    deploys: { kind: 'satellite', name: 'Comsat' },
+    payout: 15000,
+    repGain: 5,
+    repLoss: 3,
+  },
+  {
+    id: 'core',
+    tier: 3,
+    name: 'Station core delivery',
+    profile: 'orbit',
+    requirement: { orbit: { periapsis: 200000 } },
+    deploys: { kind: 'core', name: 'Station core' },
+    unique: true,
+    payout: 22000,
+    repGain: 7,
+    repLoss: 4,
+    minReputation: 40,
+  },
+  {
+    id: 'rdv-1',
+    tier: 3,
+    name: 'Rendezvous with the station core',
+    profile: 'orbit',
+    requirement: { rendezvous: { target: 'core', within: 5000 } },
+    requiresObject: 'core',
+    payout: 18000,
+    repGain: 6,
+    repLoss: 4,
+    minReputation: 55,
+  },
+  {
+    id: 'rdv-2',
+    tier: 3,
+    name: 'Close approach to the station core',
+    profile: 'orbit',
+    requirement: { rendezvous: { target: 'core', within: 500 } },
+    requiresObject: 'core',
+    payout: 26000,
+    repGain: 7,
+    repLoss: 5,
+    minReputation: 70,
+  },
+  {
+    id: 'dock',
+    tier: 3,
+    name: 'Dock the lab module',
+    profile: 'orbit',
+    requirement: { dock: { target: 'core' } },
+    deploys: { kind: 'module', name: 'Lab module' },
+    requiresObject: 'core',
+    requiresNode: 'struct-module',
+    payout: 40000,
+    repGain: 10,
+    repLoss: 6,
+    minReputation: 85,
+  },
 ];
 
 export const tierGoals = {
   1: { requirement: { altitude: 100000 }, name: 'Reach 100 km' },
   2: { requirement: { orbit: { periapsis: 100000 } }, name: 'Reach orbit' },
+  3: { requirement: { dock: { target: 'core' } }, name: 'Assemble a station' },
 };

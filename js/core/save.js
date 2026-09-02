@@ -1,7 +1,7 @@
 // Versioned save/load, migrations, storage adapter. Pure. See
 // ARCHITECTURE.md.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 // migrations[v] transforms a save at version v into version v + 1's shape
 // (the version field itself is stamped by deserialize, not by the
@@ -72,6 +72,49 @@ export const migrations = {
       downrange: null,
       ...entry,
     })),
+  }),
+  // migrations[2] is phase 2's schema bump (ARCHITECTURE.md, "state.js,
+  // save.js — schema v3"): `objects` is new (everything the player has
+  // ever launched and left in orbit), and `best` grows two more fields —
+  // `bestClosestApproach` (phase 2's rendezvous-tier metric, mirroring
+  // `bestPeriapsis`'s "null means never attempted" convention) and
+  // `docked` (has the player ever completed a dock, a plain boolean —
+  // WHICH object got docked lives in `objects` itself, per state.js's
+  // tierGoalMet doc comment). History entries gain `closestApproach` and
+  // `docked`, same "backfill with the null/false a pre-phase-2 outcome
+  // could never have set" shape as migrations[1]'s periapsis/downrange
+  // backfill above.
+  2: (s) => ({
+    version: 3,
+    seed: s.seed ?? 0,
+    draws: s.draws ?? 0,
+    funds: s.funds ?? 0,
+    reputation: s.reputation ?? 0,
+    resources: {
+      water: 0,
+      fuel: 0,
+      oxidizer: 0,
+      metals: 0,
+      ...(s.resources ?? {}),
+    },
+    owned: s.owned ?? [],
+    tier: s.tier ?? 1,
+    launches: s.launches ?? { 1: 0 },
+    best: {
+      maxAltitude: s.best?.maxAltitude ?? 0,
+      maxDownrange: s.best?.maxDownrange ?? 0,
+      bestPeriapsis: s.best?.bestPeriapsis ?? null,
+      bestClosestApproach: s.best?.bestClosestApproach ?? null,
+      docked: s.best?.docked ?? false,
+      wins: s.best?.wins ?? {},
+    },
+    contracts: s.contracts ?? [],
+    history: (s.history ?? []).map((entry) => ({
+      closestApproach: null,
+      docked: false,
+      ...entry,
+    })),
+    objects: s.objects ?? [],
   }),
 };
 

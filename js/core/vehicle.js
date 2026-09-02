@@ -56,11 +56,33 @@ function resolveStatPath(vehicle, path) {
 /**
  * The fields the Vehicle shape names itself. Everything else that is a
  * top-level number on the base components is copied through as an extra stat
- * (see buildVehicle). `guidance` is deliberately NOT in this set: it is seeded
- * with a default of 0 and then overwritten by the base's own value when the
- * base supplies one.
+ * (see buildVehicle). The CAPABILITY_STATS below are deliberately NOT in this
+ * set: they are seeded with a default of 0 and then overwritten by the base's
+ * own value when the base supplies one.
  */
 const NAMED_VEHICLE_FIELDS = new Set(['stages', 'payloadMass', 'dragArea', 'dragCoeff']);
+
+/**
+ * Capability stats every vehicle carries, defaulting to 0.
+ *
+ * They are seeded here rather than left to the base components because the TREE
+ * is what turns them on, with `{ stat: 'restarts', op: 'set', value: 1 }` — and
+ * an effect can only target a stat that already exists (an unknown path throws,
+ * which is what catches typos). Seeding them means such a node works against
+ * any base, a hand-written fixture needs no boilerplate, and the resolver can
+ * read `vehicle.nav` without a guard.
+ *
+ *   guidance   0/1   can steer at all (phase 1: the gravity turn)
+ *   restarts   int   upper-stage relights available for the orbital phase
+ *   nav        0..3  rendezvous navigation quality
+ *   docking    0/1   docking adapter
+ *   rcs        0/1   fine approach thrusters
+ *   dockBonus  0..1  added to the docking roll's threshold
+ *
+ * Anything else a base declares as a top-level number still comes through as an
+ * extra stat, so adding a further stat stays a data change (phase 1's contract).
+ */
+const CAPABILITY_STATS = ['guidance', 'restarts', 'nav', 'docking', 'rcs', 'dockBonus'];
 
 const REQUIRED_STAGE_FIELDS = ['dryMass', 'propMass', 'thrust', 'isp', 'reliability'];
 
@@ -102,8 +124,10 @@ function normalizeStage(stage, where) {
  * node sets it to 1, with no edit here. Non-numeric extras are ignored — a
  * vehicle is a stat block, and only numbers are stats.
  *
- * `guidance` itself is always present and defaults to 0, so the resolver can
- * read `vehicle.guidance` on a hand-written phase 0 fixture without a guard.
+ * The CAPABILITY_STATS (`guidance`, and phase 2's `restarts`, `nav`, `docking`,
+ * `rcs`, `dockBonus`) are always present and default to 0, so the resolver can
+ * read them on a hand-written phase 0 fixture without a guard, and a tree node
+ * can `set` or `add` one on a base that never declared it.
  *
  * @param {object} baseComponents a Vehicle-shaped object (js/data/components.js)
  * @param {Array<object>} [effects=[]]
@@ -119,8 +143,8 @@ export function buildVehicle(baseComponents, effects = []) {
     payloadMass: base.payloadMass ?? 0,
     dragArea: base.dragArea ?? 0,
     dragCoeff: base.dragCoeff ?? 0,
-    guidance: 0,
   };
+  for (const stat of CAPABILITY_STATS) vehicle[stat] = 0;
   for (const key of Object.keys(base)) {
     if (NAMED_VEHICLE_FIELDS.has(key)) continue;
     const value = base[key];

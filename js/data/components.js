@@ -66,4 +66,15 @@ export const baseVehicle = {
   // buildVehicle (js/core/vehicle.js) must accept unknown top-level numeric
   // stats from baseComponents for that effect to resolve.
   guidance: 0,
+  // Phase 2 (ARCHITECTURE.md, "Phase 2 -- tier 3, orbital maneuvering"):
+  // five more integer stats, all 0 on the starter, all set/raised by tier 3
+  // tree nodes (js/data/tree.js) and read by the resolver's orbital phase
+  // (js/core/resolver.js, landing concurrently with this file):
+  restarts: 0, // upper-stage relights available
+  nav: 0, // 0..3, rendezvous navigation quality
+  docking: 0, // 0/1, docking adapter present
+  rcs: 0, // 0/1, fine reaction-control thrusters for the final approach
+  dockBonus: 0, // added to the docking reliability roll threshold, capped
+                // at 0.99 by the resolver (js/data/tree.js's reliability
+                // branch: docking rehearsal)
 };

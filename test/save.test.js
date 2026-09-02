@@ -20,8 +20,8 @@ function makeMapBackend() {
   };
 }
 
-test('SCHEMA_VERSION is 2', () => {
-  assert.equal(SCHEMA_VERSION, 2);
+test('SCHEMA_VERSION is 3', () => {
+  assert.equal(SCHEMA_VERSION, 3);
 });
 
 test('serialize/deserialize round trip a current-version state', () => {
@@ -43,7 +43,12 @@ test('migrations[1] maps best.winShown to best.wins[1] directly', () => {
   assert.equal(out.best.maxAltitude, 4000);
 });
 
-test('a v1 fixture round-trips through migrations[1] to the v2 shape', () => {
+// This fixture predates SCHEMA_VERSION reaching 3, so deserialize() now
+// carries it all the way there (migrations[1] then migrations[2]) — the
+// name says "through migrations[1]" because that's the step with the
+// non-mechanical winShown->wins[1] logic under test; the v2->v3 step below
+// backfills the rest of the phase 2 shape mechanically.
+test('a v1 fixture round-trips through migrations[1] and migrations[2] to the v3 shape', () => {
   const v1 = {
     version: 1,
     seed: 7,
@@ -72,6 +77,8 @@ test('a v1 fixture round-trips through migrations[1] to the v2 shape', () => {
     maxAltitude: 87000,
     maxDownrange: 0,
     bestPeriapsis: null,
+    bestClosestApproach: null,
+    docked: false,
     wins: { 1: true },
   });
   assert.deepEqual(migrated.contracts, ['sound-3']);
@@ -79,6 +86,9 @@ test('a v1 fixture round-trips through migrations[1] to the v2 shape', () => {
   assert.equal(migrated.history[0].maxAltitude, 26000);
   assert.equal(migrated.history[0].periapsis, null);
   assert.equal(migrated.history[0].downrange, null);
+  assert.equal(migrated.history[0].closestApproach, null);
+  assert.equal(migrated.history[0].docked, false);
+  assert.deepEqual(migrated.objects, []);
 });
 
 test('a v1 fixture without winShown migrates to an empty wins map', () => {
@@ -100,15 +110,16 @@ test('a v1 fixture without winShown migrates to an empty wins map', () => {
   assert.deepEqual(migrated.best.wins, {});
 });
 
-test('deserialize migrates a fabricated v0 save up through both steps to SCHEMA_VERSION', () => {
+test('deserialize migrates a fabricated v0 save up through all three steps to SCHEMA_VERSION (full v0 -> v3 chain)', () => {
   const v0 = {
     version: 0,
     seed: 5,
     funds: 250,
     owned: ['prop-1'],
     // deliberately missing: draws, reputation, resources, tier, launches,
-    // best, contracts, history -- migrations[0] must fill these in, then
-    // migrations[1] must carry the result the rest of the way to v2.
+    // best, contracts, history, objects -- migrations[0] must fill these
+    // in (at v1's shape), migrations[1] carries it to v2, migrations[2]
+    // carries it the rest of the way to v3.
   };
   const migrated = deserialize(JSON.stringify(v0));
   assert.equal(migrated.version, SCHEMA_VERSION);
@@ -124,10 +135,69 @@ test('deserialize migrates a fabricated v0 save up through both steps to SCHEMA_
     maxAltitude: 0,
     maxDownrange: 0,
     bestPeriapsis: null,
+    bestClosestApproach: null,
+    docked: false,
     wins: {},
   });
   assert.deepEqual(migrated.contracts, []);
   assert.deepEqual(migrated.history, []);
+  assert.deepEqual(migrated.objects, []);
+});
+
+// migrations[2] in isolation: the mechanical v2 -> v3 bump (ARCHITECTURE.md,
+// "state.js, save.js -- schema v3"). A hand-written v2 fixture — the
+// documented phase 1 shape, no `objects`, no `bestClosestApproach`/`docked`
+// on `best`, no `closestApproach`/`docked` on a history entry.
+test('migrations[2] adds objects: [], best.bestClosestApproach: null, best.docked: false', () => {
+  const v2 = {
+    version: 2,
+    seed: 3,
+    draws: 5,
+    funds: 9000,
+    reputation: 40,
+    resources: { water: 0, fuel: 0, oxidizer: 0, metals: 0 },
+    owned: ['prop-1', 'guide-1'],
+    tier: 2,
+    launches: { 1: 10, 2: 4 },
+    best: { maxAltitude: 150000, maxDownrange: 300000, bestPeriapsis: 95000, wins: { 1: true } },
+    contracts: ['orbit-down-1'],
+    history: [{ tier: 2, missionId: 'orbit-down-1', success: true, maxAltitude: 150000, periapsis: null, downrange: 300000, readout: 'ok' }],
+  };
+  const out = migrations[2](v2);
+  assert.equal(out.version, 3);
+  assert.deepEqual(out.objects, []);
+  assert.deepEqual(out.best, {
+    maxAltitude: 150000,
+    maxDownrange: 300000,
+    bestPeriapsis: 95000,
+    bestClosestApproach: null,
+    docked: false,
+    wins: { 1: true },
+  });
+  assert.equal(out.history[0].closestApproach, null);
+  assert.equal(out.history[0].docked, false);
+  // Fields migrations[2] didn't touch pass through unchanged.
+  assert.equal(out.seed, 3);
+  assert.equal(out.funds, 9000);
+  assert.deepEqual(out.owned, ['prop-1', 'guide-1']);
+  assert.equal(out.tier, 2);
+});
+
+// deserialize() end to end, from a real v2 save (no fabrication needed --
+// v2 is exactly what a phase 1 save looked like, and newGame() no longer
+// produces it, so this fixture is the only way to exercise the v2 -> v3
+// step through the public entry point rather than calling migrations[2]
+// directly).
+test('deserialize migrates a v2 save to v3 (objects, bestClosestApproach, docked)', () => {
+  const v2 = { ...newGame(1), version: 2 };
+  delete v2.objects;
+  delete v2.best.bestClosestApproach;
+  delete v2.best.docked;
+  const migrated = deserialize(JSON.stringify(v2));
+  assert.equal(migrated.version, 3);
+  assert.deepEqual(migrated.objects, []);
+  assert.equal(migrated.best.bestClosestApproach, null);
+  assert.equal(migrated.best.docked, false);
 });
 
 test('deserialize rejects a version newer than SCHEMA_VERSION', () => {

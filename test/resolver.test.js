@@ -19,7 +19,21 @@ import {
   TURN_END_HARD,
   gravityAt,
   densityAt,
+  NAV_APPROACH,
+  DOCK_RANGE,
+  DOCK_RELIABILITY,
+  DOCK_RELIABILITY_RCS,
+  APPROACH_DV,
+  PHASE_TOLERANCE_DEG,
+  ORBIT_CONFIRM_COAST,
 } from '../js/core/resolver.js';
+import {
+  elementsFrom,
+  radiusOf,
+  transferDeltaV,
+  phasingDeltaV,
+  phaseFor,
+} from '../js/core/orbit.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures. Defined here, not imported from js/data, so content changes cannot

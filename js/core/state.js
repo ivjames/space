@@ -1,6 +1,40 @@
 // New game state, derived vehicle, tier progress. Pure. See
-// ARCHITECTURE.md for the full state/save schema (version 2, phase 1).
+// ARCHITECTURE.md for the full state/save schema (version 3, phase 2).
+import { existsSync } from 'node:fs';
 import { collectEffects } from './tree.js';
+
+// phaseFor(id) -> 0..1, a stable hash of the id string, belongs to
+// js/core/orbit.js (ARCHITECTURE.md, "js/core/orbit.js -- new, pure"),
+// written concurrently with this module in this build (task brief).
+// recordLaunch (below) needs it *synchronously* when it assigns a newly
+// deployed object's orbital phase -- unlike deriveVehicle's dynamic
+// `await import('../core/vehicle.js')` further down, which can afford to
+// be async because every caller of deriveVehicle already awaits it, this
+// can't: recordLaunch's own signature stays synchronous in phase 2
+// (ARCHITECTURE.md never marks it `async`). So the same "don't let a
+// concurrently-authored module block this one" guard is resolved eagerly
+// at module load, via a plain existsSync check, rather than deriveVehicle's
+// per-call dynamic import. NOTED DEVIATION: not byte-for-byte "the same
+// way", but the same intent -- when js/core/orbit.js exists (on disk when
+// this module is first loaded), its real phaseFor is used; when it
+// doesn't (this checkout, right now), a local fallback with the identical
+// contract (0..1, deterministic from the id string) stands in, so
+// recordLaunch's object-phase assignment and this module's own tests both
+// still work.
+const orbitModulePath = new URL('./orbit.js', import.meta.url);
+let phaseFor;
+if (existsSync(orbitModulePath)) {
+  ({ phaseFor } = await import('./orbit.js'));
+} else {
+  phaseFor = (id) => {
+    let h = 2166136261;
+    for (let i = 0; i < id.length; i += 1) {
+      h ^= id.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return ((h >>> 0) % 100000) / 100000;
+  };
+}
 
 // newGame(seed) -> State
 // Starting funds are 0: launching is free in phase 0 (the floor contract
@@ -8,19 +42,26 @@ import { collectEffects } from './tree.js';
 // very first purchase has to come from a launch.
 //
 // `version` here is the schema a fresh game is BORN at, and must track
-// save.js's SCHEMA_VERSION (2, phase 1) — hardcoded rather than imported to
+// save.js's SCHEMA_VERSION (3, phase 2) — hardcoded rather than imported to
 // avoid a state.js -> save.js dependency this module didn't have before
 // (the same "duplicated literal" tradeoff phase 0 already made: save.js's
 // own SCHEMA_VERSION constant is the second copy).
 //
 // `best` is per-tier and per-metric (ARCHITECTURE.md, "state.js, save.js —
-// tier progression, schema v2"): `maxAltitude` is kept for tier 1 and old
-// saves, `maxDownrange`/`bestPeriapsis` are tier 2's, and `wins` records
+// tier progression, schema v2" and "...schema v3"): `maxAltitude` is kept
+// for tier 1 and old saves, `maxDownrange`/`bestPeriapsis` are tier 2's,
+// `bestClosestApproach`/`docked` are tier 3's (phase 2), and `wins` records
 // which tier win screens have already been shown (`{ [tier]: true }`) —
 // see advanceTier below for where a tier's win gets recorded.
+//
+// `objects` is new in phase 2 (ARCHITECTURE.md, "Persistent objects in
+// orbit"): everything the player has ever launched and left in orbit (a
+// station core, a docked module, a satellite), independent of `tier` —
+// they persist across a tier advance, which is why advanceTier below does
+// not touch this field.
 export function newGame(seed) {
   return {
-    version: 2,
+    version: 3,
     seed,
     draws: 0,
     funds: 0,
@@ -29,9 +70,17 @@ export function newGame(seed) {
     owned: [],
     tier: 1,
     launches: { 1: 0 },
-    best: { maxAltitude: 0, maxDownrange: 0, bestPeriapsis: null, wins: {} },
+    best: {
+      maxAltitude: 0,
+      maxDownrange: 0,
+      bestPeriapsis: null,
+      bestClosestApproach: null,
+      docked: false,
+      wins: {},
+    },
     contracts: [],
     history: [],
+    objects: [],
   };
 }
 
@@ -62,15 +111,99 @@ function maxOrKeep(current, incoming) {
   return Math.max(current, incoming);
 }
 
+// Mirror of maxOrKeep, but for a metric where SMALLER is better
+// (closestApproach: how close the vehicle got to its target, metres —
+// phase 2's outcome field). Same "absent/non-finite incoming leaves the
+// running best untouched" and "null means never attempted, not 0" rules.
+function minOrKeep(current, incoming) {
+  if (typeof incoming !== 'number' || !Number.isFinite(incoming)) return current;
+  if (current === null || current === undefined) return incoming;
+  return Math.min(current, incoming);
+}
+
+// findTarget(state, kind) -> object | null
+// The newest undocked object of the given kind (ARCHITECTURE.md,
+// "Persistent objects in orbit"): the resolver's opts.target for a
+// rendezvous/dock mission, and generateContracts' `requiresObject`/`unique`
+// gates (js/core/contracts.js) both read this shape. "Newest" is array
+// order — addObject/recordLaunch always append, never reorder or remove,
+// so the LAST matching entry is the most recently launched one. "Undocked"
+// excludes anything with `dockedTo` set (a docked module is no longer a
+// separate rendezvous target; the core it's docked to still is, since the
+// core's own `dockedTo` stays null forever — nothing docks it to a third
+// thing).
+export function findTarget(state, kind) {
+  const objects = state.objects ?? [];
+  for (let i = objects.length - 1; i >= 0; i -= 1) {
+    const obj = objects[i];
+    if (obj.kind === kind && obj.dockedTo == null) return obj;
+  }
+  return null;
+}
+
+// addObject(state, obj) -> new state
+// Appends obj to state.objects. Does not assign an id/phase/etc itself —
+// recordLaunch (below) is the one real caller and builds the full object
+// (id from nextObjectId, phase from phaseFor) before calling this; exposed
+// separately per ARCHITECTURE.md's exported-function list, for tests and
+// any future direct caller (e.g. a debug/cheat path).
+export function addObject(state, obj) {
+  return { ...state, objects: [...(state.objects ?? []), obj] };
+}
+
+// dockObject(state, id, toId) -> new state
+// Sets the `dockedTo` of the object with the given id. Not used by
+// recordLaunch's own dock-mission handling below (a dock mission's
+// deployed module is created ALREADY docked — ARCHITECTURE.md: "for a dock
+// success, adding the module already docked... and marking nothing else"
+// — so there is no separately-existing object to retroactively dock).
+// Exposed for tests and any future mission shape that docks an
+// already-existing object rather than a newly deployed one.
+export function dockObject(state, id, toId) {
+  return {
+    ...state,
+    objects: (state.objects ?? []).map((obj) => (obj.id === id ? { ...obj, dockedTo: toId } : obj)),
+  };
+}
+
+// nextObjectId(objects, kind) -> 'kind-N', N = 1 + however many objects of
+// that kind already exist (docked or not — docking never removes an
+// object from state.objects, so counting only undocked ones would risk a
+// collision the moment something of that kind ever gets docked).
+function nextObjectId(objects, kind) {
+  const count = objects.filter((obj) => obj.kind === kind).length;
+  return `${kind}-${count + 1}`;
+}
+
+// The orbit a newly deployed object is recorded at: phase 2's `insertion`
+// field when the resolver provides it (ARCHITECTURE.md: "orbit from
+// outcome.insertion or outcome.periapsis/apoapsis"), else the phase 1
+// bare `periapsis`/`apoapsis` fields — so a deploy still records a sane
+// orbit against a resolver that hasn't landed phase 2's `insertion` field
+// yet (the concurrent-edit case this whole file is written to tolerate).
+function objectOrbitFrom(outcome) {
+  if (outcome.insertion) {
+    return { periapsis: outcome.insertion.periapsis, apoapsis: outcome.insertion.apoapsis };
+  }
+  return { periapsis: outcome.periapsis ?? null, apoapsis: outcome.apoapsis ?? null };
+}
+
 // recordLaunch(state, mission, outcome, draws = 0) -> new state
-// Increments launches[state.tier]; updates best.maxAltitude (always) and
+// Increments launches[state.tier]; updates best.maxAltitude (always),
 // best.maxDownrange / best.bestPeriapsis (only when the outcome actually
 // carries `maxDownrange` / `periapsis` — see maxOrKeep above, phase 1
-// outcome fields may be absent on an older/fabricated outcome); appends to
-// history (capped at 20 most recent, now also carrying `periapsis` and
-// `downrange`); and advances `draws` by the rng draws the launch consumed
-// (if the caller tracked and passed them — resolveLaunch's rng draws its
-// own count, so this is opt-in).
+// outcome fields may be absent on an older/fabricated outcome), and (phase
+// 2) best.bestClosestApproach / best.docked from `outcome.closestApproach`
+// / `outcome.docked`; appends to history (capped at 20 most recent, now
+// also carrying `closestApproach` and `docked`); applies `mission.deploys`
+// on a successful outcome (ARCHITECTURE.md, "Persistent objects in orbit":
+// a new object, id `<kind>-<n>`, orbit from objectOrbitFrom above, phase
+// from phaseFor(id) — see the module-load guard at the top of this file —
+// and, when the outcome is a dock success, `dockedTo` set to the docked
+// target's id straight away rather than via a separate dockObject call);
+// and advances `draws` by the rng draws the launch consumed (if the caller
+// tracked and passed them — resolveLaunch's rng draws its own count, so
+// this is opt-in).
 export function recordLaunch(state, mission, outcome, draws = 0) {
   const tier = state.tier;
   const launches = {
@@ -82,6 +215,8 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
     maxAltitude: Math.max(state.best.maxAltitude ?? 0, outcome.maxAltitude ?? 0),
     maxDownrange: maxOrKeep(state.best.maxDownrange ?? 0, outcome.maxDownrange),
     bestPeriapsis: maxOrKeep(state.best.bestPeriapsis ?? null, outcome.periapsis),
+    bestClosestApproach: minOrKeep(state.best.bestClosestApproach ?? null, outcome.closestApproach),
+    docked: (state.best.docked ?? false) || outcome.docked === true,
   };
   const entry = {
     tier,
@@ -90,15 +225,44 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
     maxAltitude: outcome.maxAltitude,
     periapsis: outcome.periapsis ?? null,
     downrange: outcome.maxDownrange ?? null,
+    closestApproach: outcome.closestApproach ?? null,
+    docked: outcome.docked ?? false,
     readout: outcome.readout,
   };
   const history = [...state.history, entry].slice(-20);
+
+  let objects = state.objects ?? [];
+  if (outcome.success && mission.deploys) {
+    const { kind, name } = mission.deploys;
+    const id = nextObjectId(objects, kind);
+    const { periapsis, apoapsis } = objectOrbitFrom(outcome);
+    // A dock mission's outcome carries the docked-to target's id in
+    // orbital.target.id (ARCHITECTURE.md's Outcome shape); every other
+    // deploying mission (satellite, core) never sets outcome.docked, so
+    // dockedTo stays null — a freshly deployed core/satellite is not
+    // docked to anything.
+    const dockedTo = outcome.docked ? (outcome.orbital?.target?.id ?? null) : null;
+    objects = [
+      ...objects,
+      {
+        id,
+        kind,
+        name,
+        periapsis,
+        apoapsis,
+        phase: phaseFor(id),
+        dockedTo,
+        launchedAt: { tier, launch: launches[tier] },
+      },
+    ];
+  }
 
   return {
     ...state,
     launches,
     best,
     history,
+    objects,
     draws: state.draws + draws,
   };
 }
@@ -131,12 +295,19 @@ export function advanceTier(state) {
 // second parameter `missions` without pinning down which shape the caller
 // passes, so both are supported.
 //
-// The requirement shape decides which `best` metric it's checked against
-// (ARCHITECTURE.md: "tier 1 on maxAltitude and tier 2 on bestPeriapsis"):
-// an `altitude` requirement reads best.maxAltitude, an `orbit.periapsis`
-// requirement reads best.bestPeriapsis, and a `downrange` requirement (not
-// used by any tierGoal yet, but part of the same three-shape mission
-// requirement union — see js/data/missions.js) reads best.maxDownrange.
+// The requirement shape decides which `best` metric (or, for `dock`,
+// `state.objects`) it's checked against (ARCHITECTURE.md: "tier 1 on
+// maxAltitude and tier 2 on bestPeriapsis"; phase 2: "tierGoalMet handles
+// { dock } (any object with dockedTo set) and { rendezvous }
+// (bestClosestApproach <= within)"): an `altitude` requirement reads
+// best.maxAltitude, an `orbit.periapsis` requirement reads
+// best.bestPeriapsis, a `downrange` requirement (not used by any tierGoal
+// yet, but part of the same requirement union — see js/data/missions.js)
+// reads best.maxDownrange, a `rendezvous.within` requirement reads
+// best.bestClosestApproach, and a `dock` requirement scans state.objects
+// directly rather than best.docked (a boolean can't say WHICH object got
+// docked, but the objects array can, so that's the source of truth here —
+// best.docked stays a cheap "has this ever happened" flag for the UI/HUD).
 export function tierGoalMet(state, missions) {
   const goals = missions.tierGoals ?? missions;
   const goal = goals[state.tier];
@@ -151,6 +322,13 @@ export function tierGoalMet(state, missions) {
   }
   if (req.downrange !== undefined) {
     return (state.best.maxDownrange ?? 0) >= req.downrange;
+  }
+  if (req.rendezvous !== undefined) {
+    const best = state.best.bestClosestApproach;
+    return best !== null && best !== undefined && best <= req.rendezvous.within;
+  }
+  if (req.dock !== undefined) {
+    return (state.objects ?? []).some((obj) => obj.dockedTo != null);
   }
   return false;
 }

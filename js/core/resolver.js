@@ -29,11 +29,24 @@
 // R * atan2(x, y + R), not the straight-line x.
 
 import { G0, stageDeltaV, stackMassAbove } from './vehicle.js';
+import {
+  MU as ORBIT_MU,
+  R as ORBIT_R,
+  elementsFrom,
+  velocityAt,
+  hohmann,
+  transferDeltaV,
+  phasingDeltaV,
+} from './orbit.js';
 
-/** Planet radius, m. Earth-like and unnamed (DESIGN.md: real physics, fictional setting). */
-export const R_EARTH = 6.371e6;
+/**
+ * Planet radius, m. Earth-like and unnamed (DESIGN.md: real physics, fictional
+ * setting). Defined in js/core/orbit.js and re-exported here so the simulated
+ * ascent and the analytic orbital phase cannot be flying around two planets.
+ */
+export const R_EARTH = ORBIT_R;
 /** Standard gravitational parameter, m^3/s^2: mu = g0 * R^2. */
-export const MU = G0 * R_EARTH * R_EARTH;
+export const MU = ORBIT_MU;
 /** Sea-level density, kg/m^3, for the exponential atmosphere. */
 export const RHO0 = 1.225;
 /** Atmospheric scale height, m: rho(h) = RHO0 * exp(-h / SCALE_HEIGHT). */
@@ -106,6 +119,47 @@ export const ORBIT_CONFIRM_COAST = 30;
 // vertical by 1 km and horizontal by 60 km, which pays drag and leaves a weak
 // vehicle with too low an apogee. Exported so js/data and tools/balance.mjs
 // can search the window without hard-coding it.
+// --- Orbital phase constants (ARCHITECTURE.md, phase 2) ---------------------
+// Tier 3 is resolved analytically after insertion: a sequence of burns the
+// vehicle can or cannot perform. These are the numbers that sequence is priced
+// and judged against; exported so js/data, js/ui and tools/balance.mjs read the
+// same figures the resolver uses.
+
+/**
+ * Closest approach a rendezvous reaches, in metres, indexed by `vehicle.nav`
+ * (0 = no navigation, 3 = docking sensors). Halved when the vehicle has `rcs`.
+ * This is the whole reason the guidance branch exists in tier 3: nothing else
+ * moves this number.
+ */
+export const NAV_APPROACH = [50000, 5000, 500, 50];
+
+/** Range (m) within which a docking attempt is possible at all. */
+export const DOCK_RANGE = 100;
+
+/** Probability a docking attempt succeeds without fine thrusters. */
+export const DOCK_RELIABILITY = 0.9;
+/** Probability a docking attempt succeeds with `rcs`. */
+export const DOCK_RELIABILITY_RCS = 0.98;
+/** Ceiling on the docking roll, however much `dockBonus` the tree buys. */
+export const DOCK_RELIABILITY_MAX = 0.99;
+
+/**
+ * Phase error (degrees) small enough that no phasing burn is made at all. The
+ * error is still charged to the approach (see NAV_APPROACH's `1 + |err| / 30`
+ * term), so a tolerable window is not a free one.
+ */
+export const PHASE_TOLERANCE_DEG = 5;
+
+/**
+ * Delta-v allowance for the final approach, m/s.
+ *
+ * ARCHITECTURE.md quotes "approach allowance (50 m/s)" as part of
+ * `deltaVRequired` for a rendezvous but does not price the approach step
+ * itself; charging the same 50 m/s for the burn keeps the two consistent — the
+ * budget a mission is quoted against is exactly the budget the sequence spends.
+ */
+export const APPROACH_DV = 50;
+
 /** Altitude (m) at which a `turn: 0` program starts to pitch over. */
 export const TURN_START_LAZY = 8000;
 /** Altitude (m) at which a `turn: 1` program starts to pitch over. */
@@ -224,13 +278,31 @@ export function orbitElements(r, v) {
   };
 }
 
-/** Which of the three requirement shapes a mission carries. */
+/** Which requirement shape a mission carries (phase 0, 1 and 2). */
 function requirementKind(requirement) {
   if (!requirement) return null;
   if (typeof requirement.altitude === 'number') return 'altitude';
   if (typeof requirement.downrange === 'number') return 'downrange';
   if (requirement.orbit && typeof requirement.orbit.periapsis === 'number') return 'orbit';
+  if (requirement.rendezvous && typeof requirement.rendezvous.within === 'number') return 'rendezvous';
+  if (requirement.dock) return 'dock';
   return null;
+}
+
+/** The two shapes that resolve an orbital phase after insertion (tier 3). */
+function needsTarget(kind) {
+  return kind === 'rendezvous' || kind === 'dock';
+}
+
+/**
+ * Delta-v to match a target's orbit from a circular orbit at the target's own
+ * periapsis — the orbit the tier 2 requirement in `requiredDeltaV` pays for.
+ * Zero for a circular target, which is the common case.
+ */
+function matchAllowance(target) {
+  const rp = R_EARTH + target.periapsis;
+  const ra = R_EARTH + target.apoapsis;
+  return transferDeltaV(rp, rp, rp, ra);
 }
 
 /**
@@ -252,11 +324,31 @@ function requirementKind(requirement) {
  * - orbit:     sqrt(mu / (R + peri)) * (1 + ORBIT_LOSS_ALLOWANCE)
  *     circular velocity at the required periapsis, plus the larger orbital
  *     loss allowance.
+ * - rendezvous / dock (phase 2): the orbit requirement to the TARGET's
+ *     periapsis, plus the orbital phase's own budget —
+ *       matchAllowance(target)      matching the target's shape from there
+ *     + phasingDeltaV(0) = 0        a perfect launch window costs nothing
+ *     + APPROACH_DV                 the final approach
+ *     The target is therefore needed to quote the number, and is passed as the
+ *     optional second argument. WITHOUT it (a shop or a balance tool pricing a
+ *     template with no object in orbit yet) the maneuver terms are unknowable,
+ *     so the plain tier 2 orbit requirement is returned instead — quoted at
+ *     ORBIT_MIN_ALT, the lowest orbit that counts as one.
+ *
+ * @param {object} mission
+ * @param {object} [target] the object being flown to: { periapsis, apoapsis }
+ * @returns {number} m/s
  */
-export function requiredDeltaV(mission) {
+export function requiredDeltaV(mission, target = null) {
   const req = mission?.requirement;
   if (!req) return 0;
   if (typeof req.deltaV === 'number') return req.deltaV;
+  if (needsTarget(requirementKind(req))) {
+    const peri = target && Number.isFinite(target.periapsis) ? target.periapsis : ORBIT_MIN_ALT;
+    const ascent = Math.sqrt(MU / (R_EARTH + peri)) * (1 + ORBIT_LOSS_ALLOWANCE);
+    if (!target || !Number.isFinite(target.apoapsis)) return ascent;
+    return ascent + matchAllowance(target) + phasingDeltaV(0) + APPROACH_DV;
+  }
   if (typeof req.altitude === 'number' && req.altitude > 0) {
     return Math.sqrt(2 * G0 * req.altitude) * (1 + LOSS_ALLOWANCE);
   }
@@ -294,8 +386,45 @@ function failureSentence(failure) {
     ? 'ignition failure'
     : failure.kind === 'separation'
       ? 'separation failure'
-      : 'engine failure';
+      : failure.kind === 'restart'
+        ? 'restart failure'
+        : 'engine failure';
   return `Stage ${failure.stage} ${noun} at T+${Math.round(failure.t)}s.`;
+}
+
+/**
+ * "500 m" / "3.2 km" / "14 km" — a separation between two spacecraft, which
+ * spans four orders of magnitude across the tier (50 km down to 25 m), so it
+ * keeps a decimal where one carries information and drops it where it does not.
+ */
+function formatRange(m) {
+  if (!Number.isFinite(m)) return 'unknown';
+  if (m < 1000) return `${Math.round(m)} m`;
+  if (m < 10000) return `${(m / 1000).toFixed(1)} km`;
+  return `${Math.round(m / 1000)} km`;
+}
+
+/**
+ * Phase error, degrees, in (-180, 180].
+ *
+ * SIGN CONVENTION, used by the outcome, the readouts and the result screen:
+ * `phaseErrorDeg = wrapDeg((loadout.window - target.phase) * 360)`, so it is
+ * the vehicle's own orbital phase at insertion MINUS the target's.
+ *
+ *   positive -> the vehicle is inserted AHEAD of the target by that angle
+ *   negative -> the vehicle is BEHIND it, i.e. the target is ahead
+ *
+ * Example (the one the tests pin): window 0.9 against a target at phase 0.1 is
+ * (0.9 - 0.1) * 360 = 288 degrees, which wraps to -72: the vehicle is 72
+ * degrees behind the target, and the result screen reads "Target was 72 deg
+ * ahead". Only the magnitude is ever charged for (phasing cost, approach
+ * degradation); the sign exists so the UI can say which way round they are.
+ */
+function wrapDeg(deg) {
+  let d = deg % 360;
+  if (d <= -180) d += 360;
+  if (d > 180) d -= 360;
+  return d;
 }
 
 /** "Orbit: 112 × 340 km." — periapsis first, the way a launch report reads. */
@@ -331,16 +460,312 @@ function raisePeriapsisDeltaV(apo, fromPeri, toPeri) {
 }
 
 /**
+ * Resolve the orbital phase: the analytic sequence of burns that turns an
+ * insertion into a rendezvous, and a rendezvous into a docking.
+ *
+ * Nothing here is simulated — nothing is piloted, so there is nothing to fly.
+ * The sequence is five steps (ARCHITECTURE.md, phase 2), each of which the
+ * vehicle can afford or cannot:
+ *
+ *   1. budget    the delta-v left in the final stage after insertion cutoff
+ *   2. match     transferDeltaV to the target's orbit; 2 restarts, at +P/2, +P
+ *   3. phase     phasingDeltaV(|phase error|); 1 restart covering the pair of
+ *                burns at +1.5P and +2.5P, and free below PHASE_TOLERANCE_DEG
+ *   4. approach  NAV_APPROACH[nav] * (1 + |err|/30), halved by rcs; 1 restart
+ *                (none with rcs), at +3P
+ *   5. dock      dock missions only: needs a docking adapter and DOCK_RANGE,
+ *                then a reliability roll, at +3P + 600 s
+ *
+ * All times are relative to the achieved orbit's period P, so the map view can
+ * play the sequence back at a fixed rate.
+ *
+ * STOPPING. The sequence stops at the first step it cannot afford (restarts or
+ * delta-v) or that fails a roll, and `closestApproach` is the separation at
+ * that point:
+ *   - stopped in the match step: the gap in MEAN altitude between the two
+ *     orbits, plus the phasing arc |err|/360 * 2 pi * a on the vehicle's own
+ *     orbit — the two objects are neither co-orbital nor co-located;
+ *   - stopped after the match, before the approach completes: the phasing arc
+ *     alone. The arc is always quoted from the ORIGINAL phase error, because a
+ *     phasing burn does not null the error — it is the approach that closes
+ *     the range, and the residual error is what degrades it (the `1 + |err|/30`
+ *     term above);
+ *   - approach completed: the computed approach range.
+ *
+ * A separation reached WITHOUT the approach burn is floored at NAV_APPROACH[0]
+ * (50 km, the no-navigation bracket). Without that floor a vehicle launched
+ * into a perfect window and stopped for want of a restart would report a
+ * closest approach of exactly 0 — its phasing arc — and pass a rendezvous it
+ * never flew. The approach burn is what closes a range; before it, "the same
+ * place on the same orbit" means to within the widest bracket the table knows.
+ *
+ * RNG DRAW ORDER. The ascent's draw order is untouched (ARCHITECTURE.md: it is
+ * the save's replay contract), and the orbital phase draws only after every
+ * ascent draw has been made. Within it: one draw per RESTART CONSUMED, in burn
+ * order — match burn 1, match burn 2, the phasing pair (one draw for both), the
+ * approach (none when the vehicle has `rcs`) — followed, on a dock mission that
+ * reaches step 5, by exactly one draw for the docking roll. A step that is
+ * never reached, is free, or cannot be afforded draws nothing.
+ *
+ * @param {object} vehicle
+ * @param {object} target    { id, name, periapsis, apoapsis, phase }
+ * @param {object} insertion { t, periapsis, apoapsis } — the achieved orbit
+ * @param {number} dvAvailable m/s left in the final stage
+ * @param {number} phaseErrorDeg (-180, 180]; see wrapDeg for the sign
+ * @param {object} rng
+ * @param {boolean} wantsDock
+ * @returns {{ orbital: object, events: object[], failure: object|null,
+ *             readout: string, shortBy: number }}
+ */
+function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseErrorDeg, rng, wantsDock) {
+  const stages = vehicle?.stages ?? [];
+  const finalIndex = stages.length - 1;
+  const finalStage = stages[finalIndex];
+  const stageNo = finalIndex + 1;
+  const reliability = finalStage?.reliability ?? 0;
+
+  const restartsAvailable = Math.max(0, Math.floor(vehicle?.restarts ?? 0));
+  const nav = clamp(Math.floor(vehicle?.nav ?? 0), 0, NAV_APPROACH.length - 1);
+  const hasDockingAdapter = (vehicle?.docking ?? 0) >= 1;
+  const rcs = (vehicle?.rcs ?? 0) >= 1;
+  const dockBonus = Number(vehicle?.dockBonus) || 0;
+
+  const rpV = R_EARTH + insertion.periapsis;
+  const raV = R_EARTH + insertion.apoapsis;
+  const rpT = R_EARTH + target.periapsis;
+  const raT = R_EARTH + target.apoapsis;
+  const vehicleOrbit = elementsFrom(rpV, raV);
+  const targetOrbit = elementsFrom(rpT, raT);
+  const period = vehicleOrbit.period;
+  const t0 = insertion.t;
+
+  const absErr = Math.abs(phaseErrorDeg);
+  const phasingArc = (absErr / 360) * 2 * Math.PI * vehicleOrbit.a;
+  const meanAltGap = Math.abs(
+    (insertion.periapsis + insertion.apoapsis) / 2 - (target.periapsis + target.apoapsis) / 2,
+  );
+
+  const targetElements = { periapsis: target.periapsis, apoapsis: target.apoapsis };
+  // The transfer ellipse of the match: it spans the two semi-major axes, which
+  // is the orbit transferDeltaV prices the size change against.
+  const transferElements = {
+    periapsis: Math.min(vehicleOrbit.a, targetOrbit.a) - R_EARTH,
+    apoapsis: Math.max(vehicleOrbit.a, targetOrbit.a) - R_EARTH,
+  };
+  const insertionElements = { periapsis: insertion.periapsis, apoapsis: insertion.apoapsis };
+
+  const dvMatch = transferDeltaV(rpV, raV, rpT, raT);
+  const dvPhase = absErr > PHASE_TOLERANCE_DEG ? phasingDeltaV(absErr) : 0;
+
+  let dvLeft = dvAvailable;
+  let dvUsed = 0;
+  let restartsLeft = restartsAvailable;
+  // Nothing is closer than the no-navigation bracket until an approach is
+  // actually flown; see the note on the floor above.
+  const unapproached = (separation) => Math.max(separation, NAV_APPROACH[0]);
+  let closestApproach = unapproached(meanAltGap + phasingArc);
+  let docked = false;
+  let stoppedAt = null;
+  let stoppedStep = null;
+  let failure = null;
+  let shortBy = 0;
+  const burns = [];
+  const events = [];
+
+  /** Consume one restart, rolling against the final stage's reliability. */
+  const restartOk = (time) => {
+    restartsLeft -= 1;
+    if (rng.next() < reliability) return true;
+    failure = { t: time, stage: stageNo, kind: 'restart' };
+    stoppedAt = 'restart-failure';
+    events.push({
+      t: time, kind: 'restart-failure', text: failureSentence(failure), stage: stageNo,
+    });
+    return false;
+  };
+
+  const spend = (time, kindName, dv, elements, text) => {
+    dvLeft -= dv;
+    dvUsed += dv;
+    burns.push({ t: time, kind: kindName, dv, ok: true, elements });
+    events.push({ t: time, kind: 'burn', text });
+  };
+
+  const cannotAfford = (step, needed) => {
+    stoppedAt = 'deltaV';
+    stoppedStep = step;
+    shortBy = Math.max(0, needed - dvLeft);
+  };
+
+  // --- 2. Match ------------------------------------------------------------
+  const tMatch1 = t0 + period / 2;
+  const tMatch2 = t0 + period;
+  let matched = false;
+  if (restartsLeft < 2) {
+    stoppedAt = 'restarts';
+    stoppedStep = 'orbit match';
+  } else if (dvLeft < dvMatch) {
+    cannotAfford('orbit match', dvMatch + dvPhase + APPROACH_DV);
+  } else {
+    // The Hohmann leg does the size change; whatever transferDeltaV charges on
+    // top of it (the eccentricity mismatch) is paid on arrival, with burn 2.
+    const legs = hohmann(vehicleOrbit.a, targetOrbit.a);
+    const dv1 = Math.min(legs.dv1, dvMatch);
+    const dv2 = dvMatch - dv1;
+    if (restartOk(tMatch1)) {
+      spend(tMatch1, 'match', dv1, transferElements,
+        `Orbit match burn 1: ${Math.round(dv1)} m/s.`);
+      if (restartOk(tMatch2)) {
+        spend(tMatch2, 'match', dv2, targetElements,
+          `Orbit match burn 2: ${Math.round(dv2)} m/s.`);
+        matched = true;
+      } else {
+        burns.push({ t: tMatch2, kind: 'match', dv: 0, ok: false, elements: transferElements });
+      }
+    } else {
+      burns.push({ t: tMatch1, kind: 'match', dv: 0, ok: false, elements: insertionElements });
+    }
+  }
+
+  // --- 3. Phase ------------------------------------------------------------
+  const tPhase1 = t0 + 1.5 * period;
+  const tPhase2 = t0 + 2.5 * period;
+  let phased = false;
+  if (matched) {
+    closestApproach = unapproached(phasingArc);
+    if (dvPhase <= 0) {
+      phased = true;                      // inside the window: nothing to do
+    } else if (restartsLeft < 1) {
+      stoppedAt = 'restarts';
+      stoppedStep = 'phasing';
+    } else if (dvLeft < dvPhase) {
+      cannotAfford('phasing', dvPhase + APPROACH_DV);
+    } else if (restartOk(tPhase1)) {
+      // A phasing orbit differs from the target's by a small semi-major axis
+      // change: da = 2 a^2 v dv / mu, and a single burn moves the FAR apsis by
+      // 2 da. Ahead of the target (positive error) the vehicle climbs to a
+      // slower orbit and lets it catch up; behind, it drops to a faster one.
+      const half = dvPhase / 2;
+      const vCirc = velocityAt(targetOrbit.a, targetOrbit.a);
+      const da = (2 * targetOrbit.a * targetOrbit.a * vCirc * half) / MU;
+      const sign = phaseErrorDeg >= 0 ? 1 : -1;
+      const phasingElements = {
+        periapsis: target.periapsis,
+        apoapsis: target.apoapsis + sign * 2 * da,
+      };
+      spend(tPhase1, 'phase', half, phasingElements,
+        `Phasing burn 1: ${Math.round(half)} m/s.`);
+      // One restart covers the pair: the second burn is the same relight
+      // window, so it costs no further restart and no further roll.
+      spend(tPhase2, 'phase', half, targetElements,
+        `Phasing burn 2: ${Math.round(half)} m/s.`);
+      phased = true;
+    }
+  }
+
+  // --- 4. Approach ---------------------------------------------------------
+  const tApproach = t0 + 3 * period;
+  let approached = false;
+  if (phased) {
+    if (!rcs && restartsLeft < 1) {
+      stoppedAt = 'restarts';
+      stoppedStep = 'approach';
+    } else if (dvLeft < APPROACH_DV) {
+      cannotAfford('approach', APPROACH_DV);
+    } else if (rcs || restartOk(tApproach)) {
+      closestApproach = (NAV_APPROACH[nav] * (1 + absErr / 30)) / (rcs ? 2 : 1);
+      spend(tApproach, 'approach', APPROACH_DV, targetElements,
+        `Approach burn: ${Math.round(APPROACH_DV)} m/s.`);
+      events.push({
+        t: tApproach, kind: 'approach', text: `Closest approach ${formatRange(closestApproach)}.`,
+      });
+      approached = true;
+    } else {
+      burns.push({ t: tApproach, kind: 'approach', dv: 0, ok: false, elements: targetElements });
+    }
+  }
+
+  // --- 5. Dock -------------------------------------------------------------
+  const tDock = t0 + 3 * period + 600;
+  if (approached && wantsDock && hasDockingAdapter && closestApproach <= DOCK_RANGE) {
+    const threshold = Math.min(
+      DOCK_RELIABILITY_MAX,
+      (rcs ? DOCK_RELIABILITY_RCS : DOCK_RELIABILITY) + dockBonus,
+    );
+    const roll = rng.next();
+    docked = roll < threshold;
+    burns.push({ t: tDock, kind: 'dock', dv: 0, ok: docked, elements: targetElements });
+    if (docked) {
+      events.push({ t: tDock, kind: 'dock', text: 'Docked.' });
+    } else {
+      stoppedAt = 'dock-failure';
+      // Flavour telemetry, derived from the roll that was already drawn — no
+      // extra draw, so the sequence's draw count does not depend on the text.
+      events.push({
+        t: tDock,
+        kind: 'dock-failure',
+        text: `Docking aborted: ${(0.5 + roll).toFixed(1)} m/s closing rate.`,
+      });
+    }
+  }
+
+  let readout;
+  if (docked) {
+    readout = `Docked to ${target.name ?? target.id ?? 'the target'}.`;
+  } else if (stoppedAt === 'dock-failure') {
+    readout = 'Docking aborted.';
+  } else if (stoppedAt === 'restarts') {
+    readout = `No restart available for the ${stoppedStep} burn.`;
+  } else if (stoppedAt === 'restart-failure') {
+    readout = failureSentence(failure);
+  } else if (stoppedAt === 'deltaV') {
+    readout = `Closest approach ${formatRange(closestApproach)}. Short by ${Math.round(shortBy)} m/s.`;
+  } else {
+    readout = `Closest approach ${formatRange(closestApproach)}.`;
+  }
+
+  return {
+    orbital: {
+      target: {
+        id: target.id ?? null,
+        periapsis: target.periapsis,
+        apoapsis: target.apoapsis,
+        phase: target.phase ?? 0,
+      },
+      dvAvailable,
+      dvUsed,
+      phaseErrorDeg,
+      burns,
+      closestApproach,
+      docked,
+      stoppedAt,
+    },
+    events,
+    failure,
+    readout,
+    shortBy,
+  };
+}
+
+/**
  * Simulate a launch.
  *
- * @param {object} vehicle  { stages, payloadMass, dragArea, dragCoeff, guidance }
- * @param {object} mission  requirement is { altitude } | { downrange } | { orbit: { periapsis } }
- * @param {object} loadout  { fuelFraction: 0.5..1.0, turn: 0..1 }
+ * @param {object} vehicle  { stages, payloadMass, dragArea, dragCoeff, guidance,
+ *                            restarts, nav, docking, rcs, dockBonus }
+ * @param {object} mission  requirement is { altitude } | { downrange }
+ *                          | { orbit: { periapsis } }
+ *                          | { rendezvous: { target, within } } | { dock: { target } }
+ * @param {object} loadout  { fuelFraction: 0.5..1.0, turn: 0..1, window: 0..1 }
  * @param {object} rng      from makeRng(seed)
  * @param {object} [opts]
  * @param {number} [opts.dt=0.1]          integrator step, s
  * @param {number} [opts.sampleEvery=0.5] renderer sample spacing, s
  * @param {number} [opts.maxTime=2000]    hard cap on simulated time, s
+ * @param {object} [opts.target]          the object in orbit a rendezvous/dock
+ *        mission is flown to, from state.findTarget: { id, name, periapsis,
+ *        apoapsis, phase }. REQUIRED for those two shapes — resolving one
+ *        without it throws, because every number the orbital phase produces is
+ *        relative to it.
  * @param {(t: number, alt: number) => number} [opts.pitch]
  *        angle from local vertical, radians. Defaults to
  *        `pitchProgram(vehicle, loadout)`; an explicit function overrides it,
@@ -361,10 +786,37 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
 
   const requirement = mission?.requirement;
   const kind = requirementKind(requirement);
+  const orbital = needsTarget(kind);
+
+  // ---- The target (tier 3) ------------------------------------------------
+  const target = orbital ? (opts.target ?? null) : null;
+  if (orbital) {
+    if (!target) {
+      throw new Error(
+        `resolveLaunch: mission '${mission?.id ?? '?'}' is a ${kind} mission and needs opts.target`,
+      );
+    }
+    if (!Number.isFinite(target.periapsis) || !Number.isFinite(target.apoapsis)) {
+      throw new Error('resolveLaunch: opts.target needs numeric periapsis and apoapsis');
+    }
+  }
+
   const requirementAlt = kind === 'altitude' ? requirement.altitude : null;
   const requirementRange = kind === 'downrange' ? requirement.downrange : null;
-  const requirementPeri = kind === 'orbit' ? requirement.orbit.periapsis : null;
-  const deltaVRequired = requiredDeltaV(mission);
+  // A rendezvous is flown to the target's own periapsis: that is the orbit the
+  // ascent has to reach before anything orbital can happen, and it is what the
+  // tier 2 miss below is judged against when the flight never gets there.
+  const requirementPeri = kind === 'orbit'
+    ? requirement.orbit.periapsis
+    : (orbital ? target.periapsis : null);
+  const deltaVRequired = requiredDeltaV(mission, target);
+
+  // The ascent's final stage shuts down as soon as it has the orbit it came
+  // for, keeping whatever propellant is left for the orbital phase. That is
+  // what makes the tree's top-stage propellant reserve worth buying — and it
+  // is scoped to target missions, so tier 1 and tier 2 burn to depletion
+  // exactly as they always have.
+  const cutoffAlt = orbital ? Math.max(target.periapsis, ORBIT_MIN_ALT) : null;
 
   const timeline = [];
   const samples = [];
@@ -409,6 +861,10 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       readout,
       timeline,
       samples,
+      insertion: null,
+      orbital: null,
+      closestApproach: null,
+      docked: false,
     });
   }
 
@@ -441,6 +897,9 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   let bestElements = null;     // best (highest-periapsis) orbit after the final burnout
   let impacted = false;
   let ended = false;
+  let insertion = null;        // { t, periapsis, apoapsis } once orbit is confirmed
+  let reserveProp = 0;         // propellant left in the final stage at its shutdown
+  let reserveMass = 0;         // total mass at that moment (stage + payload)
 
   const stageNo = () => stageIndex + 1;
 
@@ -514,6 +973,31 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     const burnDuration = propRemaining / mdot;
     burnRollAt = t + rng.next() * burnDuration;
     burnRollPending = true;
+  };
+
+  /**
+   * Insertion cutoff: the final stage shuts down mid-burn because the orbit it
+   * was aiming at is achieved (target missions only, see `cutoffAlt`).
+   *
+   * Everything still in the tank becomes the orbital phase's budget. The
+   * partial burn is credited the same way a mid-burn failure is — Tsiolkovsky
+   * over the mass actually spent — and the pending mid-burn reliability roll is
+   * cancelled, because the burn is over. No rng draw is made or skipped by
+   * this: the roll's fraction was drawn at ignition, and the roll itself simply
+   * never comes due, exactly as for a stage that burns out before its roll.
+   */
+  const cutoff = () => {
+    const stage = stages[stageIndex];
+    const above = stackMassAbove(vehicle, stageIndex, fuelFraction);
+    const mStart = above + stage.dryMass + stage.propMass * fuelFraction;
+    deltaVAchieved += stage.isp * G0 * Math.log(mStart / mass);
+    reserveProp = propRemaining;
+    reserveMass = mass;
+    thrusting = false;
+    thrustDone = true;
+    burnRollPending = false;
+    burnRollAt = Infinity;
+    event(t, 'burnout', `Stage ${stageNo()} cutoff.`, { stage: stageNo(), alt: altOf(x, y) });
   };
 
   /** Burnout of the current stage, then separation + next ignition. */
@@ -662,6 +1146,14 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       event(t, 'goal', `Passed ${formatAltitude(requirementRange)} downrange.`, { alt });
     }
 
+    // Insertion cutoff: on a target mission the last stage stops the instant
+    // the orbit is good enough, so the remainder of the tank is the orbital
+    // phase's delta-v budget instead of a higher apoapsis nobody asked for.
+    if (thrusting && cutoffAlt !== null && stageIndex === stages.length - 1
+      && elementsNow().periapsis >= cutoffAlt) {
+      cutoff();
+    }
+
     // Orbit is only meaningful once no further burn is coming: mid-ascent the
     // "current orbit" is a number that changes every step and means nothing.
     if (thrustDone) {
@@ -670,6 +1162,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       if (orbitConfirmedAt === null && el.periapsis >= ORBIT_MIN_ALT) {
         orbitFlag = true;
         orbitConfirmedAt = t;
+        insertion = { t, periapsis: el.periapsis, apoapsis: el.apoapsis };
         event(t, 'orbit', orbitSentence(el), { alt });
       }
     }
@@ -750,6 +1243,46 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   const periapsis = leftPad && endElements ? endElements.periapsis : null;
   const apoapsis = leftPad && endElements ? endElements.apoapsis : null;
 
+  // ---- The orbital phase (tier 3) -----------------------------------------
+  // It runs only on a target mission whose ascent actually got somewhere it can
+  // maneuver from: a confirmed orbit that is BOUND. An unbound trajectory can
+  // pass the ORBIT_MIN_ALT periapsis test (it is on its way out, not round),
+  // and it has no period, so there is no sequence to schedule on it — that
+  // falls through to the tier 2 miss below with closestApproach null, as a
+  // flight that never reached orbit does.
+  let orbitalResult = null;
+  let closestApproach = null;
+  let docked = false;
+  let endT = t;
+  if (orbital && insertion !== null && Number.isFinite(insertion.apoapsis)) {
+    // The budget: Tsiolkovsky on what the final stage kept back at cutoff.
+    const finalStage = stages[stages.length - 1];
+    const dvAvailable = reserveProp > 0 && reserveMass > reserveProp
+      ? finalStage.isp * G0 * Math.log(reserveMass / (reserveMass - reserveProp))
+      : 0;
+    const windowValue = clamp(Number(loadout?.window) || 0, 0, 1);
+    const phaseErrorDeg = wrapDeg((windowValue - (Number(target.phase) || 0)) * 360);
+
+    orbitalResult = resolveOrbitalSequence(
+      vehicle, target, insertion, dvAvailable, phaseErrorDeg, rng, kind === 'dock',
+    );
+    closestApproach = orbitalResult.orbital.closestApproach;
+    docked = orbitalResult.orbital.docked;
+
+    event(insertion.t, 'insertion',
+      `Orbit insertion: ${formatElement(insertion.periapsis)} × ${formatElement(insertion.apoapsis)}.`,
+      { alt: insertion.periapsis });
+    for (const e of orbitalResult.events) {
+      const { t: et, kind: ek, text, ...extra } = e;
+      event(et, ek, text, extra);
+      if (et > endT) endT = et;
+    }
+    // The outcome carries ONE failure, and it is the first one: an ascent
+    // failure that still made orbit is not overwritten by a later restart
+    // failure (the orbital phase's own stop is reported by `stoppedAt`).
+    if (failure === null && orbitalResult.failure) failure = orbitalResult.failure;
+  }
+
   // ---- Outcome ------------------------------------------------------------
   let success;
   if (kind === 'altitude') {
@@ -760,6 +1293,10 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     success = maxDownrange >= requirementRange || orbitFlag;
   } else if (kind === 'orbit') {
     success = periapsis !== null && periapsis >= requirementPeri;
+  } else if (kind === 'rendezvous') {
+    success = closestApproach !== null && closestApproach <= requirement.rendezvous.within;
+  } else if (kind === 'dock') {
+    success = docked;
   } else {
     success = deltaVAchieved >= deltaVRequired;
   }
@@ -771,8 +1308,17 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   // a run that visibly fell short can report "Short by 0 m/s", which is both
   // nonsense on the result screen and a contradiction of ARCHITECTURE.md's own
   // rule that shortBy is > 0 whenever the run did not succeed.
+  //
+  // The orbital phase is judged on its own terms and never floored: a tier 3
+  // miss is usually not a delta-v shortfall at all (ARCHITECTURE.md — a
+  // restarts stop and an approach that is simply too wide both report 0, and
+  // the readout says restarts or navigation instead), so only a stop for want
+  // of delta-v reports a number, and it is the delta-v the sequence still
+  // needed.
   let shortBy = success ? 0 : Math.max(0, deltaVRequired - deltaVAchieved);
-  if (!success) {
+  if (orbitalResult) {
+    shortBy = success ? 0 : orbitalResult.shortBy;
+  } else if (!success) {
     let floorGap = 0;
     if (kind === 'altitude') {
       // Phase 0, unchanged: the ideal vertical coast gap between asked and reached.
@@ -785,7 +1331,10 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       //   sqrt(g0 d_req) - sqrt(g0 d_reached)
       floorGap = Math.sqrt(G0 * requirementRange)
         - Math.sqrt(G0 * Math.max(maxDownrange, 0));
-    } else if (kind === 'orbit') {
+    } else if (kind === 'orbit' || orbital) {
+      // A target mission that never got to orbit is short of one, and is judged
+      // exactly as a tier 2 orbit miss to the target's own periapsis.
+      //
       // Two ways to be short of an orbit; the honest number is the bigger:
       //  1. the burn that would raise periapsis to the requirement, made at
       //     the apoapsis actually reached (vis-viva, above);
@@ -810,7 +1359,11 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   let readout;
   if (failure && !success) {
     readout = failureSentence(failure);
-  } else if (kind === 'orbit') {
+  } else if (orbitalResult) {
+    // The orbital phase writes its own line: docked, closest approach, or the
+    // step it could not perform.
+    readout = orbitalResult.readout;
+  } else if (kind === 'orbit' || orbital) {
     if (success) {
       // A failure that still made orbit is worth saying — it points the result
       // screen at the reliability branch even though the contract paid out.
@@ -837,7 +1390,9 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     readout = `Reached ${formatAltitude(maxAltitude)}. Short by ${Math.round(shortBy)} m/s.`;
   }
 
-  event(t, 'end', readout, { alt: altOf(x, y) });
+  // The end lands after the last orbital event, so the ticker's final line is
+  // still its final line once the timeline is sorted.
+  event(endT, 'end', readout, { alt: altOf(x, y) });
 
   return finish({
     success,
@@ -854,5 +1409,9 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     readout,
     timeline,
     samples,
+    insertion,
+    orbital: orbitalResult ? orbitalResult.orbital : null,
+    closestApproach,
+    docked,
   });
 }

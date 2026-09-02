@@ -590,4 +590,200 @@ export const nodes = [
     requires: ['rel-5', 'struct-6'],
     effects: [{ stat: 'stages.2.reliability', op: 'mul', value: 1.2 }],
   },
+
+  // ---------------------------------------------------------------------
+  // TIER 3 — orbital maneuvering. See ARCHITECTURE.md, "Phase 2 -- tier 3,
+  // orbital maneuvering".
+  //
+  // PROVISIONAL. Unlike tier 1/2 above, these 12 nodes are NOT yet balanced
+  // against the real resolver: js/core/resolver.js's orbital phase and
+  // js/core/orbit.js (the Kepler helpers it needs) are being written
+  // concurrently with this file, in the same build, by another module —
+  // there is no resolveLaunch that understands a rendezvous/dock
+  // requirement or reads restarts/nav/docking/rcs/dockBonus yet to run
+  // `node tools/balance.mjs` against. Costs below continue tier 2's scale
+  // by feel (tier 2's 13 nodes total 212 000 funds; tier 3's 12 total
+  // 377 000, a comparable per-node step up) and every sibling-tradeoff
+  // shape ARCHITECTURE.md calls for is present, but none of it is proven
+  // against real numbers. The balance pass is `tools/balance.mjs`'s TIER 3
+  // section (below) once the resolver lands; re-run it and adjust these
+  // costs/values then, the same way tier 1 and tier 2's numbers were
+  // walked from a first plausible pass to their current, resolver-verified
+  // ones (see both tiers' own BALANCING NOTES above).
+  //
+  // FOUR BRANCHES, twelve nodes:
+  //
+  //   propulsion (4): restartable upper stage, multi-restart, reaction
+  //     control, a propellant reserve on the top stage. The multi-restart /
+  //     reliability tradeoff below is the one ARCHITECTURE.md spells out
+  //     explicitly: prop-11 buys two more restarts (three total) at a 3%
+  //     reliability cost to the top stage, recoverable by also buying the
+  //     reliability branch's restart qualification (rel-7).
+  //   guidance (3): rendezvous radar, star tracker, docking sensors — a
+  //     straight chain raising `nav` from 1 to 3, off guide-1 (tier 2's
+  //     entry point, since a flight with no gravity-turn guidance at all
+  //     has no business attempting a rendezvous either).
+  //   structure (3): a docking adapter (`docking` set 1), a lighter top-
+  //     stage fairing (a small dry-mass trim, the branch's usual shape),
+  //     and struct-module — the station module itself. Its id is load-
+  //     bearing: js/data/missions.js's `dock` template gates on
+  //     `requiresNode: 'struct-module'` by this exact string, so the id
+  //     can't be renamed independently of that file. It carries no vehicle
+  //     effect (see its own comment below for why that's an honest choice,
+  //     not an oversight) — it gates a MISSION, not a stat.
+  //   reliability (2): restart qualification (recovers prop-11's cut) and
+  //     docking rehearsal (`dockBonus`, which ARCHITECTURE.md says the
+  //     resolver adds to the docking roll threshold, capped at 0.99 —
+  //     that capping is the resolver's job, not data's).
+  //
+  // Every tier 3 node requires at least one tier 2 (or tier 3) node, never
+  // a bare tier 1 one, matching the branch-top prerequisites tier 2's own
+  // nodes used to reach back into tier 1.
+  {
+    id: 'prop-10',
+    branch: 'propulsion',
+    level: 10,
+    tier: 3,
+    name: 'Restart igniter',
+    desc: 'The top stage can relight once after its first burn. Needed for any rendezvous or dock attempt — matching orbits and docking are separate burns.',
+    cost: { funds: 32000 },
+    requires: ['prop-9'],
+    effects: [{ stat: 'restarts', op: 'set', value: 1 }],
+  },
+  {
+    id: 'prop-11',
+    branch: 'propulsion',
+    level: 11,
+    tier: 3,
+    name: 'Multi-restart plumbing',
+    desc: '+2 more relights (3 total), at a cost: repeated hot restarts stress the ignition system, -3% top-stage reliability. Restart qualification (reliability branch) recovers it.',
+    cost: { funds: 45000 },
+    requires: ['prop-10'],
+    effects: [
+      { stat: 'restarts', op: 'add', value: 2 },
+      { stat: 'stages.2.reliability', op: 'mul', value: 0.97 },
+    ],
+  },
+  {
+    id: 'prop-12',
+    branch: 'propulsion',
+    level: 12,
+    tier: 3,
+    name: 'Reaction control thrusters',
+    desc: 'Small cold-gas thrusters for the final approach. Halves the closing distance a docking attempt needs and costs one fewer restart getting there.',
+    cost: { funds: 28000 },
+    requires: ['prop-10'],
+    effects: [{ stat: 'rcs', op: 'set', value: 1 }],
+  },
+  {
+    id: 'prop-13',
+    branch: 'propulsion',
+    level: 13,
+    tier: 3,
+    name: 'Top-stage propellant reserve',
+    desc: 'A held-back margin of propellant for the rendezvous burns, at the usual structure-branch cost: +15 kg propellant, +4 kg dry mass on the top stage.',
+    cost: { funds: 24000 },
+    requires: ['prop-10'],
+    effects: [
+      { stat: 'stages.2.propMass', op: 'add', value: 15 },
+      { stat: 'stages.2.dryMass', op: 'add', value: 4 },
+    ],
+  },
+
+  {
+    id: 'guide-3',
+    branch: 'guidance',
+    level: 3,
+    tier: 3,
+    name: 'Rendezvous radar',
+    desc: 'Coarse ranging to a target in orbit. Sets navigation quality to 1 — the closest approach a rendezvous attempt can manage without it is poor.',
+    cost: { funds: 26000 },
+    requires: ['guide-1'],
+    effects: [{ stat: 'nav', op: 'set', value: 1 }],
+  },
+  {
+    id: 'guide-4',
+    branch: 'guidance',
+    level: 4,
+    tier: 3,
+    name: 'Star tracker',
+    desc: 'Precise attitude reference. Navigation quality 2 — a materially closer approach than radar alone.',
+    cost: { funds: 34000 },
+    requires: ['guide-3'],
+    effects: [{ stat: 'nav', op: 'set', value: 2 }],
+  },
+  {
+    id: 'guide-5',
+    branch: 'guidance',
+    level: 5,
+    tier: 3,
+    name: 'Docking sensors',
+    desc: 'Millimetre-wave ranging for the final metres. Navigation quality 3 — the tight approach a dock attempt needs.',
+    cost: { funds: 40000 },
+    requires: ['guide-4'],
+    effects: [{ stat: 'nav', op: 'set', value: 3 }],
+  },
+
+  {
+    id: 'struct-9',
+    branch: 'structure',
+    level: 9,
+    tier: 3,
+    name: 'Docking adapter',
+    desc: 'A standard port on the top stage. Without it nothing can dock, no matter how close the approach.',
+    cost: { funds: 30000 },
+    requires: ['struct-8'],
+    effects: [{ stat: 'docking', op: 'set', value: 1 }],
+  },
+  {
+    id: 'struct-10',
+    branch: 'structure',
+    level: 10,
+    tier: 3,
+    name: 'Lightweight top-stage fairing',
+    desc: '-3 kg top-stage dry mass. The usual small structure-branch trim, not a required purchase.',
+    cost: { funds: 20000 },
+    requires: ['struct-8'],
+    effects: [{ stat: 'stages.2.dryMass', op: 'add', value: -3 }],
+  },
+  {
+    id: 'struct-module',
+    branch: 'structure',
+    level: 11,
+    tier: 3,
+    name: 'Station module',
+    desc: "The hardware for the lab module contract — the module a successful dock attempt actually carries up and leaves docked. This purchase is what makes the `dock` mission offerable at all (js/data/missions.js's requiresNode); it is not something the LAUNCHING vehicle straps on, so it carries no vehicle effect (see the comment below).",
+    cost: { funds: 50000 },
+    requires: ['struct-9'],
+    // Honest placeholder, in the same spirit as tier 2's guide-2 doc
+    // comment: this node's whole job is to gate a MISSION template
+    // (js/data/missions.js's `dock`, via `requiresNode: 'struct-module'`),
+    // not to change how any vehicle flies. Giving it a made-up vehicle
+    // stat just to have an `effects` entry would be dishonest about what
+    // owning it actually does — an empty array says so plainly.
+    effects: [],
+  },
+
+  {
+    id: 'rel-7',
+    branch: 'reliability',
+    level: 7,
+    tier: 3,
+    name: 'Restart qualification',
+    desc: "Recovers the reliability multi-restart plumbing spends: +3.09% top-stage reliability (1 / 0.97), which cancels prop-11's -3% cut back out when both are owned.",
+    cost: { funds: 22000 },
+    requires: ['rel-6', 'prop-11'],
+    effects: [{ stat: 'stages.2.reliability', op: 'mul', value: 1 / 0.97 }],
+  },
+  {
+    id: 'rel-8',
+    branch: 'reliability',
+    level: 8,
+    tier: 3,
+    name: 'Docking rehearsal',
+    desc: 'Practice runs against a mock target raise the docking success roll. Adds to the resolver\'s docking reliability threshold (capped at 0.99).',
+    cost: { funds: 26000 },
+    requires: ['rel-7', 'struct-9'],
+    effects: [{ stat: 'dockBonus', op: 'add', value: 0.05 }],
+  },
 ];
