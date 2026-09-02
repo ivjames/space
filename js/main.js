@@ -156,7 +156,7 @@ function boot(initial) {
     // the loadout it holds, the last outcome). Tests only; no UI reads this.
     screens,
     // Tests only: credit funds so a smoke test can buy without grinding.
-    cheat: ({ funds = 0 } = {}) => { update(credit(state, { funds })); },
+    cheat: ({ funds = 0, reputation = 0 } = {}) => { update(credit(state, { funds, reputation })); },
   };
 }
 

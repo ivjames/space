@@ -13,7 +13,8 @@
  *   SMOKE_MAX_ITER    - max gameplay loops for tier 1 (default: 60)
  *   SMOKE_MAX_ITER_T2 - max gameplay loops for tier 2 (default: 120)
  *   SMOKE_MAX_ITER_T3 - max gameplay loops for tier 3 (default: 120)
- *   SMOKE_TURN        - gravity turn value to set on tier 2+ loadout (default: 0.45, ignored if no turn slider)
+ *   SMOKE_TURN        - gravity turn value to set on tier 2 loadout (default: 0.45, ignored if no turn slider)
+ *   SMOKE_TURN_T3     - gravity turn value for tier 3 loadouts (default: 0.05)
  *   SMOKE_CHEAT       - if set to 1, use window.__space.cheat and pick last contract (default: unset)
  */
 
@@ -35,6 +36,8 @@ const MAX_LOOPS_T1 = parseInt(process.env.SMOKE_MAX_ITER || '60', 10);
 const MAX_LOOPS_T2 = parseInt(process.env.SMOKE_MAX_ITER_T2 || '120', 10);
 const MAX_LOOPS_T3 = parseInt(process.env.SMOKE_MAX_ITER_T3 || '120', 10);
 const SMOKE_TURN = parseFloat(process.env.SMOKE_TURN || '0.45');
+// Tier 3 flights carry a heavier top stage; a lazier turn keeps periapsis up.
+const SMOKE_TURN_T3 = parseFloat(process.env.SMOKE_TURN_T3 || '0.05');
 const SMOKE_CHEAT = process.env.SMOKE_CHEAT === '1';
 const TIMEOUT = 10000; // 10 second timeout for selectors
 
@@ -228,51 +231,24 @@ async function runSmokeTest() {
         throw new Error('No contracts found on screen');
       }
 
-      // Choose contract based on cheat mode and tier 3 logic
+      // Choose a contract. In cheat mode, pick by id priority: the tier goal
+      // rung the current state can attempt, falling back down the ladder.
+      // Rows are matched by data-contract id, never by text.
       let contractIndex = 0;
       if (SMOKE_CHEAT && contracts.length > 1) {
-        // For tier 3 with cheat mode, check for core requirement in contracts
-        if (currentTier === 3) {
-          // Get current objects from state
-          const state = await page.evaluate(() => window.__space?.state);
-          const hasCore = state?.objects?.some(obj => obj.kind === 'core' && !obj.dockedTo);
-
-          if (!hasCore) {
-            // No core yet, need to choose wisely
-            let foundCoreOrValid = false;
-            // Look for contract mentioning "core"
-            for (let i = contracts.length - 1; i >= 0; i--) {
-              const text = await contracts[i].textContent();
-              if (text.toLowerCase().includes('core')) {
-                contractIndex = i;
-                foundCoreOrValid = true;
-                break;
-              }
-            }
-            // If no core contract found, check last row doesn't mention dock/rendezvous
-            if (!foundCoreOrValid) {
-              let chosen = false;
-              for (let i = contracts.length - 1; i >= 0; i--) {
-                const text = await contracts[i].textContent();
-                if (!text.toLowerCase().includes('dock') && !text.toLowerCase().includes('rendezvous')) {
-                  contractIndex = i;
-                  chosen = true;
-                  break;
-                }
-              }
-              if (!chosen) contractIndex = contracts.length - 1;
-            }
-            console.log(`Found ${contracts.length} contract(s), selecting (no core yet, cheat mode)...`);
-          } else {
-            // Core exists, can pick any contract including dock/rendezvous
-            contractIndex = contracts.length - 1;
-            console.log(`Found ${contracts.length} contract(s), selecting LAST (cheat mode, core exists)...`);
-          }
-        } else {
-          // Non-tier-3 cheat mode: just pick last
-          contractIndex = contracts.length - 1;
-          console.log(`Found ${contracts.length} contract(s), selecting LAST (cheat mode)...`);
+        const ids = [];
+        for (const c of contracts) ids.push(await c.getAttribute('data-contract'));
+        const state = await page.evaluate(() => window.__space?.state);
+        const hasCore = !!state?.objects?.some(obj => obj.kind === 'core' && !obj.dockedTo);
+        const priority = hasCore
+          ? ['dock', 'rdv-2', 'rdv-1', 'satellite', 'orbit-goal', 'orbit-low', 'orbit-apogee']
+          : ['core', 'satellite', 'orbit-goal', 'orbit-low', 'orbit-apogee', 'orbit-down-2', 'orbit-down-1', 'orbit-entry'];
+        contractIndex = contracts.length - 1;
+        for (const want of priority) {
+          const i = ids.indexOf(want);
+          if (i >= 0) { contractIndex = i; break; }
         }
+        console.log(`Found ${contracts.length} contract(s) [${ids.join(', ')}], selecting ${ids[contractIndex]} (cheat mode${hasCore ? ', core exists' : ''})...`);
       } else {
         console.log(`Found ${contracts.length} contract(s), selecting first...`);
       }
@@ -293,7 +269,8 @@ async function runSmokeTest() {
       if (currentTier >= 2) {
         const turnSlider = await page.$('input[type=range][data-loadout="turn"]');
         if (turnSlider) {
-          console.log(`Setting turn slider to ${SMOKE_TURN}...`);
+          const turnHere = currentTier >= 3 ? SMOKE_TURN_T3 : SMOKE_TURN;
+          console.log(`Setting turn slider to ${turnHere}...`);
           await page.evaluate((val) => {
             const elem = document.querySelector('input[type=range][data-loadout="turn"]');
             if (elem) {
@@ -301,7 +278,7 @@ async function runSmokeTest() {
               elem.dispatchEvent(new Event('input', { bubbles: true }));
               elem.dispatchEvent(new Event('change', { bubbles: true }));
             }
-          }, SMOKE_TURN);
+          }, turnHere);
           await new Promise(resolve => setTimeout(resolve, 100));
         }
       }
@@ -396,9 +373,9 @@ async function runSmokeTest() {
           return typeof window.__space?.cheat === 'function';
         });
         if (hasCheat) {
-          console.log('Calling window.__space.cheat({ funds: 200000 })...');
+          console.log('Calling window.__space.cheat({ funds: 200000, reputation: 100 })...');
           await page.evaluate(() => {
-            window.__space.cheat({ funds: 200000 });
+            window.__space.cheat({ funds: 200000, reputation: 100 });
           });
         } else {
           console.log('Cheat function not available yet');

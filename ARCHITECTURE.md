@@ -526,7 +526,7 @@ templates stay in the pool as cheap fillers.
 - `[data-loadout="turn"]`
 - `[data-screen="tier"]`, its continue is `[data-action="continue"]`
 - `#hud [data-hud="tier"]`
-- `window.__space.cheat({ funds })` credits funds, tests only
+- `window.__space.cheat({ funds, reputation })` credits funds and reputation, tests only
 
 ## Balance, phase 1
 
