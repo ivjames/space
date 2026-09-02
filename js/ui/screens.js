@@ -374,6 +374,9 @@ export function mountScreens(ctx) {
 
     view.handle = playOutcome(canvas, outcome, {
       requirement: mission.requirement?.altitude ?? 0,
+      // The sprite needs to know it is a stack before the first separation;
+      // that comes from the vehicle, never from the outcome (js/ui/ascent.js).
+      stages: vehicle?.stages?.length ?? 1,
       onEvent: appendTicker,
       onDone: () => {
         view.playing = false;

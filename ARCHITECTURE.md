@@ -275,11 +275,27 @@ export const tierGoals = { 1: { requirement: { altitude: 100000 }, name: 'Reach 
 - `screens.js` owns the flow: contracts → loadout → launch → result → (tree
   | contracts). One screen visible at a time. Portrait, one thumb: primary
   action is a full-width button at the bottom.
-- `ascent.js` plays `outcome.samples` and `outcome.timeline` on a canvas:
-  rocket sprite climbing a side view, altitude gauge on the right with the
-  requirement marked, event ticker for timeline events, failure shown at
-  the moment it happens. Playback is time-scaled (a 200 s flight plays in
-  ~8 s), skippable by tap.
+- `ascent.js` plays `outcome.samples` and `outcome.timeline` on a canvas
+  with a **follow camera**: world space is metres, the vertical scale is
+  fixed (one canvas height spans 1.5x the mission target, so every flight of
+  a mission plays at the same zoom), and the rocket rests 58% up the screen
+  once it has climbed that far — below it the pad is in view, above it the
+  world scrolls down past the rocket. Altitude reads off the world, not a
+  gauge: km tick lines and a dashed `TARGET n km` line drawn in world space,
+  plus a T+ clock, altitude and speed in the top-left corner. Failure is
+  shown at the moment it happens; a spent stage drops away at separation.
+  Skippable by tap.
+  **No-leak contract** (stated at the top of the file): nothing on the
+  screen may reveal the outcome before the flight shows it, so during
+  playback the module reads only the sample at the current sim time, the
+  timeline events at or before it, and `outcome.failure` once `failure.t`
+  is reached — never `maxAltitude`, `success`, `shortBy`, `readout`,
+  `samples.length` or a future event. Both the scale and the playback rate
+  are therefore outcome-independent: the scale comes from the mission target
+  alone, and the rate is a constant 8x real time while a stage burns, 24x
+  after the last burnout or a failure (never flight-length / fixed duration,
+  which would play a short flight fast). The only look-ahead is the time of
+  the timeline's last event, used solely to know when to stop.
 - `shop.js` renders `tree.branches()` as columns of rows. A row is
   owned / buyable / locked. Tapping a buyable row buys it and re-renders.
   Never a pan/zoom graph.

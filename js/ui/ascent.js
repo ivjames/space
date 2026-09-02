@@ -1,16 +1,53 @@
-// Side-view ascent renderer. Plays an outcome's samples + timeline on a
-// canvas; it never simulates anything itself (ARCHITECTURE.md: the resolver
-// never renders, and the renderer never decides).
+// Side-view ascent renderer with a follow camera. Plays an outcome's samples
+// and timeline on a canvas; it never simulates anything itself
+// (ARCHITECTURE.md: the resolver never renders, and the renderer never
+// decides).
+//
+// NO-LEAK CONTRACT. Nothing on this screen may reveal how the flight ends
+// before the flight shows it. So during playback this module reads exactly
+// three things out of the outcome: the sample at the current sim time, the
+// timeline events whose t <= the current sim time (to emit onEvent, and to
+// know which stages have ignited or burnt out), and outcome.failure once simT
+// has reached failure.t. It never reads outcome.maxAltitude, outcome.success,
+// outcome.shortBy, outcome.readout, samples.length, the last sample's t, or
+// any timeline event still in the future.
+//
+// That closes the two ways this screen used to give the game away:
+//   - SCALE. Metres-per-pixel comes from the MISSION TARGET alone
+//     (opts.requirement) and never changes during a flight, so the same
+//     mission always plays at the same zoom whatever happens. A gauge scaled
+//     to the apogee announces the result in the first second; one that grows
+//     when the rocket nears the top announces it just as loudly, and by not
+//     growing announces the opposite.
+//   - TIMING. The playback rate is a constant — 8x real time while a stage is
+//     burning, 24x once the last burnout or a failure has passed, both events
+//     the player has already read in the ticker. Never flightLength/duration,
+//     which plays a long flight slowly and a short one fast.
+// The single thing taken from the far end of the timeline is the time of its
+// last event ('end', which the resolver always emits), used only to know when
+// to stop. Nothing drawn or timed before that instant depends on it.
 //
 // What it shows, and why: DESIGN.md §5 says readable failure is the point —
-// the animation has to show *why* the run ended where it did. So the flight
-// area draws the requirement altitude as a dashed line (did we get there?),
-// exhaust only while a stage is actually burning (is it still under power?),
-// a flash at the failure instant (that is where it broke), and a dropped
-// piece at separation. The right-hand gauge repeats the same two numbers as
-// text for anyone who blinked.
+// the animation has to show *why* the run ended where it did. So altitude is
+// legible from the world itself (km ticks and a dashed target line, drawn in
+// world space so they scroll past), exhaust burns only while a stage is
+// actually producing thrust, a flash marks the failure instant, and a spent
+// stage drops away at separation.
 
-const PLAYBACK_SECONDS = 8; // a whole flight, however long, plays in ~8s
+/** Sim seconds per real second while a stage is burning. */
+const BURN_RATE = 8;
+/** Multiplier applied once nothing is burning any more: 8 -> 24. */
+const COAST_MULT = 3;
+/** One canvas height spans this many times the mission target altitude. */
+const VIEW_SPAN = 1.5;
+/** Rocket's resting height on screen, as a fraction up from the bottom. */
+const SCREEN_ANCHOR = 0.58;
+/** Altitude, m, at which the sky is fully open (stars at full brightness). */
+const SKY_OPEN_ALT = 60000;
+/** Ground strip height, px. */
+const GROUND_H = 22;
+/** "Nice" tick spacings, km. */
+const TICK_STEPS_KM = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
 
 function cssVar(el, name, fallback) {
   const v = getComputedStyle(el).getPropertyValue(name).trim();
@@ -38,10 +75,23 @@ function formatAlt(m) {
 }
 
 /**
+ * Tick spacing for a mission: about a fifth of the target, snapped to a round
+ * number of km. Derived from the target only — like the scale, it is the same
+ * for every flight of the same mission.
+ */
+export function tickStepFor(requirement) {
+  const wantKm = Math.max(requirement, 1000) / 5 / 1000;
+  const km = TICK_STEPS_KM.find((s) => s >= wantKm - 1e-9) ?? TICK_STEPS_KM[TICK_STEPS_KM.length - 1];
+  return km * 1000;
+}
+
+/**
  * Altitude at simulated time `t`, linearly interpolated between samples.
+ * Clamping at either end is part of "the sample at the current sim time" —
+ * nothing here looks ahead of `t`.
  */
 function sampleAt(samples, t) {
-  if (samples.length === 0) return { alt: 0, vel: 0, stage: 1 };
+  if (samples.length === 0) return { t, alt: 0, vel: 0, stage: 1 };
   if (t <= samples[0].t) return samples[0];
   const last = samples[samples.length - 1];
   if (t >= last.t) return last;
@@ -67,25 +117,22 @@ function sampleAt(samples, t) {
 }
 
 /**
- * Intervals during which a stage is producing thrust, derived from the
- * timeline: an 'ignition' opens one, the next 'burnout' or 'failure' closes it.
+ * Is a stage producing thrust at time `t`?
+ *
+ * Scans only events at or before `t` — an 'ignition' starts a burn, a
+ * 'burnout' or 'failure' ends it — so the answer can never depend on
+ * something the player has not been told yet. (Precomputing the intervals
+ * would give the same answer, but this way the no-leak property is visible
+ * in the code rather than argued about in a comment.)
  */
-function burnIntervals(timeline) {
-  const out = [];
-  let open = null;
+function burningAt(timeline, t) {
+  let burning = false;
   for (const ev of timeline) {
-    if (ev.kind === 'ignition') {
-      if (open) open.end = ev.t;
-      open = { start: ev.t, end: Infinity, stage: ev.stage };
-      out.push(open);
-    } else if (ev.kind === 'burnout' || ev.kind === 'failure') {
-      if (open) {
-        open.end = ev.t;
-        open = null;
-      }
-    }
+    if (ev.t > t) break;
+    if (ev.kind === 'ignition') burning = true;
+    else if (ev.kind === 'burnout' || ev.kind === 'failure') burning = false;
   }
-  return out;
+  return burning;
 }
 
 /**
@@ -97,10 +144,14 @@ function burnIntervals(timeline) {
  * @param {(event: object) => void} [opts.onEvent] called at the playback time
  *        the timeline event happens (so the ticker fills in as it flies)
  * @param {() => void} [opts.onDone]  called once, when playback finishes
- * @param {number} [opts.speed] simulated seconds per real second; default is
- *        totalT / 8, i.e. any flight plays in about eight seconds
- * @param {number} [opts.requirement] mission requirement altitude, m — drawn
- *        as the dashed line and folded into the vertical scale
+ * @param {number} [opts.speed] base rate, simulated seconds per real second
+ *        while burning; the coast rate is COAST_MULT times it. Tests use this
+ *        to run a flight quickly; gameplay never sets it.
+ * @param {number} [opts.requirement] mission requirement altitude, m — the
+ *        dashed target line, and the ONLY input to the vertical scale
+ * @param {number} [opts.stages] how many stages the vehicle has (from the
+ *        vehicle, not the outcome) so the sprite can be drawn as a stack
+ *        before the first separation. Defaults to 1.
  * @returns {{ skip(): void, stop(): void, done: boolean }}
  */
 export function playOutcome(canvas, outcome, opts = {}) {
@@ -108,26 +159,21 @@ export function playOutcome(canvas, outcome, opts = {}) {
   const timeline = [...(outcome?.timeline ?? [])].sort((a, b) => a.t - b.t);
   const failure = outcome?.failure ?? null;
 
-  const lastSampleT = samples.length ? samples[samples.length - 1].t : 0;
-  const lastEventT = timeline.length ? timeline[timeline.length - 1].t : 0;
-  const totalT = Math.max(lastSampleT, lastEventT, 0);
+  // The only look-ahead in the module: when to stop. The resolver always ends
+  // the timeline with an 'end' event at the final simulated instant.
+  const finalT = timeline.length ? Math.max(timeline[timeline.length - 1].t, 0) : 0;
 
   const requirement = Math.max(opts.requirement ?? 0, 0);
-  // The scale is set from the target only, never from the outcome: the top
-  // of the gauge must not tell the player the apogee before the flight
-  // does. If the rocket climbs past the headroom, the scale grows with it.
-  let scaleAlt = Math.max(requirement, 1000) * 1.25;
-  function growScale(alt) {
-    if (alt > scaleAlt * 0.9) scaleAlt = alt / 0.9;
-  }
+  const stageCount = Math.max(opts.stages ?? 1, 1);
+  const tickStep = tickStepFor(requirement);
+  // Metres of world per canvas height, from the target and nothing else.
+  const viewSpan = Math.max(requirement, 1000) * VIEW_SPAN;
 
-  const speed = opts.speed ?? (totalT > 0 ? totalT / PLAYBACK_SECONDS : 1);
+  const baseRate = opts.speed ?? BURN_RATE;
   const onEvent = typeof opts.onEvent === 'function' ? opts.onEvent : () => {};
   const onDone = typeof opts.onDone === 'function' ? opts.onDone : () => {};
 
   const ctx = canvas.getContext('2d');
-  const burns = burnIntervals(timeline);
-  const separations = timeline.filter((e) => e.kind === 'separation');
 
   // The flight scene is always a night sky, in either colour scheme: a light
   // theme's near-black --fg would vanish against it. Only the two signal
@@ -143,12 +189,21 @@ export function playOutcome(canvas, outcome, opts = {}) {
 
   let w = 0;
   let h = 0;
+  let mPerPx = 1;     // world metres per CSS pixel — fixed for the flight
+  let anchorY = 0;    // screen y the rocket rests at once it has climbed
+  let padY = 0;       // screen y of the ground while the camera is on the pad
+  let liftAlt = 0;    // altitude at which the camera starts following
+  let camAlt = 0;     // world altitude currently at anchorY
   let stars = [];
+
   let raf = 0;
-  let startedAt = 0;
+  let lastNow = 0;
+  let realT = 0;      // real seconds of playback elapsed (for debris ages)
   let simT = 0;
   let emitted = 0;
   let stopped = false;
+  let skipped = false;
+  const stamps = new Map();   // timeline event -> realT when it was passed
   const handle = { done: false, skip, stop };
 
   function resize() {
@@ -165,74 +220,107 @@ export function playOutcome(canvas, outcome, opts = {}) {
     w = cssW;
     h = cssH;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    mPerPx = viewSpan / Math.max(h, 1);
+    anchorY = h * (1 - SCREEN_ANCHOR);
+    padY = h - GROUND_H;
+    liftAlt = Math.max(0, (padY - anchorY) * mPerPx);
     // Only when the box actually changed: the starfield is fixed for a flight.
     if (changed || stars.length === 0) stars = makeStars(48, w, h);
   }
 
-  // ---- geometry ----------------------------------------------------------
-  const GAUGE_W = 58;
-  const TOP_PAD = 18;
-  const GROUND_H = 22;
-
-  const flightW = () => w - GAUGE_W;
-  const groundY = () => h - GROUND_H;
-  const altToY = (alt) => {
-    const top = TOP_PAD;
-    const bottom = groundY();
-    const f = Math.min(Math.max(alt / scaleAlt, 0), 1);
-    return bottom - f * (bottom - top);
-  };
-
-  function isBurning(t) {
-    return burns.some((b) => t >= b.start && t < b.end);
-  }
+  // ---- camera ------------------------------------------------------------
+  // World is metres, screen is pixels. Below liftAlt the camera sits on the
+  // pad and the rocket climbs the screen; above it the rocket is pinned at
+  // anchorY and the world scrolls down past it.
+  const altToY = (alt) => anchorY - (alt - camAlt) / mPerPx;
+  const yToAlt = (y) => camAlt - (y - anchorY) * mPerPx;
+  const ageOf = (stamp) => (skipped || stamp === undefined ? 1e9 : realT - stamp);
 
   // ---- drawing -----------------------------------------------------------
-  function drawSky() {
-    const g = ctx.createLinearGradient(0, 0, 0, groundY());
-    g.addColorStop(0, '#05060a');
-    g.addColorStop(1, colors.bg);
+  function drawSky(alt) {
+    // Openness is a function of altitude against a fixed constant, never of
+    // the scale or the outcome.
+    const openness = Math.min(1, Math.max(alt, 0) / SKY_OPEN_ALT);
+
+    ctx.fillStyle = '#05060a';
+    ctx.fillRect(0, 0, w, h);
+    // A little atmospheric glow near the bottom that thins out as you climb.
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, 'rgba(10,15,24,0)');
+    g.addColorStop(1, `rgba(16,26,44,${0.85 * (1 - openness)})`);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
 
-    // Stars fade in with altitude: the sky "opens up" as the rocket climbs.
-    const openness = Math.min(1, simAlt() / Math.max(scaleAlt * 0.5, 1));
+    // Stars fade in with altitude and drift slowly downwards with the camera.
+    const scroll = ((camAlt - liftAlt) / mPerPx) * 0.12;
     ctx.fillStyle = colors.fg;
     for (const s of stars) {
-      if (s.y > groundY()) continue;
+      const y = ((s.y + scroll) % h + h) % h;
       ctx.globalAlpha = s.a * openness;
       ctx.beginPath();
-      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.arc(s.x, y, s.r, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
 
+  /** Horizontal km ticks in world space, so altitude reads off the world. */
+  function drawTicks() {
+    const first = Math.max(1, Math.ceil(Math.max(yToAlt(h), 0) / tickStep));
+    const last = Math.floor(yToAlt(0) / tickStep);
+    if (last < first || last - first > 60) return;
+
+    ctx.save();
+    ctx.font = '9px "Courier New", monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'bottom';
+    for (let k = first; k <= last; k += 1) {
+      const alt = k * tickStep;
+      const y = Math.round(altToY(alt)) + 0.5;
+      ctx.strokeStyle = colors.border;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+      // A label whose line is right against the top edge would be clipped;
+      // the line alone still reads.
+      if (y > 12) {
+        ctx.fillStyle = colors.muted;
+        ctx.fillText(`${Math.round(alt / 1000)} km`, w - 6, y - 3);
+      }
+    }
+    ctx.restore();
+  }
+
   function drawGround() {
+    const gy = altToY(0);
+    if (gy > h) return;
     ctx.fillStyle = colors.border;
-    ctx.fillRect(0, groundY(), w, h - groundY());
+    ctx.fillRect(0, gy, w, h - gy);
     ctx.strokeStyle = colors.muted;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(0, groundY() + 0.5);
-    ctx.lineTo(w, groundY() + 0.5);
+    ctx.moveTo(0, gy + 0.5);
+    ctx.lineTo(w, gy + 0.5);
     ctx.stroke();
     // Pad
     ctx.fillStyle = colors.muted;
-    ctx.fillRect(flightW() / 2 - 14, groundY() - 4, 28, 4);
+    ctx.fillRect(w / 2 - 14, gy - 4, 28, 4);
   }
 
-  function drawRequirementLine() {
+  function drawTargetLine() {
     if (requirement <= 0) return;
     const y = altToY(requirement);
+    if (y < -20 || y > h + 20) return;
     ctx.save();
     ctx.setLineDash([6, 5]);
     ctx.strokeStyle = colors.accent;
-    ctx.globalAlpha = 0.75;
+    ctx.globalAlpha = 0.85;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, y + 0.5);
-    ctx.lineTo(flightW(), y + 0.5);
+    ctx.lineTo(w, y + 0.5);
     ctx.stroke();
     ctx.restore();
 
@@ -244,10 +332,12 @@ export function playOutcome(canvas, outcome, opts = {}) {
   }
 
   function drawRocket(alt, stage, burning) {
-    const x = flightW() / 2;
+    const x = w / 2;
     const y = altToY(alt);
-    const twoStage = separations.length > 0 && stage <= 1;
-    const bodyH = twoStage ? 26 : 17;
+    // Sprite shape comes from the vehicle (how many stages it has) and the
+    // stage flying now — never from a separation that has not happened yet.
+    const stacked = stageCount > 1 && stage <= 1;
+    const bodyH = stacked ? 26 : 17;
     const bodyW = 7;
 
     ctx.save();
@@ -256,7 +346,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     if (burning) {
       // Flicker is presentation only — nothing here feeds back into state.
       const flick = 0.7 + 0.3 * Math.sin(performance.now() / 35);
-      const len = (twoStage ? 20 : 15) * flick;
+      const len = (stacked ? 20 : 15) * flick;
       const grad = ctx.createLinearGradient(0, bodyH / 2, 0, bodyH / 2 + len);
       grad.addColorStop(0, '#fff2c0');
       grad.addColorStop(0.4, '#ffa53c');
@@ -273,8 +363,8 @@ export function playOutcome(canvas, outcome, opts = {}) {
     // Body
     ctx.fillStyle = colors.fg;
     ctx.fillRect(-bodyW / 2, -bodyH / 2, bodyW, bodyH);
-    // Interstage band on a two-stage stack
-    if (twoStage) {
+    // Interstage band on a stacked vehicle
+    if (stacked) {
       ctx.fillStyle = colors.muted;
       ctx.fillRect(-bodyW / 2, -bodyH / 2 + bodyH * 0.42, bodyW, 2);
     }
@@ -304,32 +394,42 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.restore();
   }
 
+  /** A tumbling chunk: a spent stage, or the vehicle itself after a failure. */
+  function drawChunk(x, y, age, fade) {
+    if (y > h + 20 || y < -20) return;
+    ctx.save();
+    ctx.globalAlpha = fade;
+    ctx.translate(x, y);
+    ctx.rotate(age * 2.4);
+    ctx.fillStyle = colors.muted;
+    ctx.fillRect(-3, -5, 6, 10);
+    ctx.restore();
+  }
+
   function drawDebris() {
-    // A spent stage drops away and falls behind. Screen-space, deliberately:
-    // the point is that the player sees something leave the vehicle.
-    for (const sep of separations) {
-      if (simT < sep.t) continue;
-      const age = (simT - sep.t) / Math.max(speed, 0.0001); // real seconds since
-      const alt = sampleAt(samples, sep.t).alt;
-      const x = flightW() / 2 + age * 14;
-      const y = altToY(alt) + age * age * 90 + age * 12;
-      if (y > h) continue;
-      ctx.save();
-      ctx.globalAlpha = Math.max(0, 1 - age / 3);
-      ctx.translate(x, y);
-      ctx.rotate(age * 2.4);
-      ctx.fillStyle = colors.muted;
-      ctx.fillRect(-3, -5, 6, 10);
-      ctx.restore();
+    // A spent stage drops away and falls behind. Its world altitude is the
+    // altitude at separation (a past event); the fall itself is a screen-space
+    // offset, because at these scales a real ballistic drop is sub-pixel.
+    for (const ev of timeline) {
+      if (ev.kind !== 'separation') continue;
+      if (simT < ev.t) break;
+      const age = ageOf(stamps.get(ev));
+      const fade = Math.max(0, 1 - age / 3);
+      if (fade <= 0) continue;
+      const y = altToY(sampleAt(samples, ev.t).alt) + age * age * 90 + age * 12;
+      drawChunk(w / 2 + age * 14, y, age, fade);
     }
   }
 
-  function drawFailure() {
+  function drawFailure(alt) {
     if (!failure || simT < failure.t) return;
-    const alt = sampleAt(samples, failure.t).alt;
-    const x = flightW() / 2;
-    const y = altToY(alt);
-    const age = (simT - failure.t) / Math.max(speed, 0.0001);
+    const failAlt = sampleAt(samples, failure.t).alt;
+    const x = w / 2;
+    const y = altToY(failAlt);
+    const age = ageOf(stamps.get(timeline.find((e) => e.kind === 'failure')));
+
+    // The wreck keeps coasting, so the camera still has something to follow.
+    drawChunk(x, altToY(alt), age, 0.9);
 
     // A bright flash right at the moment, then a lingering scorch mark so a
     // skipped playback still shows where it went wrong.
@@ -348,6 +448,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
       ctx.stroke();
       ctx.restore();
     }
+    if (y < -20 || y > h + 20) return;
     ctx.save();
     ctx.globalAlpha = 0.9;
     ctx.strokeStyle = colors.fail;
@@ -361,101 +462,55 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.restore();
   }
 
-  function drawGauge(alt) {
-    const x = w - GAUGE_W;
-    const top = TOP_PAD;
-    const bottom = groundY();
-
-    // Bar hard against the right edge, every label right-aligned to its left:
-    // the labels then grow leftwards into the panel instead of off-screen.
-    const barW = 7;
-    const barX = w - barW - 7;
-    const labelRight = barX - 6;
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    ctx.fillRect(x, 0, GAUGE_W, h);
-    ctx.strokeStyle = colors.border;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x + 0.5, 0);
-    ctx.lineTo(x + 0.5, h);
-    ctx.stroke();
-
-    ctx.fillStyle = colors.border;
-    ctx.fillRect(barX, top, barW, bottom - top);
-
-    const f = Math.min(Math.max(alt / scaleAlt, 0), 1);
-    const fillH = f * (bottom - top);
-    ctx.fillStyle = colors.accent;
-    ctx.fillRect(barX, bottom - fillH, barW, fillH);
-
-    // Top of scale
-    ctx.fillStyle = colors.muted;
-    ctx.font = '9px "Courier New", monospace';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'top';
-    ctx.fillText(formatAlt(scaleAlt), labelRight, top - 12);
-
-    // Requirement tick
-    if (requirement > 0) {
-      const ry = altToY(requirement);
-      ctx.strokeStyle = colors.accent;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(barX - 4, ry);
-      ctx.lineTo(barX + barW, ry);
-      ctx.stroke();
-      ctx.fillStyle = colors.accent;
-      ctx.font = '9px "Courier New", monospace';
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(formatAlt(requirement), labelRight, ry - 3);
-    }
-    ctx.restore();
-  }
-
-  /** T+ clock and the live altitude, in the empty top-left of the sky. */
-  function drawClock(alt) {
+  /** T+ clock, live altitude and speed, in the empty top-left of the sky. */
+  function drawReadout(alt, vel) {
     ctx.save();
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     ctx.fillStyle = colors.muted;
     ctx.font = '10px "Courier New", monospace';
     ctx.fillText(`T+${Math.round(simT)}s`, 6, 6);
+
     ctx.font = '9px "Courier New", monospace';
+    ctx.fillStyle = colors.muted;
     ctx.fillText('ALT', 6, 23);
     ctx.fillStyle = colors.fg;
     ctx.font = 'bold 13px "Courier New", monospace';
     ctx.fillText(formatAlt(alt), 30, 20);
+
+    ctx.font = '9px "Courier New", monospace';
+    ctx.fillStyle = colors.muted;
+    ctx.fillText('SPD', 6, 41);
+    ctx.fillStyle = colors.fg;
+    ctx.font = 'bold 13px "Courier New", monospace';
+    ctx.fillText(`${Math.round(vel)} m/s`, 30, 38);
     ctx.restore();
   }
 
-  function simAlt() {
-    return sampleAt(samples, simT).alt;
-  }
-
   function frame() {
-    const s = sampleAt(samples, simT);
-    growScale(s.alt);
     resize();
+    const s = sampleAt(samples, simT);
+    const alt = Math.max(s.alt, 0);
+    camAlt = Math.max(alt, liftAlt);
+
     ctx.clearRect(0, 0, w, h);
-    drawSky();
-    drawRequirementLine();
+    drawSky(alt);
+    drawTicks();
+    drawTargetLine();
     drawGround();
     drawDebris();
     if (!failure || simT < failure.t) {
-      drawRocket(s.alt, s.stage ?? 1, isBurning(simT));
+      drawRocket(alt, s.stage ?? 1, burningAt(timeline, simT));
     }
-    drawFailure();
-    drawGauge(s.alt);
-    drawClock(s.alt);
+    drawFailure(alt);
+    drawReadout(alt, s.vel ?? 0);
   }
 
   function flushEventsTo(t) {
     while (emitted < timeline.length && timeline[emitted].t <= t + 1e-9) {
       const ev = timeline[emitted];
       emitted += 1;
+      stamps.set(ev, realT);
       try {
         onEvent(ev);
       } catch (err) {
@@ -468,8 +523,8 @@ export function playOutcome(canvas, outcome, opts = {}) {
   function finish() {
     if (handle.done) return;
     handle.done = true;
-    simT = totalT;
-    flushEventsTo(totalT);
+    simT = finalT;
+    flushEventsTo(finalT);
     frame();
     detach();
     onDone();
@@ -477,9 +532,16 @@ export function playOutcome(canvas, outcome, opts = {}) {
 
   function tick(now) {
     if (stopped) return;
-    if (!startedAt) startedAt = now;
-    simT = ((now - startedAt) / 1000) * speed;
-    if (simT >= totalT) {
+    if (!lastNow) lastNow = now;
+    // Cap the step so a backgrounded tab does not teleport the rocket.
+    const dt = Math.min((now - lastNow) / 1000, 0.1);
+    lastNow = now;
+    realT += dt;
+    // Fixed rates, chosen by what the player has already been shown: full
+    // speed while an engine is lit, faster once it is not.
+    const rate = burningAt(timeline, simT) ? baseRate : baseRate * COAST_MULT;
+    simT += dt * rate;
+    if (simT >= finalT) {
       finish();
       return;
     }
@@ -491,6 +553,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
   function skip() {
     if (stopped || handle.done) return;
     cancelAnimationFrame(raf);
+    skipped = true;
     finish();
   }
 
@@ -527,7 +590,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
   flushEventsTo(0);
   frame();
 
-  if (totalT <= 0) {
+  if (finalT <= 0) {
     // Nothing to animate (e.g. "insufficient thrust to lift off"): show the
     // static frame, then hand control straight back.
     requestAnimationFrame(() => finish());
