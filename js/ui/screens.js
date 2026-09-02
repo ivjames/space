@@ -509,6 +509,19 @@ export function mountScreens(ctx) {
     }
     view.name = name;
     if (name === 'contracts') {
+      // A save can carry a won tier whose win screen was already acknowledged
+      // before the next tier existed (a phase 0 save that reached 100 km:
+      // save.js migrates its winShown into wins[1] with tier still 1). Such a
+      // player would otherwise never see the tier above. Advance them now,
+      // through the same path Continue-from-win takes.
+      const s0 = getState();
+      if ((s0.best?.wins ?? {})[s0.tier] && tierGoals[s0.tier + 1] && tierGoalMet(s0, tierGoals)) {
+        continueFromWin();
+        // update() repaints only once mountScreens has returned; at boot it
+        // has not, so paint the interstitial here.
+        render();
+        return;
+      }
       // Offers are regenerated after every launch, so a stale selection has
       // to fall back to something that is actually on the board.
       const offered = getState().contracts ?? [];
@@ -723,7 +736,10 @@ export function mountScreens(ctx) {
 
   // ---- first paint -------------------------------------------------------
   view.contractId = getState().contracts?.[0] ?? null;
-  render();
+  // Through show(), not render(): show('contracts') is where a save that
+  // already won its tier gets moved up, and a boot is the first place that
+  // matters.
+  show(view.name);
 
   return { render, show, view };
 }
