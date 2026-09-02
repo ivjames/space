@@ -631,3 +631,63 @@ ul.ticker {
   .btn-primary { color: #052a35; }
   .btn-primary:active { background-color: #00b8e0; }
 }
+
+/* ==========================================================================
+   Phase 1 (tier 2, orbit). Additive: everything above still applies, and
+   nothing tier 1 uses is redefined here.
+   ========================================================================== */
+
+/* ---- HUD ---------------------------------------------------------------- */
+
+/* Four items now (funds, rep, tier, launches) on a 360px-wide strip, so the
+   gap has to give before the values do. */
+#hud { gap: 10px; }
+[data-hud="tier"] { color: var(--accent); }
+
+/* ---- Tree: tier dividers inside a branch -------------------------------- */
+
+.tier-divider {
+  list-style: none;
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--muted);
+  padding: 10px 12px 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---- Ticker: the phase 1 event kinds ------------------------------------ */
+
+.tick.orbit { color: var(--accent); font-weight: bold; }
+.tick.turn { color: var(--fg); }
+.tick.impact { color: var(--fail); }
+
+/* ---- Win / tier interstitial -------------------------------------------- */
+
+/* Both screens are a stack of short paragraphs; without this they set solid
+   and read as one block. */
+.win-pad .hint + .hint { margin-top: 10px; }
+
+[data-screen="tier"] .readout { margin-bottom: 12px; }
+
+.tier-goal {
+  color: var(--fg);
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;
+  margin-bottom: 12px;
+}
+
+/* ---- Loadout: two sliders now ------------------------------------------- */
+
+/* The turn field sits right under the fuel field; without a rule the two
+   read as one block of sliders. */
+.field + .field {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.field .hint + .hint { margin-top: 4px; }
+
+/* The loadout is the longest scrolling screen; without a little room at the
+   bottom its last line sits flush against the actions bar and reads as cut. */
+.pad { padding-bottom: 28px; }

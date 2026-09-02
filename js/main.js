@@ -9,6 +9,7 @@ import { makeStorage } from './core/save.js';
 import { newGame } from './core/state.js';
 import { loadTree } from './core/tree.js';
 import { generateContracts } from './core/contracts.js';
+import { credit } from './core/economy.js';
 import { makeRng } from './core/rng.js';
 import { nodes } from './data/tree.js';
 import { missions, tierGoals } from './data/missions.js';
@@ -151,6 +152,11 @@ function boot(initial) {
     missions,
     tierGoals,
     persistent,
+    // The screen flow itself, so a test can read the current view (its name,
+    // the loadout it holds, the last outcome). Tests only; no UI reads this.
+    screens,
+    // Tests only: credit funds so a smoke test can buy without grinding.
+    cheat: ({ funds = 0 } = {}) => { update(credit(state, { funds })); },
   };
 }
 

@@ -251,80 +251,158 @@ export const nodes = [
   // TIER 2 — orbit. See ARCHITECTURE.md, "Phase 1 — tier 2, orbit".
   // ---------------------------------------------------------------------
   //
-  // PROVISIONAL: balance against the resolver in the next pass.
+  // Balanced against the REAL phase 1 resolver (js/core/resolver.js's
+  // central gravity + pitch program), the same way tier 1's numbers are
+  // balanced against the phase 0 resolver -- not the ideal-delta-v
+  // shortcut. `node tools/balance.mjs` drives `resolveLaunch` directly
+  // (reliability forced to 1), scanning `turn` in 0.05 steps per
+  // ARCHITECTURE.md's Balance section, and re-running it is how every
+  // number below was actually chosen. Re-run it after touching any cost or
+  // effect here.
   //
-  // js/core/resolver.js and js/core/vehicle.js are being rewritten to the
-  // phase 1 spec (central gravity, pitch program, the `guidance` stat,
-  // orbit/downrange requirements, requiredDeltaV for every shape)
-  // concurrently with this file, so none of the numbers below have been
-  // driven through the REAL resolver the way every tier 1 number above was
-  // (see the BALANCING NOTES at the top of this file, and
-  // tools/balance.mjs). They are sized only against the ideal-delta-v
-  // shortcut (Tsiolkovsky, vehicle.js's totalDeltaV) for the full tree:
-  // tier 1 alone tops out at ~3.45 km/s ideal; the tier 2 nodes below add
-  // enough stage/isp/mass headroom to bring the FULL tree (tier 1 + tier 2,
-  // fuelFraction 1) to roughly 9.5-10.5 km/s ideal -- comfortably past the
-  // ~7.8 km/s orbital velocity at 100 km and the "9 km/s or more" a real
-  // ascent pays (ARCHITECTURE.md). Once the resolver lands, re-run
-  // tools/balance.mjs's tier 2 report and retune costs/effects the same way
-  // tier 1's were tuned against the simulation instead of the shortcut --
-  // this is exactly the ideal-dv-vs-simulated-altitude trap tier 1 fell
-  // into before it was fixed (see this file's BALANCING NOTES above).
+  // TURN IS A REAL DECISION (ARCHITECTURE.md's balance target). A vehicle
+  // with too much spare thrust/isp margin orbits best at turn=0 (the lazy,
+  // nearly-vertical program) -- more margin just papers over the gravity
+  // losses a lazy climb pays, so there's never a reason to turn over
+  // early, and the slider stops being a choice. The numbers below are
+  // deliberately tuned so the third stage (struct-6/prop-8, see PROPULSION
+  // and STRUCTURE below) is only JUST enough to reach orbit: the cheapest
+  // prereq-valid set that reaches the tier goal peaks at turn=0.60, clears
+  // ORBIT_MIN_ALT for 4 of the 21 turn notches (0.55-0.70), and MISSES
+  // orbit entirely at turn=0 -- a lazy climb is not the answer here. The
+  // full tree (extra margin from prop-7/9, struct-7/8) widens that to 6
+  // notches (0.40-0.65) peaking at turn=0.45, roughly a third of the
+  // slider, still nowhere near turn=0 or turn=1. Both figures are `node
+  // tools/balance.mjs`'s own periapsis-vs-turn table, not hand estimates.
   //
-  // STRUCTURE. struct-5/7 are dry-mass-reduction nodes (composite tankage);
-  // struct-6 is the third stage itself (addStage), gated on struct-4 (the
-  // tier 1 second stage must already exist) as well as struct-5; struct-8
-  // is the tier 2 structure trade-off sibling (more third-stage propellant
-  // at a dry-mass cost, same shape as struct-1..3's tier 1 pattern).
+  // STRUCTURE. struct-5 is a dry-mass-reduction node (composite tankage,
+  // stage 0/1), prereq of struct-6; struct-6 is the third stage itself
+  // (addStage), gated on struct-4 (the tier 1 second stage must already
+  // exist), struct-5, AND prop-6 (see THRUST-TO-WEIGHT SAFETY RAIL below).
+  // struct-7/8 are margin buys layered on top -- a small dry-mass cut and
+  // a small extra propellant load -- that raise the achievable periapsis
+  // and widen the full tree's good-turn window past the minimal set's,
+  // rather than being required to reach orbit at all. Both are kept
+  // deliberately SMALL: stage 3 is already thin-walled (8 kg dry against
+  // 70+ kg of propellant), so anything bigger here swings the ln(m0/mf)
+  // ratio (and with it the good-turn window) by far more than the "minor
+  // upgrade" the node is supposed to be -- struct-7/8 used to cut/add
+  // several kg each and blew the window from a clean ~6-7 notches to
+  // 14-16 (over half the slider) for that reason; the values below were
+  // walked back down until the window stayed in the target range.
   //
   // THRUST-TO-WEIGHT SAFETY RAIL, tier 2. Same rule as tier 1 (see the note
-  // above): a node that only ever adds weight must not be reachable without
-  // the matching thrust already in hand. The third stage (struct-6) is by
-  // far the biggest mass add in the tree, and it lands on stage 2 (index 1)
-  // -- whose tier 1 thrust (400 N) is nowhere near enough to lift a third
-  // stage's dry+prop mass on top of the payload (checked: liftoff TWR at
-  // stage 2 ignition drops under 0.5 without a stage 2 engine upgrade
-  // first). So struct-6 requires prop-6 (the stage 2 vacuum engine, which
-  // itself requires prop-5, the booster thrust upgrade) directly, not just
-  // struct-4/struct-5 -- every reachable owned-node combination that
-  // includes the third stage therefore also includes both propulsion
-  // upgrades, and stage 0/1/2 liftoff TWR stays >= ~1.09 (worst case:
-  // struct-5/6 alone, no struct-7/8, no prop-7/8) across every combination
-  // enumerated in test/data.test.js's tier 2 TWR check.
+  // above): a node that only ever adds weight must not be reachable
+  // without the matching thrust already in hand. The third stage
+  // (struct-6) is by far the biggest mass add in the tree, so it requires
+  // prop-6 (the stage 2 vacuum engine, which itself requires prop-5, the
+  // booster thrust upgrade) directly, not just struct-4/struct-5 -- every
+  // reachable owned-node combination that includes the third stage
+  // therefore also includes both propulsion upgrades. Verified
+  // exhaustively, not on faith: `node tools/balance.mjs`'s GOAL 4 report
+  // (and test/data.test.js's bounded version) BFS-enumerates every
+  // prereq-valid owned combination across BOTH tiers together (786 of
+  // them -- prerequisites chain hard enough that this is tractable even
+  // though 2^25 is not) and checks liftoff TWR >= 1.05 and every upper
+  // stage's TWR at ignition >= 0.5 on each one. Worst case: liftoff TWR
+  // 1.194 (the tier 1 minimum, unchanged by tier 2 -- struct-6 always
+  // brings its own matching thrust) and upper-stage TWR 1.020 (stage 2,
+  // owned = prop-1..4 + struct-1..4, before any tier 2 node at all). No
+  // violation exists anywhere in the reachable set.
   //
   // PROPULSION. prop-5 is a booster (stage 1 / index 0) thrust upgrade,
   // gated on prop-4 per the spec's own worked example ("the vacuum engine
   // requires prop-4") -- it exists because the third stage (struct-6) adds
   // real mass the booster now has to carry the whole way up, and liftoff
-  // TWR is the tree's hard safety rail (see the THRUST-TO-WEIGHT SAFETY
-  // RAIL note above; the same constraint applies here, just one stage
-  // heavier). prop-6 is the stage 2 (index 1) vacuum engine (mul
-  // stages.1.thrust AND stages.1.isp -- a straight upgrade, unlike tier 1's
-  // engine nodes, because stage 2 now has to lift the whole third stage on
-  // top of itself and needs both). prop-7 is its sibling trade-off (more
-  // stage 2 thrust for a bit less isp, layered on top of prop-6). prop-8 is
-  // the stage 3 (index 2) vacuum engine (mul stages.2.isp), gated on both
-  // prop-6 and struct-6 (the third stage must exist) -- collectEffects
-  // (js/core/tree.js) hoists every `addStage` effect ahead of every other
-  // effect specifically so a propulsion-branch node like this one can
-  // safely target a stage that a later-applied structure-branch node adds.
+  // TWR is the tree's hard safety rail (see above; the same constraint
+  // applies here, just one stage heavier). prop-6 is the stage 2 (index 1)
+  // vacuum engine (mul stages.1.thrust AND stages.1.isp -- a straight
+  // upgrade, unlike tier 1's engine nodes, because stage 2 now has to lift
+  // the whole third stage on top of itself and needs both). prop-7 is its
+  // sibling trade-off (more stage 2 thrust for a bit less isp, layered on
+  // top of prop-6) -- genuinely close to neutral for reaching orbit (it
+  // shows up in neither the minimal reaching set nor as a load-bearing
+  // full-tree margin node), which is the DESIGN.md §10 shape a trade-off
+  // sibling is supposed to have. prop-8 is the stage 3 (index 2) vacuum
+  // engine (mul stages.2.isp) -- gated on prop-6 and struct-6, and the
+  // node that makes orbit possible at all: without it stage 3's isp is far
+  // too low to carry the required delta-v at ANY turn (periapsis is
+  // deeply negative across the whole slider). Its magnitude (+43%) is
+  // tuned to clear orbit-low's periapsis (90 km) but fall short of the
+  // tier goal's (100 km) -- see COSTS/LADDER below for why that split
+  // matters. prop-9 is the margin node that crosses that remaining gap
+  // (+2% more isp on top of prop-8), which is also why it is the one
+  // tier 2 node the mission ladder needs to go from orbit-low to the tier
+  // goal (see LADDER below) rather than a pure full-tree nicety. Both
+  // prop-8/9 target `stages.2.isp`, and collectEffects (js/core/tree.js)
+  // hoists every `addStage` effect ahead of every other effect
+  // specifically so a propulsion-branch node like these can safely target
+  // a stage that a later-applied structure-branch node (struct-6) adds.
   //
   // GUIDANCE. guide-1 is the branch's entry point: it sets vehicle.guidance
   // to 1, which is what turns the loadout's `turn` slider from ignored to
-  // live (pitchProgram, resolver.js). guide-2/3 raise guidance further (to
-  // 2, then 3) -- refinements the resolver reads as a wider "good turn
-  // window" / lower steering losses at each higher level, per
-  // ARCHITECTURE.md; the exact curve is the resolver's call, not this
-  // file's -- this file only supplies the integer.
+  // live (pitchProgram, resolver.js) -- and is a REQUIRED node for every
+  // tier 2 mission (downrange, altitude, and orbit alike all need a turn
+  // to do anything but fly straight up). guide-2 raises guidance further
+  // (to 3, since it folds two integer steps into one node -- see next
+  // paragraph) but is HONESTLY DOCUMENTED as not changing how any flight
+  // flies: `pitchProgram` (resolver.js) only ever checks `guidance >= 1`,
+  // never a higher level, and nothing else in resolver.js or vehicle.js
+  // reads `vehicle.guidance` at all. Confirmed by grepping both files for
+  // every use of `guidance` before writing this -- there is no lever a
+  // higher level could plausibly be given via data without also changing
+  // resolver.js's pitch program itself, which is out of scope here (see
+  // the task's own instruction not to work around a resolver-physics
+  // problem in data). guide-2's description says so plainly rather than
+  // implying a benefit it can't deliver.
+  //
+  // guide-2 used to be two nodes (guide-2/guide-3, ARCHITECTURE.md's
+  // "widens the good turn window... refinements the resolver reads" text)
+  // -- both equally inert against the current resolver. Rather than ship
+  // two placebo purchases, they are folded into one cheaper node here;
+  // "fold into a cheaper single node" is one of the two honest options the
+  // task allows when a described lever turns out not to exist in the
+  // resolver, and it is the more defensible one -- a single clearly-honest
+  // placeholder beats two.
   //
   // RELIABILITY. rel-5 continues the stage 2 reliability climb rel-4 (tier
   // 1) started; rel-6 is the first node to touch stage 3 (the third
-  // stage), gated on struct-6 existing.
+  // stage), gated on struct-6 existing. Neither touches trajectory --
+  // reliability is forced to 1 throughout tools/balance.mjs and
+  // test/data.test.js's resolver-driven checks, by design (it's a
+  // "launches wasted to bad luck" lever, same as tier 1's reliability
+  // branch), so they never appear in a cheapest-reaching set for any
+  // requirement shape.
+  //
+  // LADDER (js/data/missions.js). The five tier 2 rungs step through a
+  // CUMULATIVE node sequence (each rung's cheapest set is the previous
+  // rung's plus 1-3 more nodes, never a smaller or disjoint set -- see
+  // `node tools/balance.mjs`'s GOAL 2 report, hand-cross-checked because
+  // an independent per-mission search can and did report a smaller node
+  // count for a later, harder mission by picking a different, unrelated
+  // path): guide-1 alone reaches orbit-down-1 (a lazy-ish flight already
+  // outranges 150 km once it can turn at all); struct-4/5 (second stage +
+  // a dry-mass trim) reach orbit-down-2; prop-5/6 (the thrust to carry a
+  // third stage) reach orbit-apogee on a strong, mostly-vertical shot with
+  // no orbit quality required; struct-6/prop-8 (the third stage and its
+  // engine) reach orbit-low's periapsis; prop-9's small isp margin is what
+  // crosses the remaining gap to the tier goal's higher periapsis -- which
+  // is exactly the two-node split (prop-8 required, prop-9 margin) prop-8's
+  // own doc comment above describes, and the reason the two are separate
+  // nodes rather than one.
   //
   // COSTS. Tier 1's full tree costs 30 700 funds; tier 2 escalates from
-  // there (137 000 funds for its 13 nodes, ~4.5x tier 1), matching payouts
-  // on the tier 2 mission ladder (js/data/missions.js) that are "well
-  // above" tier 1's.
+  // there (212 000 funds for its 13 nodes). Node costs (not mission
+  // payouts) were raised from an earlier pass once `node tools/balance.mjs`
+  // showed a greedy player reaching the tier goal in 20 tier 2 launches --
+  // under the 30-60 target -- so the fix here is cost, matching
+  // ARCHITECTURE.md's own framing ("costs or requirements should rise, not
+  // payouts fall below what makes contracts worth flying"). The greedy
+  // simulation now takes 36 tier 2 launches, and its reputation curve
+  // (also `node tools/balance.mjs`'s GOAL 3 report) crosses every rung's
+  // `minReputation` gate well before that rung's vehicle is actually
+  // affordable, so reputation is a real, met-in-advance gate rather than
+  // what the player ends up waiting on.
   {
     id: 'prop-5',
     branch: 'propulsion',
@@ -332,7 +410,7 @@ export const nodes = [
     tier: 2,
     name: 'Booster thrust upgrade',
     desc: '+30% stage 1 thrust. Keeps liftoff TWR healthy once the third stage adds its weight.',
-    cost: { funds: 9000 },
+    cost: { funds: 17000 },
     requires: ['prop-4'],
     effects: [{ stat: 'stages.0.thrust', op: 'mul', value: 1.3 }],
   },
@@ -343,7 +421,7 @@ export const nodes = [
     tier: 2,
     name: 'Stage 2 vacuum engine',
     desc: '+250% stage 2 thrust, +30% stage 2 isp. A much larger engine sized for the third stage riding on top. Needs the second stage to exist.',
-    cost: { funds: 12000 },
+    cost: { funds: 22000 },
     requires: ['prop-5', 'struct-4'],
     effects: [
       { stat: 'stages.1.thrust', op: 'mul', value: 3.5 },
@@ -357,7 +435,7 @@ export const nodes = [
     tier: 2,
     name: 'Stage 2 high-flow injector',
     desc: '+15% stage 2 thrust, -5% stage 2 isp. The booster trade-off, one stage up.',
-    cost: { funds: 9000 },
+    cost: { funds: 17000 },
     requires: ['prop-6'],
     effects: [
       { stat: 'stages.1.thrust', op: 'mul', value: 1.15 },
@@ -370,10 +448,27 @@ export const nodes = [
     level: 8,
     tier: 2,
     name: 'Stage 3 vacuum engine',
-    desc: '+42% stage 3 isp. Needs the third stage to exist.',
-    cost: { funds: 14000 },
+    desc: '+43% stage 3 isp. Needs the third stage to exist. Without this '
+      + "the stack does not carry enough delta-v to orbit at any turn -- it's "
+      + 'the node that makes orbit possible at all. Enough for a low '
+      + "periapsis (orbit-low); the tier goal's higher periapsis needs the "
+      + 'injector refinement (prop-9) on top.',
+    cost: { funds: 26000 },
     requires: ['prop-6', 'struct-6'],
-    effects: [{ stat: 'stages.2.isp', op: 'mul', value: 1.42 }],
+    effects: [{ stat: 'stages.2.isp', op: 'mul', value: 1.43 }],
+  },
+  {
+    id: 'prop-9',
+    branch: 'propulsion',
+    level: 9,
+    tier: 2,
+    name: 'Stage 3 injector refinement',
+    desc: '+2% stage 3 isp on top of the vacuum engine. Crosses the gap from '
+      + "orbit-low's periapsis to the tier goal's, and widens the turn "
+      + 'window an orbit attempt survives.',
+    cost: { funds: 7000 },
+    requires: ['prop-8'],
+    effects: [{ stat: 'stages.2.isp', op: 'mul', value: 1.02 }],
   },
 
   {
@@ -383,7 +478,7 @@ export const nodes = [
     tier: 2,
     name: 'Composite tankage',
     desc: '-10 kg stage 1 dry mass, -4 kg stage 2 dry mass.',
-    cost: { funds: 9000 },
+    cost: { funds: 17000 },
     requires: ['struct-4'],
     effects: [
       { stat: 'stages.0.dryMass', op: 'add', value: -10 },
@@ -397,14 +492,14 @@ export const nodes = [
     tier: 2,
     name: 'Third stage',
     desc: 'Adds a vacuum-optimised kick stage. The jump toward orbit. Needs a stage 2 engine that can actually lift it first.',
-    cost: { funds: 16000 },
+    cost: { funds: 30000 },
     requires: ['struct-5', 'struct-4', 'prop-6'],
     effects: [
       {
         addStage: {
           dryMass: 8,
-          propMass: 45,
-          thrust: 1300,
+          propMass: 60,
+          thrust: 1500,
           isp: 320,
           reliability: 0.82,
         },
@@ -417,12 +512,15 @@ export const nodes = [
     level: 7,
     tier: 2,
     name: 'Stretched third-stage tank',
-    desc: '-2 kg stage 3 dry mass, -3 kg stage 2 dry mass.',
+    desc: '-1 kg stage 3 dry mass, -2 kg stage 2 dry mass. Stage 3 is '
+      + 'already thin-walled (8 kg dry against 60+ kg of propellant), so a '
+      + 'small absolute cut here is a real fractional one -- kept small on '
+      + 'purpose so it reads as a margin buy, not another required stage.',
     cost: { funds: 11000 },
     requires: ['struct-6'],
     effects: [
-      { stat: 'stages.2.dryMass', op: 'add', value: -2 },
-      { stat: 'stages.1.dryMass', op: 'add', value: -3 },
+      { stat: 'stages.2.dryMass', op: 'add', value: -1 },
+      { stat: 'stages.1.dryMass', op: 'add', value: -2 },
     ],
   },
   {
@@ -431,12 +529,14 @@ export const nodes = [
     level: 8,
     tier: 2,
     name: 'Extended third-stage tank',
-    desc: '+40 kg stage 3 propellant, +3 kg stage 3 dry mass.',
-    cost: { funds: 13000 },
+    desc: '+10 kg stage 3 propellant, +2 kg stage 3 dry mass. A margin buy: '
+      + 'raises the achievable periapsis rather than unlocking orbit '
+      + 'outright.',
+    cost: { funds: 9500 },
     requires: ['struct-7'],
     effects: [
-      { stat: 'stages.2.propMass', op: 'add', value: 40 },
-      { stat: 'stages.2.dryMass', op: 'add', value: 3 },
+      { stat: 'stages.2.propMass', op: 'add', value: 10 },
+      { stat: 'stages.2.dryMass', op: 'add', value: 2 },
     ],
   },
 
@@ -447,7 +547,7 @@ export const nodes = [
     tier: 2,
     name: 'Gravity-turn guidance',
     desc: 'Unlocks the loadout turn slider. Without this, every flight is vertical.',
-    cost: { funds: 6000 },
+    cost: { funds: 11000 },
     requires: [],
     effects: [{ stat: 'guidance', op: 'set', value: 1 }],
   },
@@ -456,22 +556,16 @@ export const nodes = [
     branch: 'guidance',
     level: 2,
     tier: 2,
-    name: 'Adaptive pitch program',
-    desc: 'Widens the good turn window and trims steering losses.',
-    cost: { funds: 9000 },
+    name: 'Guidance refinements',
+    desc: 'Raises the guidance level further. Honest note: the current flight '
+      + 'model only checks guidance >= 1 (whether the turn slider does '
+      + "anything at all) -- it does not read a higher level, so this node "
+      + "does not change how any flight flies. It is headroom for a future "
+      + 'pitch-program refinement (a wider good-turn window, trimmed '
+      + 'steering losses), not a purchase that pays off today.',
+    cost: { funds: 13000 },
     requires: ['guide-1'],
-    effects: [{ stat: 'guidance', op: 'add', value: 1 }],
-  },
-  {
-    id: 'guide-3',
-    branch: 'guidance',
-    level: 3,
-    tier: 2,
-    name: 'Closed-loop guidance',
-    desc: 'Further widens the good turn window and trims steering losses.',
-    cost: { funds: 12000 },
-    requires: ['guide-2'],
-    effects: [{ stat: 'guidance', op: 'add', value: 1 }],
+    effects: [{ stat: 'guidance', op: 'add', value: 2 }],
   },
 
   {
@@ -481,7 +575,7 @@ export const nodes = [
     tier: 2,
     name: 'Stage 2 requalification',
     desc: '+1% stage 2 reliability.',
-    cost: { funds: 7000 },
+    cost: { funds: 13000 },
     requires: ['rel-4'],
     effects: [{ stat: 'stages.1.reliability', op: 'mul', value: 1.01 }],
   },
@@ -492,7 +586,7 @@ export const nodes = [
     tier: 2,
     name: 'Stage 3 restart qualification',
     desc: '+20% stage 3 reliability. Requires the third stage to exist.',
-    cost: { funds: 10000 },
+    cost: { funds: 18500 },
     requires: ['rel-5', 'struct-6'],
     effects: [{ stat: 'stages.2.reliability', op: 'mul', value: 1.2 }],
   },

@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTree, collectEffects, canBuy, buy } from '../js/core/tree.js';
-import { buildVehicle, totalDeltaV } from '../js/core/vehicle.js';
-import { resolveLaunch } from '../js/core/resolver.js';
+import { buildVehicle, totalDeltaV, stackMassAbove } from '../js/core/vehicle.js';
+import { resolveLaunch, ORBIT_MIN_ALT } from '../js/core/resolver.js';
 import { makeRng } from '../js/core/rng.js';
+import { credit } from '../js/core/economy.js';
 import { nodes } from '../js/data/tree.js';
 import { missions, tierGoals } from '../js/data/missions.js';
 import { baseVehicle } from '../js/data/components.js';
@@ -416,33 +417,9 @@ test('ideal full-tree (tier 1 + tier 2) delta-v is between 9 and 11 km/s', () =>
 // =======================================================================
 // TIER 2 — resolver-driven assertions.
 //
-// Guarded: skipped (via test.skip) unless resolveLaunch's outcome actually
-// carries a `periapsis` field, which is how this file tells a phase 1
-// resolver (ARCHITECTURE.md's "Phase 1 -- tier 2, orbit") apart from the
-// still-phase-0 resolver these tests were written against. The other agent
-// concurrently rewriting js/core/resolver.js is expected to land that field
-// — once it has landed for good, this guard (and the "next pass" comment
-// on each test below) should simply be deleted; the test bodies themselves
-// don't need to change.
+// The phase 1 resolver (ARCHITECTURE.md's "Phase 1 -- tier 2, orbit") has
+// landed for good, so these run unconditionally -- no more test.skip guard.
 // =======================================================================
-
-const PHASE1_RESOLVER = (() => {
-  try {
-    const probe = buildVehicle(baseVehicle, []);
-    const outcome = resolveLaunch(
-      forceReliability(probe),
-      { requirement: { orbit: { periapsis: 1e9 } } },
-      { fuelFraction: 1, turn: 0 },
-      makeRng(SEED),
-      {},
-    );
-    return 'periapsis' in outcome;
-  } catch {
-    return false;
-  }
-})();
-
-const testTier2 = PHASE1_RESOLVER ? test : test.skip;
 
 const NO_CEILING_ORBIT = { requirement: { orbit: { periapsis: 1e9 } } };
 const TURN_STEPS = Array.from({ length: 21 }, (_, i) => i * 0.05); // 0, 0.05, ..., 1
@@ -477,9 +454,8 @@ function missionMetBy(mission, metrics) {
   return false;
 }
 
-// next pass: delete PHASE1_RESOLVER, testTier2, and this guard comment once
 // resolver.js's phase 1 rewrite is unconditionally in place.
-testTier2('some prereq-valid owned set (the full tree) reaches tierGoals[2] (simulated)', () => {
+test('some prereq-valid owned set (the full tree) reaches tierGoals[2] (simulated)', () => {
   const allIds = nodes.map((n) => n.id);
   const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: allIds }));
   const metrics = bestMetricsOverTurns(vehicle, 1);
@@ -490,8 +466,7 @@ testTier2('some prereq-valid owned set (the full tree) reaches tierGoals[2] (sim
   );
 });
 
-// next pass: delete the guard (see above); the body stays as-is.
-testTier2('every tier 2 mission is reachable by some prereq-valid owned set (the full tree, simulated)', () => {
+test('every tier 2 mission is reachable by some prereq-valid owned set (the full tree, simulated)', () => {
   const allIds = nodes.map((n) => n.id);
   const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: allIds }));
   const metrics = bestMetricsOverTurns(vehicle, 1);
@@ -500,7 +475,209 @@ testTier2('every tier 2 mission is reachable by some prereq-valid owned set (the
   }
 });
 
-// next pass: delete the guard (see above); the body stays as-is.
+// =======================================================================
+// GOAL 1: `turn` is a real decision, not a whole-slider-or-single-notch
+// dead lever. Full periapsis-vs-turn table, same shape `node
+// tools/balance.mjs`'s report uses, for (a) the cheapest prereq-valid set
+// that reaches the tier goal and (b) the full tree.
+// =======================================================================
+
+function periapsisAtTurns(vehicle, fuelFraction = 1) {
+  return TURN_STEPS.map((turn) => {
+    const rng = makeRng(SEED);
+    const outcome = resolveLaunch(forceReliability(vehicle), NO_CEILING_ORBIT, { fuelFraction, turn }, rng, {});
+    return { turn, periapsis: outcome.periapsis };
+  });
+}
+
+function turnWindow(rows, threshold) {
+  const hits = rows.filter((r) => typeof r.periapsis === 'number' && r.periapsis >= threshold);
+  const peak = rows.reduce(
+    (best, r) => (typeof r.periapsis === 'number' && (!best || r.periapsis > best.periapsis) ? r : best),
+    null,
+  );
+  return { count: hits.length, peakTurn: peak ? peak.turn : null };
+}
+
+function metricFor(requirement, metrics) {
+  if (requirement.altitude !== undefined) return metrics.maxAltitude;
+  if (requirement.downrange !== undefined) return metrics.maxDownrange;
+  if (requirement.orbit !== undefined) return metrics.bestPeriapsis ?? -Infinity;
+  return -Infinity;
+}
+
+function requiredValue(requirement) {
+  if (requirement.altitude !== undefined) return requirement.altitude;
+  if (requirement.downrange !== undefined) return requirement.downrange;
+  if (requirement.orbit !== undefined) return requirement.orbit.periapsis;
+  return Infinity;
+}
+
+// CUMULATIVE mission ladder (shared by the goal 1 and goal 2 tests below):
+// walks the tier 2 missions in file order, each rung buying the cheapest
+// additional nodes on top of the PREVIOUS rung's owned set -- what a player
+// who never sells a node actually experiences, unlike an independent
+// per-mission search that restarts from empty every time and can report a
+// smaller set for a later, harder mission (checked by hand: it does, for
+// this exact data, if the reliability branch is left in the search pool).
+// Starts from the tier 1 cheapest-goal set. The search pool excludes the
+// reliability branch: reliability is forced to 1 throughout this file, so
+// no reliability node can ever move a trajectory metric, and leaving it in
+// only invites that same artifact.
+const tier1CheapestGoalOwned = (() => {
+  const goalAltitude = tierGoals[1].requirement.altitude;
+  const best = validOwnedSets.reduce(
+    (b, s) => (s.altitude >= goalAltitude && (!b || s.owned.length < b.owned.length) ? s : b),
+    null,
+  );
+  return best ? best.owned : [];
+})();
+const trajectoryPool = fullTree.nodes.filter((n) => n.branch !== 'reliability');
+
+function chainedCheapestReaching(startOwned, requirement) {
+  let state = { owned: [...startOwned], funds: Number.MAX_SAFE_INTEGER, resources: {}, tier: 2 };
+  if (requirement.downrange !== undefined || requirement.orbit !== undefined) {
+    if (!state.owned.includes('guide-1') && canBuy(fullTree, state, 'guide-1')) {
+      state = buy(fullTree, state, 'guide-1');
+    }
+  }
+  const target = requiredValue(requirement);
+  let metric = metricFor(requirement, bestMetricsOverTurns(buildVehicle(baseVehicle, collectEffects(fullTree, state)), 1));
+  while (metric < target) {
+    let pick = null;
+    let pickMetric = metric;
+    let pickRatio = -Infinity;
+    for (const node of trajectoryPool) {
+      if (!canBuy(fullTree, state, node.id)) continue;
+      const candidate = { ...state, owned: [...state.owned, node.id] };
+      const candidateMetric = metricFor(
+        requirement,
+        bestMetricsOverTurns(buildVehicle(baseVehicle, collectEffects(fullTree, candidate)), 1),
+      );
+      if (candidateMetric > metric) {
+        const ratio = (candidateMetric - metric) / Math.max(node.cost.funds ?? 1, 1);
+        if (ratio > pickRatio) { pick = node; pickMetric = candidateMetric; pickRatio = ratio; }
+      }
+    }
+    if (!pick) break;
+    state = buy(fullTree, state, pick.id);
+    metric = pickMetric;
+  }
+  return { owned: state.owned, metric, reached: metric >= target };
+}
+
+const tier2Ladder = (() => {
+  let owned = [...tier1CheapestGoalOwned];
+  const rungs = [];
+  for (const m of tier2Missions) {
+    const result = chainedCheapestReaching(owned, m.requirement);
+    rungs.push({ mission: m, ...result, delta: result.owned.length - owned.length });
+    owned = result.owned;
+  }
+  return rungs;
+})();
+
+test('the cumulative cheapest-reaching-set ladder reaches every tier 2 rung', () => {
+  for (const rung of tier2Ladder) {
+    assert.ok(rung.reached, `${rung.mission.id} was not reached by the cumulative ladder (metric ${rung.metric})`);
+  }
+});
+
+test('the cumulative ladder steps by 1-3 new nodes per rung (ARCHITECTURE.md: "one to three more purchases")', () => {
+  for (const rung of tier2Ladder) {
+    assert.ok(
+      rung.delta >= 1 && rung.delta <= 3,
+      `${rung.mission.id} needed ${rung.delta} new nodes on top of the previous rung, expected 1-3`,
+    );
+  }
+});
+
+test('the ladder order is sensible: downrange rungs before the apogee rung, before low orbit, before the goal', () => {
+  const byId = new Map(tier2Ladder.map((r) => [r.mission.id, r]));
+  const costOf = (r) => r.owned.length; // node count is a fine proxy for "how far into the tree"
+  assert.ok(costOf(byId.get('orbit-down-1')) <= costOf(byId.get('orbit-apogee')));
+  assert.ok(costOf(byId.get('orbit-down-2')) <= costOf(byId.get('orbit-apogee')));
+  assert.ok(costOf(byId.get('orbit-apogee')) <= costOf(byId.get('orbit-low')));
+  assert.ok(costOf(byId.get('orbit-low')) <= costOf(byId.get('orbit-goal')));
+});
+
+test('turn is a real decision: the cheapest orbit-goal-reaching set has a narrow (2-4 notch) good-turn window, not peaking at the lazy end', () => {
+  const cheapestOwned = tier2Ladder[tier2Ladder.length - 1].owned;
+  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: cheapestOwned }));
+  const rows = periapsisAtTurns(vehicle, 1);
+  const window = turnWindow(rows, ORBIT_MIN_ALT);
+  assert.ok(window.count >= 2 && window.count <= 6, `cheapest set's good-turn window was ${window.count}/21 notches, expected roughly 2-4`);
+  assert.notEqual(window.peakTurn, 0, 'cheapest set orbits best at turn=0 (lazy end) -- turn is not a real decision');
+  assert.notEqual(window.peakTurn, 1, 'cheapest set orbits best at turn=1 (hard end) -- turn is not a real decision');
+});
+
+test('turn is a real decision: the full tree\'s good-turn window is wider than the cheapest set\'s but still not the whole slider', () => {
+  const cheapestOwned = tier2Ladder[tier2Ladder.length - 1].owned;
+  const allIds = nodes.map((n) => n.id);
+  const cheapestVehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: cheapestOwned }));
+  const fullVehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: allIds }));
+  const cheapestWindow = turnWindow(periapsisAtTurns(cheapestVehicle, 1), ORBIT_MIN_ALT);
+  const fullWindow = turnWindow(periapsisAtTurns(fullVehicle, 1), ORBIT_MIN_ALT);
+  assert.ok(fullWindow.count > cheapestWindow.count, `full tree window (${fullWindow.count}) should be wider than the cheapest set's (${cheapestWindow.count})`);
+  assert.ok(fullWindow.count <= 10, `full tree window was ${fullWindow.count}/21 notches, expected well under half the slider`);
+  assert.notEqual(fullWindow.peakTurn, 0, 'full tree orbits best at turn=0 (lazy end) -- a sign the vehicle is thrust-poor and turn is not a real decision');
+  assert.notEqual(fullWindow.peakTurn, 1, 'full tree orbits best at turn=1 (hard end)');
+});
+
+// =======================================================================
+// GOAL 4: TWR safety rail across tier 1 + tier 2 combined. Bounded version
+// of `node tools/balance.mjs`'s GOAL 4 report: BFS-enumerate every
+// prereq-valid owned combination across BOTH tiers (small in practice --
+// see js/data/tree.js's THRUST-TO-WEIGHT SAFETY RAIL note -- prerequisites
+// chain hard enough that this stays well under the 10s budget), then check
+// liftoff TWR >= 1.05 and every upper stage's TWR at ignition >= 0.5 on
+// each one.
+// =======================================================================
+
+test('no purchase order among tier 1 + tier 2 nodes leaves liftoff TWR under 1.05 or an upper stage under 0.5 at ignition', () => {
+  const allIds = nodes.map((n) => n.id);
+  const seen = new Set(['']);
+  let frontier = [[]];
+  const reachable = [[]];
+  while (frontier.length) {
+    const next = [];
+    for (const owned of frontier) {
+      const ownedSet = new Set(owned);
+      for (const id of allIds) {
+        if (ownedSet.has(id)) continue;
+        const reqs = fullTree.byId.get(id).requires ?? [];
+        if (!reqs.every((r) => ownedSet.has(r))) continue;
+        const newOwned = [...owned, id].sort();
+        const key = newOwned.join(',');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        next.push(newOwned);
+        reachable.push(newOwned);
+      }
+    }
+    frontier = next;
+  }
+  assert.ok(reachable.length > 100, `sanity: expected hundreds of reachable owned sets, got ${reachable.length}`);
+
+  const g = 9.80665;
+  function stageTWRs(vehicle, fuelFraction = 1) {
+    return vehicle.stages.map((stage, i) => {
+      const above = stackMassAbove(vehicle, i, fuelFraction);
+      const mass = above + stage.dryMass + stage.propMass * fuelFraction;
+      return stage.thrust / (mass * g);
+    });
+  }
+
+  for (const owned of reachable) {
+    const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned }));
+    const twrs = stageTWRs(vehicle, 1);
+    assert.ok(twrs[0] >= 1.05, `liftoff TWR ${twrs[0].toFixed(3)} < 1.05 for owned=[${owned.join(',')}]`);
+    for (let i = 1; i < twrs.length; i += 1) {
+      assert.ok(twrs[i] >= 0.5, `stage ${i} TWR ${twrs[i].toFixed(3)} < 0.5 at ignition for owned=[${owned.join(',')}]`);
+    }
+  }
+});
+
 //
 // Greedy player, tier 2: continues from a greedy tier 1 end state (same
 // algorithm as the tier 1 greedy test above — best reachable mission, then
@@ -512,7 +689,17 @@ testTier2('every tier 2 mission is reachable by some prereq-valid owned set (the
 // launch-to-launch progress check re-scans the full TURN_STEPS range, which
 // keeps this test's runtime to a couple of seconds while still driving the
 // real resolver throughout (never the ideal-dv shortcut).
-testTier2('a greedy player reaches the tier 2 goal within 80 tier 2 launches', () => {
+//
+// REPUTATION: starts at 0 (a fresh save), credited via the real
+// `credit` (js/core/economy.js, clamped to [0, 100]) after every launch,
+// exactly the way js/core/economy.js's applyOutcome does on a success. An
+// earlier draft of this simulation started reputation at 100 -- already
+// past every tier 2 gate -- and never applied repGain, so the
+// `minReputation` filter below was checked against a constant that could
+// never fail it. That is a state bug (this test's own scaffolding), not a
+// property of the real game, and it hid whether the gates are reachable at
+// all. Fixed here so the assertions below actually exercise the gates.
+test('a greedy player reaches the tier 2 goal in 30-60 tier 2 launches, crossing every minReputation gate before affording that rung', () => {
   const DECISION_TURN = 0.3;
   const floorMission = missions.find((m) => m.floor);
   const goalPeriapsis = tierGoals[2].requirement.orbit.periapsis;
@@ -523,7 +710,7 @@ testTier2('a greedy player reaches the tier 2 goal within 80 tier 2 launches', (
     return outcome.periapsis ?? -Infinity;
   }
 
-  let state = { owned: [], funds: 0, resources: {}, reputation: 100, tier: 1 };
+  let state = { owned: [], funds: 0, resources: {}, reputation: 0, tier: 1 };
   let launches = 0;
   const MAX_TOTAL_LAUNCHES = 150;
 
@@ -535,9 +722,11 @@ testTier2('a greedy player reaches the tier 2 goal within 80 tier 2 launches', (
   while (altitude < tier1Goal && launches < MAX_TOTAL_LAUNCHES) {
     let best = floorMission;
     for (const m of tier1Missions) {
-      if (m.requirement.altitude <= altitude && m.payout > best.payout) best = m;
+      if (m.requirement.altitude <= altitude
+        && (m.minReputation === undefined || state.reputation >= m.minReputation)
+        && m.payout > best.payout) best = m;
     }
-    state = { ...state, funds: state.funds + best.payout };
+    state = credit(state, { funds: best.payout, reputation: best.repGain });
     launches += 1;
     for (;;) {
       let pick = null;
@@ -559,6 +748,7 @@ testTier2('a greedy player reaches the tier 2 goal within 80 tier 2 launches', (
   // Tier 2 leg.
   state = { ...state, tier: 2 };
   let metrics = bestMetricsOverTurns(buildVehicle(baseVehicle, collectEffects(fullTree, state)), 1);
+  const reputationCurve = [];
   while ((metrics.bestPeriapsis ?? -Infinity) < goalPeriapsis && launches < MAX_TOTAL_LAUNCHES) {
     let best = floorMission;
     for (const m of missions) {
@@ -566,8 +756,9 @@ testTier2('a greedy player reaches the tier 2 goal within 80 tier 2 launches', (
       if (m.minReputation !== undefined && state.reputation < m.minReputation) continue;
       if (missionMetBy(m, metrics) && m.payout > best.payout) best = m;
     }
-    state = { ...state, funds: state.funds + best.payout };
+    state = credit(state, { funds: best.payout, reputation: best.repGain });
     launches += 1;
+    reputationCurve.push({ tier2Launch: launches - tier1Launches, reputation: state.reputation });
 
     for (;;) {
       let pick = null;
@@ -591,8 +782,28 @@ testTier2('a greedy player reaches the tier 2 goal within 80 tier 2 launches', (
     (metrics.bestPeriapsis ?? -Infinity) >= goalPeriapsis,
     `greedy player stalled at periapsis ${metrics.bestPeriapsis} after ${launches} total launches`,
   );
+  // ARCHITECTURE.md's own bound ("data.test.js asserts ... greedy tier 2
+  // launches ≤ 80") plus the task's tighter 30-60 economy target -- 30-60
+  // implies ≤80, so this one assertion covers both.
   assert.ok(
-    tier2Launches <= 80,
-    `greedy player took ${tier2Launches} tier 2 launches (${launches} total), expected <= 80`,
+    tier2Launches >= 30 && tier2Launches <= 60,
+    `greedy player took ${tier2Launches} tier 2 launches, expected 30-60`,
   );
+
+  // Reputation-gate reachability (task goal 3): the greedy simulation must
+  // show reputation crossing each rung's minReputation before the player
+  // can afford that rung's vehicle -- the LAST tier2Launch entry in the
+  // curve is when the goal-reaching vehicle finally got bought, so every
+  // gate must be crossed at or before an EARLIER launch than that.
+  const finalLaunch = tier2Launches;
+  for (const m of tier2Missions) {
+    if (m.minReputation === undefined) continue;
+    const firstCross = reputationCurve.find((r) => r.reputation >= m.minReputation);
+    assert.ok(firstCross, `${m.id}'s minReputation (${m.minReputation}) was never crossed`);
+    assert.ok(
+      firstCross.tier2Launch < finalLaunch,
+      `${m.id}'s minReputation (${m.minReputation}) was not crossed until launch ${firstCross.tier2Launch}, ` +
+        `at or after the goal-reaching vehicle was bought (launch ${finalLaunch})`,
+    );
+  }
 });

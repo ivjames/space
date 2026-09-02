@@ -90,11 +90,10 @@ export const missions = [
   },
 
   // -----------------------------------------------------------------------
-  // TIER 2 — orbit. PROVISIONAL, same caveat as js/data/tree.js: sized to a
-  // plausible ladder shape, not against the real resolver (still being
-  // rewritten alongside this file — see ARCHITECTURE.md's "Phase 1 — tier
-  // 2, orbit"). Re-tune thresholds against `node tools/balance.mjs` once it
-  // lands, the same way the tier 1 altitude ladder above was.
+  // TIER 2 — orbit. Balanced against the REAL phase 1 resolver via
+  // `node tools/balance.mjs` (its GOAL 2/3 reports), the same way the tier
+  // 1 altitude ladder above was against phase 0's — not a plausible-looking
+  // shape picked ahead of the resolver landing.
   //
   // Five rungs, each a different requirement shape (ARCHITECTURE.md: a
   // mission has exactly one of `{ altitude }`, `{ downrange }`,
@@ -113,11 +112,33 @@ export const missions = [
   //   orbit-goal     periapsis 100 km   the tier goal itself, offered as a
   //                                     contract too (matches tierGoals[2])
   //
+  // The CUMULATIVE cheapest-reaching-set chain across these five rungs
+  // (js/data/tree.js's own LADDER note has the node-by-node story) steps
+  // 1, 2, 2, 2, 1 new nodes per rung — every step in ARCHITECTURE.md's
+  // "one to three more purchases than the previous" range, in the sensible
+  // order the requirement shapes themselves suggest (downrange needs only
+  // guidance; apogee needs raw thrust with no turn quality; low orbit and
+  // the goal need the third stage, in that order since the tier goal's
+  // higher periapsis is what needs prop-9's extra margin on top of
+  // orbit-low's prop-8). This is hand-verified against `node
+  // tools/balance.mjs`'s GOAL 2 report, not just the independent
+  // per-mission heuristic also printed there (which restarts from empty
+  // for every mission and can report a smaller set for a later, harder
+  // rung — see that report's own NOTE for why the cumulative chain is the
+  // one that matters here).
+  //
   // Payouts are well above tier 1's (max 2 200): 3 000-14 000. repGain/
   // repLoss scale up to match (tier 1 tops out at 3/2). minReputation gates
   // climb through the range reputation can actually reach by tier 2 (tier 1
   // gates top out at 30) so reputation keeps mattering into the new tier,
-  // per DESIGN.md.
+  // per DESIGN.md. `node tools/balance.mjs`'s GOAL 3 greedy simulation
+  // confirms these gates are reachable in practice, not just numerically:
+  // reputation crosses every rung's minReputation several launches before
+  // that rung's vehicle becomes affordable, so the gate is never what a
+  // greedy player is actually waiting on. The same simulation reaches the
+  // tier goal in 36 tier 2 launches — inside the 30-60 target (raising
+  // tier 2 NODE COSTS, not payouts, is what moved this up from an earlier
+  // pass's 20; see js/data/tree.js's COSTS note).
   {
     id: 'orbit-down-1',
     tier: 2,

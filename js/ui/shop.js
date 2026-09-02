@@ -5,6 +5,15 @@
 //   .row[data-node="<id>"] with class owned | buyable | locked
 // Tapping a buyable row buys it and re-renders; the caller's state update
 // refreshes the HUD.
+//
+// TIERS (phase 1). Only nodes at or below the player's current tier are
+// listed — `branches(tree, state.tier)` — so tier 2's twelve nodes simply do
+// not exist on the shelf until the player has reached tier 2. Inside a
+// branch the nodes stay in level order, with a thin divider where the tier
+// changes: the branch reads as one ladder that grew, not as two lists. A
+// locked node names the prerequisites it is still missing, and those names
+// come from the whole tree (tree.byId), not from the filtered view, so a
+// tier 2 node's tier 1 prerequisites resolve to real names.
 
 import { branches, canBuy, buy } from '../core/tree.js';
 
@@ -95,11 +104,15 @@ function nodeState(tree, state, node) {
 function lockReason(tree, state, node) {
   const missing = (node.requires ?? []).filter((r) => !state.owned.includes(r));
   if (missing.length > 0) {
+    // tree.byId spans every tier, so a tier 2 node's tier 1 prerequisites
+    // resolve by name even though branches() filtered them out of the view.
     const names = missing.map((id) => tree.byId.get(id)?.name ?? id);
     return `needs ${names.join(', ')}`;
   }
   return 'not enough funds';
 }
+
+const nodeTier = (node) => node.tier ?? 1;
 
 /**
  * Mount the shop into `el`.
@@ -116,8 +129,11 @@ export function mountShop(el, ctx) {
 
   function render() {
     const state = getState();
-    const html = branches(tree).map((branch) => {
+    const maxTier = state.tier ?? 1;
+    const html = branches(tree, maxTier).map((branch) => {
       const owned = branch.nodes.filter((n) => state.owned.includes(n.id)).length;
+      const multiTier = new Set(branch.nodes.map(nodeTier)).size > 1;
+      let shownTier = null;
       const rows = branch.nodes.map((node) => {
         const cls = nodeState(tree, state, node);
         // The lock reason lives in the main column, not the side one: it is a
@@ -126,7 +142,14 @@ export function mountShop(el, ctx) {
         const reason = cls === 'locked'
           ? `<div class="hint row-reason">${escapeHtml(lockReason(tree, state, node))}</div>`
           : '';
-        return `
+        // A divider only where a branch actually spans tiers; a branch that
+        // is all one tier (guidance, at tier 2) gets no redundant label.
+        let divider = '';
+        if (multiTier && nodeTier(node) !== shownTier) {
+          shownTier = nodeTier(node);
+          divider = `<li class="tier-divider">TIER ${shownTier}</li>`;
+        }
+        return `${divider}
           <li class="row node ${cls}" data-node="${escapeHtml(node.id)}" role="button" tabindex="0">
             <div class="row-main">
               <div class="row-title">${escapeHtml(node.name)}</div>
