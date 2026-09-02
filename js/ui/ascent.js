@@ -113,10 +113,13 @@ export function playOutcome(canvas, outcome, opts = {}) {
   const totalT = Math.max(lastSampleT, lastEventT, 0);
 
   const requirement = Math.max(opts.requirement ?? 0, 0);
-  const peak = Math.max(outcome?.maxAltitude ?? 0, 0);
-  // One scale for the whole flight, chosen so a 20 km hop and a 110 km shot
-  // both fit with headroom.
-  const scaleAlt = Math.max(requirement, peak, 1000) * 1.1;
+  // The scale is set from the target only, never from the outcome: the top
+  // of the gauge must not tell the player the apogee before the flight
+  // does. If the rocket climbs past the headroom, the scale grows with it.
+  let scaleAlt = Math.max(requirement, 1000) * 1.25;
+  function growScale(alt) {
+    if (alt > scaleAlt * 0.9) scaleAlt = alt / 0.9;
+  }
 
   const speed = opts.speed ?? (totalT > 0 ? totalT / PLAYBACK_SECONDS : 1);
   const onEvent = typeof opts.onEvent === 'function' ? opts.onEvent : () => {};
@@ -434,6 +437,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
 
   function frame() {
     const s = sampleAt(samples, simT);
+    growScale(s.alt);
     resize();
     ctx.clearRect(0, 0, w, h);
     drawSky();

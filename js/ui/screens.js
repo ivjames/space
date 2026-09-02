@@ -6,7 +6,7 @@
 // a js/core call whose new state is handed back to main.js through update().
 
 import { makeRng } from '../core/rng.js';
-import { resolveLaunch, requiredDeltaV } from '../core/resolver.js';
+import { resolveLaunch } from '../core/resolver.js';
 import { totalDeltaV, G0 } from '../core/vehicle.js';
 import { recordLaunch, tierGoalMet, deriveVehicle } from '../core/state.js';
 import { applyOutcome } from '../core/economy.js';
@@ -141,13 +141,11 @@ export function mountScreens(ctx) {
     const mission = selectedMission();
     const ff = view.fuelFraction;
     const dv = vehicle ? totalDeltaV(vehicle, ff) : 0;
-    const need = mission ? requiredDeltaV(mission) : 0;
     const stages = vehicle?.stages?.length ?? 0;
     const wet = vehicle
       ? vehicle.stages.reduce((m, s) => m + s.dryMass + s.propMass * ff, vehicle.payloadMass)
       : 0;
     const twr = vehicle && wet > 0 ? (vehicle.stages[0]?.thrust ?? 0) / (wet * G0) : 0;
-    const pct = Math.min(100, need > 0 ? (dv / need) * 100 : 100);
 
     return `
       <div class="screen" data-screen="loadout">
@@ -158,15 +156,9 @@ export function mountScreens(ctx) {
           <dl class="stats">
             <div><dt>Stages</dt><dd>${stages}</dd></div>
             <div><dt>Delta-v</dt><dd>${ms(dv)}</dd></div>
-            <div><dt>Required</dt><dd>${ms(need)}</dd></div>
             <div><dt>Liftoff mass</dt><dd>${Math.round(wet)} kg</dd></div>
             <div><dt>Liftoff TWR</dt><dd class="${twr < 1 ? 'bad' : ''}">${twr.toFixed(2)}</dd></div>
           </dl>
-
-          <div class="gauge">
-            <div class="gauge-bar"><div class="gauge-fill ${dv >= need ? '' : 'short'}" style="width:${pct.toFixed(1)}%"></div></div>
-            <div class="hint">${dv >= need ? 'Meets the quoted budget — a real ascent pays more in gravity and drag' : `Short of the quoted budget by ${ms(need - dv)}`}</div>
-          </div>
 
           <div class="field">
             <label class="field-label" for="ff">
@@ -449,29 +441,16 @@ export function mountScreens(ctx) {
 
   function updateLoadoutNumbers() {
     if (view.name !== 'loadout' || !vehicle) return;
-    const mission = selectedMission();
     const ff = view.fuelFraction;
     const dv = totalDeltaV(vehicle, ff);
-    const need = mission ? requiredDeltaV(mission) : 0;
     const wet = vehicle.stages.reduce((m, s) => m + s.dryMass + s.propMass * ff, vehicle.payloadMass);
     const twr = wet > 0 ? (vehicle.stages[0]?.thrust ?? 0) / (wet * G0) : 0;
     const dds = screenEl.querySelectorAll('.stats dd');
-    if (dds.length >= 5) {
+    if (dds.length >= 4) {
       dds[1].textContent = ms(dv);
-      dds[3].textContent = `${Math.round(wet)} kg`;
-      dds[4].textContent = twr.toFixed(2);
-      dds[4].className = twr < 1 ? 'bad' : '';
-    }
-    const fill = screenEl.querySelector('.gauge-fill');
-    if (fill) {
-      fill.style.width = `${Math.min(100, need > 0 ? (dv / need) * 100 : 100).toFixed(1)}%`;
-      fill.classList.toggle('short', dv < need);
-      const note = fill.closest('.gauge')?.querySelector('.hint');
-      if (note) {
-        note.textContent = dv >= need
-          ? 'Meets the quoted budget — a real ascent pays more in gravity and drag'
-          : `Short of the quoted budget by ${ms(need - dv)}`;
-      }
+      dds[2].textContent = `${Math.round(wet)} kg`;
+      dds[3].textContent = twr.toFixed(2);
+      dds[3].className = twr < 1 ? 'bad' : '';
     }
   }
 
