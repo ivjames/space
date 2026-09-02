@@ -15,10 +15,13 @@ import {
   TURN_END_HARD,
 } from '../core/resolver.js';
 import { totalDeltaV, G0 } from '../core/vehicle.js';
-import { recordLaunch, tierGoalMet, deriveVehicle, advanceTier } from '../core/state.js';
+import {
+  recordLaunch, tierGoalMet, deriveVehicle, advanceTier, findTarget,
+} from '../core/state.js';
 import { applyOutcome } from '../core/economy.js';
 import { generateContracts } from '../core/contracts.js';
 import { playOutcome } from './ascent.js';
+import { playOrbital } from './map.js';
 import { mountShop } from './shop.js';
 
 function escapeHtml(s) {
@@ -37,6 +40,19 @@ function ms(v) {
 }
 
 /**
+ * A ticker timestamp. Ascent events land in the first few hundred seconds and
+ * keep the padded "T+142s" they have always had; the orbital phase runs for
+ * hours, where five digits of seconds stop being readable.
+ */
+function tickTime(t) {
+  const sec = Math.max(0, Math.round(t));
+  if (sec < 3600) return `T+${String(sec).padStart(3, ' ')}s`;
+  const h = Math.floor(sec / 3600);
+  const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
+  return `T+${h}:${m}h`;
+}
+
+/**
  * An orbit element (periapsis/apoapsis) as text. Unlike km() this has to cope
  * with a NEGATIVE altitude — a periapsis under the surface is how the resolver
  * says "this comes back down" — and with +Infinity, which is an escape
@@ -50,26 +66,79 @@ function elementText(v) {
 }
 
 /**
- * Which of the three requirement shapes a mission asks for
- * (ARCHITECTURE.md, phase 1): { altitude } | { downrange } | { orbit: { periapsis } }.
- * A mission has exactly one.
+ * A separation between two spacecraft: "500 m" / "3.2 km" / "14 km". Same
+ * shape as the resolver's own readouts, so the result screen's row and the
+ * sentence above it agree.
+ */
+function range(m) {
+  if (typeof m !== 'number' || !Number.isFinite(m)) return '—';
+  if (m < 1000) return `${Math.round(m)} m`;
+  if (m < 10000) return `${(m / 1000).toFixed(1)} km`;
+  return `${Math.round(m / 1000)} km`;
+}
+
+/** An object's orbit as the contracts board quotes it: "200 × 214 km". */
+function orbitText(periapsis, apoapsis) {
+  if (typeof periapsis === 'number' && Number.isFinite(periapsis)
+      && typeof apoapsis === 'number' && Number.isFinite(apoapsis)) {
+    return `${Math.round(periapsis / 1000)} × ${Math.round(apoapsis / 1000)} km`;
+  }
+  return `${elementText(periapsis)} × ${elementText(apoapsis)}`;
+}
+
+/**
+ * Which requirement shape a mission asks for. A mission has exactly one:
+ * { altitude } | { downrange } | { orbit: { periapsis } } (phases 0-1), and
+ * { rendezvous: { target, within } } | { dock: { target } } (phase 2).
  */
 function reqKind(requirement) {
   if (requirement) {
     if (typeof requirement.altitude === 'number') return 'altitude';
     if (typeof requirement.downrange === 'number') return 'downrange';
     if (requirement.orbit && typeof requirement.orbit.periapsis === 'number') return 'orbit';
+    if (requirement.rendezvous && typeof requirement.rendezvous.within === 'number') return 'rendezvous';
+    if (requirement.dock) return 'dock';
   }
   return 'altitude';
 }
 
-/** The requirement in its own unit: "25 km", "150 km downrange", "orbit ≥ 100 km". */
+/** The requirement in its own unit: "25 km", "orbit ≥ 100 km", "rendezvous within 5 km". */
 function requirementText(requirement) {
   switch (reqKind(requirement)) {
     case 'downrange': return `${km(requirement.downrange)} downrange`;
     case 'orbit': return `orbit ≥ ${km(requirement.orbit.periapsis)}`;
+    case 'rendezvous': return `rendezvous within ${km(requirement.rendezvous.within)}`;
+    case 'dock': return 'dock';
     default: return km(requirement?.altitude ?? 0);
   }
+}
+
+/** The two shapes that fly to something already in orbit (phase 2). */
+function needsTarget(mission) {
+  const kind = reqKind(mission?.requirement);
+  return kind === 'rendezvous' || kind === 'dock';
+}
+
+/** Which kind of object a target mission flies to ('core'). */
+function targetKind(mission) {
+  const req = mission?.requirement;
+  return req?.rendezvous?.target ?? req?.dock?.target ?? null;
+}
+
+/**
+ * The phase error as a sentence, with the SIGN CONVENTION the resolver
+ * documents (js/core/resolver.js, wrapDeg): `phaseErrorDeg` is the vehicle's
+ * own phase MINUS the target's, so a POSITIVE value means the vehicle is
+ * inserted ahead of the target — and therefore that the target is that far
+ * BEHIND. A negative value is the target ahead, which is the case the
+ * resolver's own doc comment pins ("window 0.9 against a target at phase 0.1
+ * ... reads 'Target was 72 deg ahead'").
+ */
+function phaseErrorText(deg) {
+  if (typeof deg !== 'number' || !Number.isFinite(deg)) return '—';
+  const mag = Math.round(Math.abs(deg));
+  if (mag === 0) return 'Target was alongside';
+  return `Target was ${mag}° ${deg < 0 ? 'ahead' : 'behind'}`;
 }
 
 /**
@@ -101,13 +170,59 @@ function tierBest(state, g) {
       const d = state.best?.maxDownrange ?? 0;
       return { label: 'best downrange', text: d > 0 ? km(d) : 'none yet' };
     }
+    case 'dock':
+    case 'rendezvous': {
+      // Tier 3 is judged on how close the player has ever got, and — for the
+      // dock goal — on whether anything is actually joined up there, which is
+      // what state.objects (not a metric) records.
+      if (reqKind(g?.requirement) === 'dock'
+          && (state.objects ?? []).some((obj) => obj.dockedTo != null)) {
+        return { label: 'station', text: 'assembled' };
+      }
+      const c = state.best?.bestClosestApproach;
+      return {
+        label: 'best approach',
+        text: typeof c === 'number' && Number.isFinite(c) ? range(c) : 'none yet',
+      };
+    }
     default:
       return { label: 'best altitude', text: km(state.best?.maxAltitude ?? 0) };
   }
 }
 
 /** What the tier is about, for the interstitial and the win screen. */
-const TIER_NAMES = { 1: 'Altitude', 2: 'Orbit' };
+const TIER_NAMES = { 1: 'Altitude', 2: 'Orbit', 3: 'Orbital maneuvering' };
+
+/**
+ * The one thing that changed, said once, on the interstitial that opens a
+ * tier. Each entry is a short list of paragraphs; the screen prints them in
+ * order under the goal.
+ */
+const TIER_BLURB = {
+  2: [
+    'Altitude is no longer the answer. Turn, and gain speed.',
+    `Guidance is a new branch in the tree. Without it the rocket flies
+      straight up whatever the loadout asks for; with it, the loadout gains a turn.`,
+  ],
+  3: [
+    `Orbit is no longer the end of the flight. Reach it, then fly to something
+      already up there: match its orbit, close the angle, approach, dock.`,
+    `Nothing is piloted. After insertion the flight is a sequence of burns the
+      upper stage can or cannot make, so restarts, navigation and a docking
+      adapter are what the tier is really buying — and the launch window is a
+      new loadout choice, because a rocket inserted level with its target
+      pays nothing for phasing.`,
+  ],
+};
+
+/** The teaser on a win screen, for the tier the player is about to open. */
+const TIER_TEASER = {
+  2: 'velocity, not altitude',
+  3: 'a second launch, to something the first one left in orbit',
+};
+
+/** Navigation quality, by `vehicle.nav` (resolver.js's NAV_APPROACH ladder). */
+const NAV_NAMES = ['none', 'radar', 'star tracker', 'docking sensors'];
 
 const lerp = (a, b, u) => a + (b - a) * u;
 
@@ -158,7 +273,12 @@ export function mountScreens(ctx) {
     // between launches") — the screen is rebuilt from scratch every time.
     fuelFraction: 1,
     turn: 0.5,
+    // The launch window, 0..1 of the way round the orbit (phase 2). It is
+    // compared against the target's own phase, so it only means anything on a
+    // rendezvous/dock mission — but it persists like the others.
+    window: 0.5,
     outcome: null,
+    error: null,    // a launch that could not be attempted, shown on loadout
     mission: null,
     ticker: [],
     playing: false,
@@ -209,6 +329,44 @@ export function mountScreens(ctx) {
       </nav>`;
   }
 
+  /**
+   * "In orbit": everything the player has left up there (ARCHITECTURE.md,
+   * phase 2). It is the board's memory — a rendezvous contract is only
+   * offered because one of these exists, and the tier 3 goal is a statement
+   * about this list. The element is always present so a test can select it;
+   * it is hidden while there is nothing to say and no tier that cares.
+   */
+  function objectsHtml() {
+    const state = getState();
+    const objects = state.objects ?? [];
+    const nameOf = (id) => objects.find((o) => o.id === id)?.name ?? id;
+    if (objects.length === 0 && (state.tier ?? 1) < 3) {
+      return '<section class="objects" data-objects hidden></section>';
+    }
+    const rows = objects.map((obj) => `
+        <li class="row object" data-object="${escapeHtml(obj.id)}">
+          <div class="row-main">
+            <div class="row-title">${escapeHtml(obj.name ?? obj.id)}</div>
+            <div class="hint">${escapeHtml(orbitText(obj.periapsis, obj.apoapsis))}${
+              obj.dockedTo ? ` · docked to ${escapeHtml(nameOf(obj.dockedTo))}` : ''
+            }</div>
+          </div>
+          <div class="row-side">
+            <div class="hint row-note">${escapeHtml(obj.kind ?? '')}</div>
+          </div>
+        </li>`).join('');
+    return `
+      <section class="objects" data-objects>
+        <h2 class="branch-head">
+          <span>IN ORBIT</span>
+          <span class="hint">${objects.length}</span>
+        </h2>
+        ${objects.length
+          ? `<ul class="list">${rows}</ul>`
+          : '<p class="hint objects-empty">Nothing up there yet. A deployment contract leaves something behind.</p>'}
+      </section>`;
+  }
+
   function contractsHtml() {
     const state = getState();
     const g = goal();
@@ -242,8 +400,25 @@ export function mountScreens(ctx) {
           </p>
           <ul class="list">${rows}</ul>
           <p class="hint foot">Tap a contract, then Select.</p>
+          ${objectsHtml()}
         </div>
       </div>`;
+  }
+
+  /**
+   * The line under the launch window slider. Like the turn hint it describes
+   * the CHOICE and nothing else: where on the orbit this window inserts the
+   * vehicle, and how that sits against the target's own phase — which is
+   * state (js/core/state.js's `objects`, drawn on the map from its first
+   * frame), not a prediction of the flight. What it costs, whether the
+   * vehicle can pay it, and how close it ends up are all the flight's to say.
+   */
+  function windowHintText(value, target) {
+    const deg = Math.round(value * 360);
+    if (!target) return `Inserts ${deg}° round the orbit.`;
+    const err = phaseErrorText(((value - (target.phase ?? 0)) * 360 + 540) % 360 - 180);
+    const at = Math.round((target.phase ?? 0) * 360);
+    return `${target.name ?? target.id} is at ${at}°. ${err} at insertion.`;
   }
 
   function loadoutHtml() {
@@ -283,18 +458,66 @@ export function mountScreens(ctx) {
             <p class="hint">No guidance: flies vertical.</p>
           </div>`;
 
+    // What the vehicle can do once it is in orbit (phase 2). Listed only when
+    // it can do it at all: a zero here is not a stat, it is the absence of one.
+    const restarts = Math.max(0, Math.floor(vehicle?.restarts ?? 0));
+    const nav = Math.max(0, Math.floor(vehicle?.nav ?? 0));
+    const docking = (vehicle?.docking ?? 0) >= 1;
+    const rcs = (vehicle?.rcs ?? 0) >= 1;
+    const orbitalStats = [
+      restarts > 0 ? `<div><dt>Restarts</dt><dd>${restarts}</dd></div>` : '',
+      nav > 0 ? `<div><dt>Navigation</dt><dd>${escapeHtml(NAV_NAMES[nav] ?? String(nav))}</dd></div>` : '',
+      docking ? '<div><dt>Docking</dt><dd>adapter</dd></div>' : '',
+      rcs ? '<div><dt>RCS</dt><dd>fine control</dd></div>' : '',
+    ].join('');
+
+    // The launch window only means something against something already in
+    // orbit, so the slider appears exactly on the missions that fly to one.
+    const target = needsTarget(mission) ? findTarget(getState(), targetKind(mission)) : null;
+
+    // "Target dock" is not a sentence. A mission that flies to an object says
+    // what it is flying to, by name.
+    const kind = reqKind(mission?.requirement);
+    const targetName = target?.name ?? target?.id ?? 'the target';
+    const objective = kind === 'dock'
+      ? `Dock with ${targetName}`
+      : kind === 'rendezvous'
+        ? `Within ${km(mission.requirement.rendezvous.within)} of ${targetName}`
+        : `Target ${requirementText(mission?.requirement)}`;
+    const windowField = needsTarget(mission)
+      ? `
+          <div class="field">
+            <label class="field-label" for="win">
+              <span>Launch window</span>
+              <span class="field-value" data-window-readout>${Math.round(view.window * 360)}°</span>
+            </label>
+            <input id="win" type="range" data-loadout="window"
+                   min="0" max="1" step="0.01" value="${view.window}">
+            <p class="hint" data-window-hint>${escapeHtml(windowHintText(view.window, target))}</p>
+            <p class="hint">Inserting level with the target costs nothing; an angle is paid off in phasing burns.</p>
+          </div>`
+      : '';
+
+    const error = view.error
+      ? `<p class="readout failure" data-error>${escapeHtml(view.error)}</p>`
+      : '';
+
     return `
       <div class="screen" data-screen="loadout">
         <div class="pad">
           <h1 class="title">${escapeHtml(mission?.name ?? 'Loadout')}</h1>
-          <p class="hint">Target ${escapeHtml(requirementText(mission?.requirement))} · payout ${mission?.payout ?? 0}</p>
+          ${error}
+          <p class="hint">${escapeHtml(objective)} · payout ${mission?.payout ?? 0}</p>
 
           <dl class="stats">
             <div><dt>Stages</dt><dd>${stages}</dd></div>
             <div><dt>Delta-v</dt><dd>${ms(dv)}</dd></div>
             <div><dt>Liftoff mass</dt><dd>${Math.round(wet)} kg</dd></div>
             <div><dt>Liftoff TWR</dt><dd class="${twr < 1 ? 'bad' : ''}">${twr.toFixed(2)}</dd></div>
+            ${orbitalStats}
           </dl>
+
+          ${windowField}
 
           <div class="field">
             <label class="field-label" for="ff">
@@ -337,8 +560,24 @@ export function mountScreens(ctx) {
     // thrust" there would send the player the wrong way (DESIGN.md §6: the
     // player must buy something DIFFERENT).
     const points = [];
+    const orb = o?.orbital ?? null;
     if (o?.failure) {
       points.push(`<p class="hint points" data-points-at="reliability">Reliability upgrades reduce this.</p>`);
+    } else if (o && !o.success && orb) {
+      // A tier 3 miss is usually not a delta-v shortfall: the sequence names
+      // the step it could not perform, and that step names a branch.
+      if (orb.stoppedAt === 'restarts') {
+        points.push(`<p class="hint points" data-points-at="propulsion">The upper stage ran out of relights. Propulsion buys restartable engines and more of them.</p>`);
+      } else if (orb.stoppedAt === 'dock-failure') {
+        points.push(`<p class="hint points" data-points-at="reliability">The approach was close enough; the latch was not. Reliability rehearses docking.</p>`);
+      } else if (orb.stoppedAt === 'deltaV') {
+        points.push(`<p class="hint points" data-points-at="propulsion">The orbital phase ran dry: propulsion adds isp and a propellant reserve…</p>`);
+        points.push(`<p class="hint points" data-points-at="structure">…or structure lightens what the top stage has to carry.</p>`);
+      } else if (kind === 'dock' && (vehicle?.docking ?? 0) === 0) {
+        points.push(`<p class="hint points" data-points-at="structure">No docking adapter: nothing on this vehicle can latch. Structure carries it.</p>`);
+      } else {
+        points.push(`<p class="hint points" data-points-at="guidance">The approach was too wide. Navigation is what narrows it — and a smaller launch-window error widens nothing.</p>`);
+      }
     } else if (o && !o.success) {
       if (guidance === 0 && kind === 'orbit') {
         points.push(`<p class="hint points" data-points-at="guidance">No guidance: a vertical flight cannot orbit. Guidance is what turns the rocket over.</p>`);
@@ -352,7 +591,15 @@ export function mountScreens(ctx) {
     // Detail rows follow the requirement: an orbit mission is judged on the
     // ellipse it ended in, a downrange mission on how far it got.
     const rows = [`<div><dt>Apogee</dt><dd>${km(o?.maxAltitude ?? 0)}</dd></div>`];
-    if (kind === 'orbit') {
+    if (kind === 'rendezvous' || kind === 'dock') {
+      rows.push(`<div><dt>Orbit</dt><dd>${escapeHtml(orbitText(o?.periapsis, o?.apoapsis))}</dd></div>`);
+      rows.push(`<div><dt>Closest approach</dt><dd data-result="closest-approach">${escapeHtml(range(o?.closestApproach))}</dd></div>`);
+      rows.push(`<div><dt>Launch window</dt><dd>${escapeHtml(phaseErrorText(orb?.phaseErrorDeg))}</dd></div>`);
+      rows.push(`<div><dt>Orbital delta-v</dt><dd>${ms(orb?.dvUsed ?? 0)} of ${ms(orb?.dvAvailable ?? 0)}</dd></div>`);
+      if (kind === 'dock') {
+        rows.push(`<div><dt>Docked</dt><dd data-result="docked" class="${o?.docked ? 'good' : ''}">${o?.docked ? 'yes' : 'no'}</dd></div>`);
+      }
+    } else if (kind === 'orbit') {
       rows.push(`<div><dt>Apoapsis</dt><dd>${elementText(o?.apoapsis)}</dd></div>`);
       rows.push(`<div><dt>Periapsis</dt><dd>${elementText(o?.periapsis)}</dd></div>`);
     } else if (kind === 'downrange') {
@@ -397,21 +644,31 @@ export function mountScreens(ctx) {
     const g = goal();
     const best = tierBest(state, g);
     const kind = reqKind(g?.requirement);
-    const reached = kind === 'orbit'
-      ? 'orbit'
-      : kind === 'downrange'
-        ? `${km(g.requirement.downrange)} downrange`
-        : km(g?.requirement.altitude ?? 100000);
+    const launches = state.launches[state.tier];
+    // Each tier's win is stated in the terms that tier was played in — tier 3
+    // did not "reach" anything, it built something (ARCHITECTURE.md, phase 2:
+    // "Assembled a station in N launches").
+    const won = kind === 'dock'
+      ? `Assembled a station in ${launches} launches`
+      : kind === 'rendezvous'
+        ? `Rendezvoused in ${launches} launches`
+        : kind === 'orbit'
+          ? `Reached orbit in ${launches} launches`
+          : kind === 'downrange'
+            ? `Reached ${km(g.requirement.downrange)} downrange in ${launches} launches`
+            : `Reached ${km(g?.requirement.altitude ?? 100000)} in ${launches} launches`;
     const nextGoal = tierGoals[state.tier + 1] ?? null;
     return `
       <div class="screen" data-screen="win">
         <div class="pad win-pad">
           <p class="hint">TIER ${state.tier} COMPLETE</p>
-          <p class="readout success">Reached ${escapeHtml(reached)} in ${state.launches[state.tier]} launches</p>
+          <p class="readout success">${escapeHtml(won)}</p>
           <p class="hint">${escapeHtml(best.label[0].toUpperCase() + best.label.slice(1))} ${escapeHtml(best.text)}. Fewer launches is the better score.</p>
           ${nextGoal
-            ? `<p class="hint">Tier ${state.tier + 1} asks for ${escapeHtml(requirementText(nextGoal.requirement))} — velocity, not altitude. Continue to open it.</p>`
-            : `<p class="hint">Phase 1 stops here. Continue returns to contracts and the tier stays at ${state.tier}.</p>`}
+            ? `<p class="hint">Tier ${state.tier + 1} asks for ${escapeHtml(requirementText(nextGoal.requirement))}${
+                TIER_TEASER[state.tier + 1] ? ` — ${escapeHtml(TIER_TEASER[state.tier + 1])}` : ''
+              }. Continue to open it.</p>`
+            : `<p class="hint">The game stops here for now. Continue returns to contracts and the tier stays at ${state.tier}.</p>`}
         </div>
       </div>`;
   }
@@ -430,9 +687,7 @@ export function mountScreens(ctx) {
           <p class="hint">NEW TIER</p>
           <p class="readout success">Tier ${state.tier}: ${escapeHtml(TIER_NAMES[state.tier] ?? '')}</p>
           <p class="hint tier-goal">Goal: ${escapeHtml(g?.name ?? '—')} · ${escapeHtml(requirementText(g?.requirement))}</p>
-          <p class="hint">Altitude is no longer the answer. Turn, and gain speed.</p>
-          <p class="hint">Guidance is a new branch in the tree. Without it the rocket flies
-            straight up whatever the loadout asks for; with it, the loadout gains a turn.</p>
+          ${(TIER_BLURB[state.tier] ?? []).map((line) => `<p class="hint">${escapeHtml(line.replace(/\s+/g, ' ').trim())}</p>`).join('')}
         </div>
       </div>`;
   }
@@ -502,6 +757,8 @@ export function mountScreens(ctx) {
   }
 
   async function show(name) {
+    // Whatever could not be launched last time is not this screen's problem.
+    if (name !== 'loadout') view.error = null;
     if (view.handle && name !== 'launch') {
       view.handle.stop();
       view.handle = null;
@@ -553,6 +810,23 @@ export function mountScreens(ctx) {
     if (!mission) return;
     await ensureVehicle();
 
+    // A rendezvous or dock contract is only ever offered while its target is
+    // in orbit (js/core/contracts.js's `requiresObject` gate), so this is a
+    // bug, not a game state — but the resolver THROWS without a target, and a
+    // thrown exception mid-launch would leave the player on a dead screen
+    // with nothing said. Say it instead.
+    let target = null;
+    if (needsTarget(mission)) {
+      target = findTarget(state, targetKind(mission));
+      if (!target) {
+        view.error = `No ${targetKind(mission) ?? 'target'} in orbit to fly to.`
+          + ' This contract should not have been offered — pick another.';
+        render();
+        return;
+      }
+    }
+    view.error = null;
+
     // One rng for the whole turn, resumed from the save's draw count so a
     // reload replays identically (ARCHITECTURE.md §rng).
     const rng = makeRng(state.seed, state.draws);
@@ -562,8 +836,9 @@ export function mountScreens(ctx) {
     const outcome = resolveLaunch(
       vehicle,
       mission,
-      { fuelFraction: view.fuelFraction, turn: view.turn },
+      { fuelFraction: view.fuelFraction, turn: view.turn, window: view.window },
       rng,
+      target ? { target } : {},
     );
 
     let next = recordLaunch(state, mission, outcome, rng.draws - before);
@@ -593,31 +868,60 @@ export function mountScreens(ctx) {
     const appendTicker = (ev) => {
       const li = document.createElement('li');
       li.className = `tick ${ev.kind}`;
-      li.textContent = `T+${String(Math.round(ev.t)).padStart(3, ' ')}s  ${ev.text}`;
+      li.textContent = `${tickTime(ev.t)}  ${ev.text}`;
       tickerEl.appendChild(li);
       tickerEl.scrollTop = tickerEl.scrollHeight;
     };
 
+    /** Playback is over — on whichever view was last holding the canvas. */
+    const flightDone = () => {
+      view.playing = false;
+      view.handle = null;
+      // The outcome is committed when the flight finishes, not when it is
+      // resolved: the HUD would otherwise announce the payout before the
+      // player has watched the rocket earn it.
+      if (view.pending) {
+        const committed = view.pending;
+        view.pending = null;
+        update(committed);
+      }
+      actionsEl.innerHTML = actionsHtml();
+    };
+
+    /**
+     * The handoff (ARCHITECTURE.md, phase 2). On a target mission the ascent
+     * view stops at the `insertion` event and the SAME canvas is handed to the
+     * map view, which plays the orbital phase from there. A flight that never
+     * inserted has no such event: the ascent plays to its end as it always
+     * did, and this never runs.
+     */
+    const toMapView = () => {
+      view.handle = playOrbital(canvas, outcome, {
+        target,
+        onEvent: appendTicker,
+        onDone: flightDone,
+      });
+    };
+
     view.handle = playOutcome(canvas, outcome, {
       // The whole requirement, not just an altitude: phase 1 missions ask for
-      // downrange or an orbit, and the marker has to say which.
-      requirement: mission.requirement,
+      // downrange or an orbit, and the marker has to say which. A target
+      // mission is flown to the TARGET's periapsis (which is what the
+      // resolver cuts the ascent off at), and that orbit is state — known
+      // before the flight, so marking it leaks nothing.
+      requirement: target
+        ? { orbit: { periapsis: target.periapsis } }
+        : mission.requirement,
       // The sprite needs to know it is a stack before the first separation;
       // that comes from the vehicle, never from the outcome (js/ui/ascent.js).
       stages: vehicle?.stages?.length ?? 1,
+      stopAtKind: target ? 'insertion' : undefined,
       onEvent: appendTicker,
       onDone: () => {
-        view.playing = false;
-        view.handle = null;
-        // The outcome is committed when the flight finishes, not when it is
-        // resolved: the HUD would otherwise announce the payout before the
-        // player has watched the rocket earn it.
-        if (view.pending) {
-          const committed = view.pending;
-          view.pending = null;
-          update(committed);
-        }
-        actionsEl.innerHTML = actionsHtml();
+        // Read AFTER the ascent has played: by now the insertion either
+        // happened on screen or the flight ended without one.
+        if (target && outcome.insertion && outcome.orbital) toMapView();
+        else flightDone();
       },
     });
   }
@@ -701,6 +1005,16 @@ export function mountScreens(ctx) {
       if (readout) readout.textContent = view.turn.toFixed(2);
       const hint = screenEl.querySelector('[data-turn-hint]');
       if (hint) hint.textContent = turnProgramText(view.turn);
+    } else if (which === 'window') {
+      view.window = Number(slider.value);
+      const readout = screenEl.querySelector('[data-window-readout]');
+      if (readout) readout.textContent = `${Math.round(view.window * 360)}°`;
+      const hint = screenEl.querySelector('[data-window-hint]');
+      if (hint) {
+        const mission = selectedMission();
+        const target = needsTarget(mission) ? findTarget(getState(), targetKind(mission)) : null;
+        hint.textContent = windowHintText(view.window, target);
+      }
     }
   });
 

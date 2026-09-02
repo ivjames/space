@@ -26,7 +26,21 @@ const STAT_LABELS = {
   payloadMass: 'payload',
   dragArea: 'drag area',
   dragCoeff: 'drag',
+  // Phase 1/2 vehicle-level stats. They are capabilities rather than
+  // quantities, so most of them read as a name and a level.
+  guidance: 'guidance',
+  restarts: 'restarts',
+  nav: 'navigation',
+  docking: 'docking',
+  rcs: 'rcs',
+  dockBonus: 'docking odds',
 };
+
+/**
+ * Stats that are a yes/no capability, not a number: "docking adapter" says
+ * more than "docking = 1", and there is no level 2 of either.
+ */
+const CAPABILITY_NAMES = { docking: 'docking adapter', rcs: 'reaction control' };
 
 const MASS_STATS = new Set(['propMass', 'dryMass', 'payloadMass']);
 
@@ -52,7 +66,10 @@ function statLabel(path) {
 function signed(n, unit = '') {
   const sign = n < 0 ? '−' : '+';
   const mag = Math.abs(n);
-  const shown = Number.isInteger(mag) ? String(mag) : String(Math.round(mag * 10) / 10);
+  // Two decimals below 1 (a +0.05 docking bonus is not "+0.1"), one above it.
+  const shown = Number.isInteger(mag)
+    ? String(mag)
+    : String(mag < 1 ? Math.round(mag * 100) / 100 : Math.round(mag * 10) / 10);
   return `${sign}${shown}${unit}`;
 }
 
@@ -78,7 +95,8 @@ export function effectSummary(effect) {
   if (effect.op === 'add') {
     return `${label} ${signed(effect.value, MASS_STATS.has(key) ? ' kg' : '')}`;
   }
-  return `${label} = ${effect.value}`;
+  if (CAPABILITY_NAMES[key] && effect.value >= 1) return CAPABILITY_NAMES[key];
+  return `${label} ${effect.value}`;
 }
 
 /** The whole effects array as one line. */

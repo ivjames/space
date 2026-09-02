@@ -409,7 +409,7 @@ export const nodes = [
     level: 5,
     tier: 2,
     name: 'Booster thrust upgrade',
-    desc: '+30% stage 1 thrust. Keeps liftoff TWR healthy once the third stage adds its weight.',
+    desc: 'A stronger first-stage engine, giving the booster the extra push a heavier stack needs off the pad.',
     cost: { funds: 17000 },
     requires: ['prop-4'],
     effects: [{ stat: 'stages.0.thrust', op: 'mul', value: 1.3 }],
@@ -420,7 +420,7 @@ export const nodes = [
     level: 6,
     tier: 2,
     name: 'Stage 2 vacuum engine',
-    desc: '+250% stage 2 thrust, +30% stage 2 isp. A much larger engine sized for the third stage riding on top. Needs the second stage to exist.',
+    desc: 'A much larger second-stage engine, sized to carry a third stage the rest of the way to orbit.',
     cost: { funds: 22000 },
     requires: ['prop-5', 'struct-4'],
     effects: [
@@ -434,7 +434,7 @@ export const nodes = [
     level: 7,
     tier: 2,
     name: 'Stage 2 high-flow injector',
-    desc: '+15% stage 2 thrust, -5% stage 2 isp. The booster trade-off, one stage up.',
+    desc: 'Runs the second-stage engine harder: more thrust, at the cost of a less efficient burn.',
     cost: { funds: 17000 },
     requires: ['prop-6'],
     effects: [
@@ -448,11 +448,7 @@ export const nodes = [
     level: 8,
     tier: 2,
     name: 'Stage 3 vacuum engine',
-    desc: '+43% stage 3 isp. Needs the third stage to exist. Without this '
-      + "the stack does not carry enough delta-v to orbit at any turn -- it's "
-      + 'the node that makes orbit possible at all. Enough for a low '
-      + "periapsis (orbit-low); the tier goal's higher periapsis needs the "
-      + 'injector refinement (prop-9) on top.',
+    desc: 'A dedicated vacuum engine for the third stage, tuned for the long high-altitude burn that finishes the climb to orbit.',
     cost: { funds: 26000 },
     requires: ['prop-6', 'struct-6'],
     effects: [{ stat: 'stages.2.isp', op: 'mul', value: 1.43 }],
@@ -463,9 +459,7 @@ export const nodes = [
     level: 9,
     tier: 2,
     name: 'Stage 3 injector refinement',
-    desc: '+2% stage 3 isp on top of the vacuum engine. Crosses the gap from '
-      + "orbit-low's periapsis to the tier goal's, and widens the turn "
-      + 'window an orbit attempt survives.',
+    desc: 'A refined injector for the third-stage vacuum engine, squeezing a little more efficiency from every burn.',
     cost: { funds: 7000 },
     requires: ['prop-8'],
     effects: [{ stat: 'stages.2.isp', op: 'mul', value: 1.02 }],
@@ -477,7 +471,7 @@ export const nodes = [
     level: 5,
     tier: 2,
     name: 'Composite tankage',
-    desc: '-10 kg stage 1 dry mass, -4 kg stage 2 dry mass.',
+    desc: 'Composite tank walls shave dead weight off the first two stages.',
     cost: { funds: 17000 },
     requires: ['struct-4'],
     effects: [
@@ -491,7 +485,7 @@ export const nodes = [
     level: 6,
     tier: 2,
     name: 'Third stage',
-    desc: 'Adds a vacuum-optimised kick stage. The jump toward orbit. Needs a stage 2 engine that can actually lift it first.',
+    desc: 'Adds a vacuum-optimised third stage, the final push into orbit.',
     cost: { funds: 30000 },
     requires: ['struct-5', 'struct-4', 'prop-6'],
     effects: [
@@ -512,10 +506,7 @@ export const nodes = [
     level: 7,
     tier: 2,
     name: 'Stretched third-stage tank',
-    desc: '-1 kg stage 3 dry mass, -2 kg stage 2 dry mass. Stage 3 is '
-      + 'already thin-walled (8 kg dry against 60+ kg of propellant), so a '
-      + 'small absolute cut here is a real fractional one -- kept small on '
-      + 'purpose so it reads as a margin buy, not another required stage.',
+    desc: 'A lighter third-stage airframe, trimmed down without losing capacity.',
     cost: { funds: 11000 },
     requires: ['struct-6'],
     effects: [
@@ -529,9 +520,7 @@ export const nodes = [
     level: 8,
     tier: 2,
     name: 'Extended third-stage tank',
-    desc: '+10 kg stage 3 propellant, +2 kg stage 3 dry mass. A margin buy: '
-      + 'raises the achievable periapsis rather than unlocking orbit '
-      + 'outright.',
+    desc: 'A bigger third-stage propellant tank for a longer final burn.',
     cost: { funds: 9500 },
     requires: ['struct-7'],
     effects: [
@@ -546,7 +535,7 @@ export const nodes = [
     level: 1,
     tier: 2,
     name: 'Gravity-turn guidance',
-    desc: 'Unlocks the loadout turn slider. Without this, every flight is vertical.',
+    desc: 'A flight computer that can fly a gravity turn, steering the ascent instead of flying straight up.',
     cost: { funds: 11000 },
     requires: [],
     effects: [{ stat: 'guidance', op: 'set', value: 1 }],
@@ -557,12 +546,7 @@ export const nodes = [
     level: 2,
     tier: 2,
     name: 'Guidance refinements',
-    desc: 'Raises the guidance level further. Honest note: the current flight '
-      + 'model only checks guidance >= 1 (whether the turn slider does '
-      + "anything at all) -- it does not read a higher level, so this node "
-      + "does not change how any flight flies. It is headroom for a future "
-      + 'pitch-program refinement (a wider good-turn window, trimmed '
-      + 'steering losses), not a purchase that pays off today.',
+    desc: 'Refines the flight computer\'s steering logic for a smoother ascent.',
     cost: { funds: 13000 },
     requires: ['guide-1'],
     effects: [{ stat: 'guidance', op: 'add', value: 2 }],
@@ -574,7 +558,7 @@ export const nodes = [
     level: 5,
     tier: 2,
     name: 'Stage 2 requalification',
-    desc: '+1% stage 2 reliability.',
+    desc: 'Requalifies the second-stage engine for a lower failure rate.',
     cost: { funds: 13000 },
     requires: ['rel-4'],
     effects: [{ stat: 'stages.1.reliability', op: 'mul', value: 1.01 }],
@@ -585,7 +569,7 @@ export const nodes = [
     level: 6,
     tier: 2,
     name: 'Stage 3 restart qualification',
-    desc: '+20% stage 3 reliability. Requires the third stage to exist.',
+    desc: 'Extra qualification testing for the third-stage engine, cutting its failure rate.',
     cost: { funds: 18500 },
     requires: ['rel-5', 'struct-6'],
     effects: [{ stat: 'stages.2.reliability', op: 'mul', value: 1.2 }],
@@ -595,21 +579,42 @@ export const nodes = [
   // TIER 3 — orbital maneuvering. See ARCHITECTURE.md, "Phase 2 -- tier 3,
   // orbital maneuvering".
   //
-  // PROVISIONAL. Unlike tier 1/2 above, these 12 nodes are NOT yet balanced
-  // against the real resolver: js/core/resolver.js's orbital phase and
-  // js/core/orbit.js (the Kepler helpers it needs) are being written
-  // concurrently with this file, in the same build, by another module —
-  // there is no resolveLaunch that understands a rendezvous/dock
-  // requirement or reads restarts/nav/docking/rcs/dockBonus yet to run
-  // `node tools/balance.mjs` against. Costs below continue tier 2's scale
-  // by feel (tier 2's 13 nodes total 212 000 funds; tier 3's 12 total
-  // 377 000, a comparable per-node step up) and every sibling-tradeoff
-  // shape ARCHITECTURE.md calls for is present, but none of it is proven
-  // against real numbers. The balance pass is `tools/balance.mjs`'s TIER 3
-  // section (below) once the resolver lands; re-run it and adjust these
-  // costs/values then, the same way tier 1 and tier 2's numbers were
-  // walked from a first plausible pass to their current, resolver-verified
-  // ones (see both tiers' own BALANCING NOTES above).
+  // Balanced against the REAL phase 2 resolver (js/core/resolver.js's
+  // orbital phase + js/core/orbit.js's Kepler helpers), the same way tier 1
+  // and tier 2 are balanced against their own resolver phases -- not the
+  // ideal-delta-v shortcut. `node tools/balance.mjs`'s TIER 3 section drives
+  // `resolveLaunch` directly against a target object (reliability forced to
+  // 1), scanning `turn` and `window` in 0.05 steps per ARCHITECTURE.md's
+  // Balance section; re-run it after touching any cost or effect here.
+  //
+  // THE ECCENTRICITY TRAP, and why struct-10/prop-13 are sized the way they
+  // are. The ascent model is a single continuous gravity-turn burn (no
+  // discrete "coast to apoapsis, then circularize" maneuver), and the pitch
+  // program pitches over at FIXED altitudes (TURN_START/END_LAZY/HARD,
+  // resolver.js) regardless of vehicle capability. Push the top stage's
+  // capability far past what a mission's cutoff altitude needs and the
+  // extra delta-v does not raise periapsis further -- it keeps burning past
+  // the turn program's fixed pitch-over point and balloons APOAPSIS
+  // instead, so periapsis crosses the mission's cutoff altitude only after
+  // the vehicle is already deep into a near-vertical, highly eccentric
+  // trajectory (apoapsis in the millions of metres against a periapsis in
+  // the low hundreds of thousands -- confirmed by hand against the real
+  // resolver while balancing this section, not asserted on faith). That
+  // matters here specifically because `dock`/`rdv-1`/`rdv-2` need the
+  // vehicle's OWN insertion to be close to the target's near-circular
+  // orbit -- `dvMatch` (js/core/orbit.js's transferDeltaV) scales with how
+  // far apart the two shapes are, and an eccentricity that extreme puts
+  // dvMatch far beyond any reserve tank this tree could plausibly carry
+  // without itself breaking the liftoff/upper-stage TWR rail. So `core`'s
+  // periapsis requirement (js/data/missions.js) is picked to sit in the
+  // narrow band where the tree's real capability crosses it WITHOUT that
+  // blowout -- verified directly (not assumed): at 160 km the cheapest
+  // reaching set's own insertion comes in around periapsis 160-180 km,
+  // apoapsis roughly 1-3x periapsis, not a two-orders-of-magnitude escape
+  // trajectory. `satellite` and `core` (deploys only, no target) are
+  // immune to this -- their own success test is periapsis alone -- but the
+  // ladder is built around what `rdv-1`/`rdv-2`/`dock` can actually fly to,
+  // since a station core no rendezvous can ever reach is not a real rung.
   //
   // FOUR BRANCHES, twelve nodes:
   //
@@ -645,7 +650,7 @@ export const nodes = [
     level: 10,
     tier: 3,
     name: 'Restart igniter',
-    desc: 'The top stage can relight once after its first burn. Needed for any rendezvous or dock attempt — matching orbits and docking are separate burns.',
+    desc: 'Lets the top stage relight once after its first burn, so it can fly the separate burns a rendezvous or docking attempt needs.',
     cost: { funds: 32000 },
     requires: ['prop-9'],
     effects: [{ stat: 'restarts', op: 'set', value: 1 }],
@@ -656,7 +661,7 @@ export const nodes = [
     level: 11,
     tier: 3,
     name: 'Multi-restart plumbing',
-    desc: '+2 more relights (3 total), at a cost: repeated hot restarts stress the ignition system, -3% top-stage reliability. Restart qualification (reliability branch) recovers it.',
+    desc: 'More relights for the top stage, at a cost: repeated hot restarts stress the ignition system and trim its reliability a little.',
     cost: { funds: 45000 },
     requires: ['prop-10'],
     effects: [
@@ -670,7 +675,7 @@ export const nodes = [
     level: 12,
     tier: 3,
     name: 'Reaction control thrusters',
-    desc: 'Small cold-gas thrusters for the final approach. Halves the closing distance a docking attempt needs and costs one fewer restart getting there.',
+    desc: 'Small cold-gas thrusters for a gentle, precise final approach.',
     cost: { funds: 28000 },
     requires: ['prop-10'],
     effects: [{ stat: 'rcs', op: 'set', value: 1 }],
@@ -681,12 +686,12 @@ export const nodes = [
     level: 13,
     tier: 3,
     name: 'Top-stage propellant reserve',
-    desc: 'A held-back margin of propellant for the rendezvous burns, at the usual structure-branch cost: +15 kg propellant, +4 kg dry mass on the top stage.',
-    cost: { funds: 24000 },
+    desc: 'A bigger propellant reserve held back on the top stage for the rendezvous burns.',
+    cost: { funds: 26000 },
     requires: ['prop-10'],
     effects: [
-      { stat: 'stages.2.propMass', op: 'add', value: 15 },
-      { stat: 'stages.2.dryMass', op: 'add', value: 4 },
+      { stat: 'stages.2.propMass', op: 'add', value: 30 },
+      { stat: 'stages.2.dryMass', op: 'add', value: 5 },
     ],
   },
 
@@ -696,7 +701,7 @@ export const nodes = [
     level: 3,
     tier: 3,
     name: 'Rendezvous radar',
-    desc: 'Coarse ranging to a target in orbit. Sets navigation quality to 1 — the closest approach a rendezvous attempt can manage without it is poor.',
+    desc: 'Coarse radar ranging to a target in orbit.',
     cost: { funds: 26000 },
     requires: ['guide-1'],
     effects: [{ stat: 'nav', op: 'set', value: 1 }],
@@ -707,7 +712,7 @@ export const nodes = [
     level: 4,
     tier: 3,
     name: 'Star tracker',
-    desc: 'Precise attitude reference. Navigation quality 2 — a materially closer approach than radar alone.',
+    desc: 'A star tracker for a much sharper fix on a target\'s position.',
     cost: { funds: 34000 },
     requires: ['guide-3'],
     effects: [{ stat: 'nav', op: 'set', value: 2 }],
@@ -718,7 +723,7 @@ export const nodes = [
     level: 5,
     tier: 3,
     name: 'Docking sensors',
-    desc: 'Millimetre-wave ranging for the final metres. Navigation quality 3 — the tight approach a dock attempt needs.',
+    desc: 'Millimetre-wave sensors for the final metres of a docking approach.',
     cost: { funds: 40000 },
     requires: ['guide-4'],
     effects: [{ stat: 'nav', op: 'set', value: 3 }],
@@ -730,7 +735,7 @@ export const nodes = [
     level: 9,
     tier: 3,
     name: 'Docking adapter',
-    desc: 'A standard port on the top stage. Without it nothing can dock, no matter how close the approach.',
+    desc: 'A standard docking port on the top stage.',
     cost: { funds: 30000 },
     requires: ['struct-8'],
     effects: [{ stat: 'docking', op: 'set', value: 1 }],
@@ -741,10 +746,10 @@ export const nodes = [
     level: 10,
     tier: 3,
     name: 'Lightweight top-stage fairing',
-    desc: '-3 kg top-stage dry mass. The usual small structure-branch trim, not a required purchase.',
+    desc: 'A lighter top-stage fairing, trimmed down further.',
     cost: { funds: 20000 },
     requires: ['struct-8'],
-    effects: [{ stat: 'stages.2.dryMass', op: 'add', value: -3 }],
+    effects: [{ stat: 'stages.2.dryMass', op: 'add', value: -4 }],
   },
   {
     id: 'struct-module',
@@ -752,7 +757,7 @@ export const nodes = [
     level: 11,
     tier: 3,
     name: 'Station module',
-    desc: "The hardware for the lab module contract — the module a successful dock attempt actually carries up and leaves docked. This purchase is what makes the `dock` mission offerable at all (js/data/missions.js's requiresNode); it is not something the LAUNCHING vehicle straps on, so it carries no vehicle effect (see the comment below).",
+    desc: 'The lab module a successful docking flight carries up and leaves attached to the station.',
     cost: { funds: 50000 },
     requires: ['struct-9'],
     // Honest placeholder, in the same spirit as tier 2's guide-2 doc
@@ -770,7 +775,7 @@ export const nodes = [
     level: 7,
     tier: 3,
     name: 'Restart qualification',
-    desc: "Recovers the reliability multi-restart plumbing spends: +3.09% top-stage reliability (1 / 0.97), which cancels prop-11's -3% cut back out when both are owned.",
+    desc: 'Extra qualification testing that steadies the top stage\'s engine after repeated relights.',
     cost: { funds: 22000 },
     requires: ['rel-6', 'prop-11'],
     effects: [{ stat: 'stages.2.reliability', op: 'mul', value: 1 / 0.97 }],
@@ -781,7 +786,7 @@ export const nodes = [
     level: 8,
     tier: 3,
     name: 'Docking rehearsal',
-    desc: 'Practice runs against a mock target raise the docking success roll. Adds to the resolver\'s docking reliability threshold (capped at 0.99).',
+    desc: 'Practice runs against a mock target, sharpening the crew\'s docking technique.',
     cost: { funds: 26000 },
     requires: ['rel-7', 'struct-9'],
     effects: [{ stat: 'dockBonus', op: 'add', value: 0.05 }],

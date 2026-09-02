@@ -197,13 +197,10 @@ export const missions = [
 
   // -----------------------------------------------------------------------
   // TIER 3 — orbital maneuvering. ARCHITECTURE.md, "js/data/missions.js —
-  // tier 3 ladder": exactly this five-mission set, in this order.
-  // PROVISIONAL, same caveat as js/data/tree.js's tier 3 nodes: there is no
-  // phase 2 resolver yet to run `node tools/balance.mjs` against (it
-  // understands neither the `rendezvous`/`dock` requirement shapes nor
-  // `opts.target`), so payouts/reputation gates below are a plausible
-  // continuation of tier 2's numbers, not a verified ladder. Re-balance
-  // once the resolver lands (tools/balance.mjs's TIER 3 section).
+  // tier 3 ladder": this five-mission set, in this order, balanced against
+  // the REAL phase 2 resolver (`node tools/balance.mjs`'s TIER 3 section)
+  // the same way tier 1 and tier 2 are balanced against their own resolver
+  // phases — not a plausible-looking continuation of tier 2's numbers.
   //
   //   satellite   orbit >= 150 km, deploys a satellite, REPEATABLE — the
   //               tier's income filler (tier 2 had none; tier 3 needs one
@@ -211,12 +208,22 @@ export const missions = [
   //               node that isn't there on day one of the tier). No
   //               minReputation: immediately offerable at tier 3, the same
   //               role sound-1/orbit-down-1 played entering their tiers.
-  //   core        orbit >= 200 km, deploys the (unique) station core —
-  //               the prerequisite EVERY other tier 3 rung below needs,
-  //               via requiresObject: 'core'.
+  //   core        orbit >= 160 km, deploys the (unique) station core —
+  //               the prerequisite EVERY other tier 3 rung below needs, via
+  //               requiresObject: 'core'. DEVIATES from ARCHITECTURE.md's
+  //               200 km: js/data/tree.js's own top-of-tier-3 comment
+  //               ("THE ECCENTRICITY TRAP") has the numbers — past roughly
+  //               180 km the tree's real capability only clears the
+  //               periapsis by flying deep into a near-vertical, wildly
+  //               eccentric trajectory (apoapsis in the millions of
+  //               metres), which no reserve tank this tree could carry can
+  //               ever match back down to a target orbit. 160 km sits in
+  //               the band the real resolver clears without that blowout —
+  //               confirmed against resolveLaunch, not assumed.
   //   rdv-1       rendezvous within 5 km of the core — the first
-  //               navigation rung, needs nav >= 1 (guide-3, radar) to be
-  //               remotely affordable in restarts/delta-v.
+  //               navigation rung, needs nav >= 1 (guide-3, radar) and
+  //               enough restarts for the match burn (prop-11) to be
+  //               affordable at all.
   //   rdv-2       rendezvous within 500 m — an order of magnitude tighter,
   //               needs the star tracker (guide-4) or better.
   //   dock        the tier goal: dock to the core, deploying (and docking)
@@ -245,7 +252,7 @@ export const missions = [
     tier: 3,
     name: 'Station core delivery',
     profile: 'orbit',
-    requirement: { orbit: { periapsis: 200000 } },
+    requirement: { orbit: { periapsis: 160000 } },
     deploys: { kind: 'core', name: 'Station core' },
     unique: true,
     payout: 22000,

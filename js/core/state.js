@@ -1,40 +1,8 @@
 // New game state, derived vehicle, tier progress. Pure. See
 // ARCHITECTURE.md for the full state/save schema (version 3, phase 2).
-import { existsSync } from 'node:fs';
 import { collectEffects } from './tree.js';
 
-// phaseFor(id) -> 0..1, a stable hash of the id string, belongs to
-// js/core/orbit.js (ARCHITECTURE.md, "js/core/orbit.js -- new, pure"),
-// written concurrently with this module in this build (task brief).
-// recordLaunch (below) needs it *synchronously* when it assigns a newly
-// deployed object's orbital phase -- unlike deriveVehicle's dynamic
-// `await import('../core/vehicle.js')` further down, which can afford to
-// be async because every caller of deriveVehicle already awaits it, this
-// can't: recordLaunch's own signature stays synchronous in phase 2
-// (ARCHITECTURE.md never marks it `async`). So the same "don't let a
-// concurrently-authored module block this one" guard is resolved eagerly
-// at module load, via a plain existsSync check, rather than deriveVehicle's
-// per-call dynamic import. NOTED DEVIATION: not byte-for-byte "the same
-// way", but the same intent -- when js/core/orbit.js exists (on disk when
-// this module is first loaded), its real phaseFor is used; when it
-// doesn't (this checkout, right now), a local fallback with the identical
-// contract (0..1, deterministic from the id string) stands in, so
-// recordLaunch's object-phase assignment and this module's own tests both
-// still work.
-const orbitModulePath = new URL('./orbit.js', import.meta.url);
-let phaseFor;
-if (existsSync(orbitModulePath)) {
-  ({ phaseFor } = await import('./orbit.js'));
-} else {
-  phaseFor = (id) => {
-    let h = 2166136261;
-    for (let i = 0; i < id.length; i += 1) {
-      h ^= id.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    return ((h >>> 0) % 100000) / 100000;
-  };
-}
+import { phaseFor } from './orbit.js';
 
 // newGame(seed) -> State
 // Starting funds are 0: launching is free in phase 0 (the floor contract

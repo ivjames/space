@@ -704,3 +704,41 @@ ul.ticker {
 /* The loadout is the longest scrolling screen; without a little room at the
    bottom its last line sits flush against the actions bar and reads as cut. */
 .pad { padding-bottom: 28px; }
+
+/* ==========================================================================
+   Phase 2 (tier 3, orbital maneuvering). Additive, like phase 1 above.
+   ========================================================================== */
+
+/* ---- Contracts: the "In orbit" block ------------------------------------ */
+
+/* The block is always in the DOM (a stable hook), and hidden while there is
+   nothing up there and no tier that cares. */
+.objects { margin-top: 22px; }
+.objects[hidden] { display: none; }
+.objects-empty { padding: 10px 0; }
+
+/* An object is a statement, not a control: no pointer, no press state. */
+.row.object { align-items: flex-start; cursor: default; }
+.row.object .row-note { color: var(--muted); }
+.row.object:active { background-color: transparent; }
+
+/* ---- Ticker: the orbital phase's event kinds ---------------------------- */
+
+.tick.insertion { color: var(--accent); font-weight: bold; }
+.tick.burn { color: var(--fg); }
+.tick.approach { color: var(--accent); }
+.tick.dock { color: var(--accent); font-weight: bold; }
+.tick.restart-failure, .tick.dock-failure { color: var(--fail); }
+
+/* The orbital phase adds a dozen lines to a flight that already filled the
+   box; on a 360x740 screen that is the difference between reading the last
+   line and scrolling for it. */
+ul.ticker { max-height: 150px; }
+
+/* ---- Loadout: a launch that could not be attempted ---------------------- */
+
+[data-error] {
+  font-size: 1rem;
+  letter-spacing: 0;
+  margin: 0 0 10px;
+}

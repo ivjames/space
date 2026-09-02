@@ -740,10 +740,22 @@ the node is owned. The floor contract stays tier 1's.
   shown for rendezvous/dock missions, labelled as a launch window with the
   value shown in degrees of orbit (value × 360). Persisted in `view`. The
   vehicle stats block shows restarts, nav, docking, rcs when non-zero.
+  Its hint also names the TARGET's own phase and the resulting phase error
+  ("Station core is at 280°. Target was 8° behind at insertion."), which is
+  what makes the slider a decision rather than a guess: the target's phase is
+  state — the map draws it from its first frame — so quoting it predicts
+  nothing about the flight, exactly as the turn slider's hint describes the
+  pitch program and not the outcome.
 - **Launch screen** for a mission with a target: the ascent view plays to
   the `insertion` event (or the end, if the flight never inserts), then the
   SAME `canvas#ascent` element is handed to the **map view** (`js/ui/map.js`),
-  which plays the orbital phase from insertion. Tap skips everything.
+  which plays the orbital phase from insertion. Tap skips whichever view is
+  playing. The handoff is `playOutcome`'s `opts.stopAtKind` ('insertion'):
+  the ascent's one look-ahead becomes the time playback ENDS at rather than
+  the last event's time, which is the same single instant used for the same
+  single purpose. The ascent's dashed target marker on these missions is the
+  TARGET's periapsis — the orbit the resolver cuts the ascent off at, and
+  state, so it leaks nothing.
 - **Map view**: planet-centred. Planet drawn as a circle with the day/night
   terminator implied by shading; orbits as ellipses; altitude exaggerated by
   a constant factor (`ALT_EXAGGERATION`, about 6) so a 200 km orbit is
@@ -756,7 +768,15 @@ the node is owned. The floor contract stays tier 1's.
   contract: nothing drawn or timed from the outcome ahead of sim time; the
   vehicle's orbit is drawn from `insertion` (already happened), and after
   each burn's time from the burn's resulting elements. The target's orbit
-  and phase are state, drawable from the start.
+  and phase are state, drawable from the start. Two things the picture has to
+  decide that the resolver does not: the vehicle's drawn phase carries across
+  a burn unchanged, except that the second phasing burn (which is what ENDS
+  the phasing) puts it at the target's phase and a successful dock merges the
+  two; and the line drawn between the craft quotes the `approach` event's own
+  text when that event has passed, or, on the final frame of a sequence that
+  never approached, the plain geometric separation on screen at that instant
+  ("separation 12 000 km") — never `orbital.closestApproach`, which is a model
+  number rather than a distance between two drawn dots.
 - **Result**: rows per requirement: closest approach, phase error at
   insertion as "Target was 62° ahead" (sign from `phaseErrorDeg`), delta-v
   used of available, docked. Points-at: `stoppedAt: 'restarts'` →

@@ -2,7 +2,7 @@
 /**
  * End-to-end smoke test for the Space game.
  * Tests the full game loop: contracts -> loadout -> launch -> result -> tree -> repeat.
- * Extends through tier 1 and tier 2 (if UI available).
+ * Extends through tier 1, tier 2, and tier 3 (if UI available).
  *
  * Usage: PW_MODULES=... node test/e2e/smoke.mjs
  *
@@ -12,7 +12,8 @@
  *   SMOKE_PORT        - http.server port (default: 8090)
  *   SMOKE_MAX_ITER    - max gameplay loops for tier 1 (default: 60)
  *   SMOKE_MAX_ITER_T2 - max gameplay loops for tier 2 (default: 120)
- *   SMOKE_TURN        - gravity turn value to set on tier 2 loadout (default: 0.4, ignored if no turn slider)
+ *   SMOKE_MAX_ITER_T3 - max gameplay loops for tier 3 (default: 120)
+ *   SMOKE_TURN        - gravity turn value to set on tier 2+ loadout (default: 0.45, ignored if no turn slider)
  *   SMOKE_CHEAT       - if set to 1, use window.__space.cheat and pick last contract (default: unset)
  */
 
@@ -32,7 +33,8 @@ const SMOKE_OUT = process.env.SMOKE_OUT || scratchpad;
 const SMOKE_PORT = parseInt(process.env.SMOKE_PORT || '8090', 10);
 const MAX_LOOPS_T1 = parseInt(process.env.SMOKE_MAX_ITER || '60', 10);
 const MAX_LOOPS_T2 = parseInt(process.env.SMOKE_MAX_ITER_T2 || '120', 10);
-const SMOKE_TURN = parseFloat(process.env.SMOKE_TURN || '0.4');
+const MAX_LOOPS_T3 = parseInt(process.env.SMOKE_MAX_ITER_T3 || '120', 10);
+const SMOKE_TURN = parseFloat(process.env.SMOKE_TURN || '0.45');
 const SMOKE_CHEAT = process.env.SMOKE_CHEAT === '1';
 const TIMEOUT = 10000; // 10 second timeout for selectors
 
@@ -142,6 +144,17 @@ async function getScreenName() {
   return 'unknown';
 }
 
+async function getCurrentTier() {
+  const tierHud = await page.$('#hud [data-hud="tier"]');
+  if (tierHud) {
+    const tierText = await tierHud.textContent();
+    // Extract tier number from text like "T1", "T2", "T3"
+    const match = tierText.match(/T(\d+)/);
+    return match ? parseInt(match[1], 10) : 1;
+  }
+  return 1;
+}
+
 async function takeScreenshot(name) {
   if (!screenshots.has(name)) {
     const outPath = path.join(SMOKE_OUT, `smoke-${name}-${Date.now()}.png`);
@@ -189,30 +202,20 @@ async function runSmokeTest() {
     await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' });
 
     // Main gameplay loop
-    let loopCount = 0;
-    let loopCountT2 = 0;
+    const loopCounts = { 1: 0, 2: 0, 3: 0 };
+    const maxLoopsPerTier = { 1: MAX_LOOPS_T1, 2: MAX_LOOPS_T2, 3: MAX_LOOPS_T3 };
     let won = false;
     let currentTier = 1;
 
     while (!won) {
-      // Determine which tier loop counter to use
-      const isT2 = currentTier === 2;
-      const maxLoops = isT2 ? MAX_LOOPS_T2 : MAX_LOOPS_T1;
-      if (isT2) {
-        loopCountT2++;
-        if (loopCountT2 > maxLoops) {
-          errors.push(`Reached max tier 2 loops (${maxLoops}) without winning`);
-          break;
-        }
-        console.log(`\n=== Tier 2 Loop ${loopCountT2}/${maxLoops} ===`);
-      } else {
-        loopCount++;
-        if (loopCount > maxLoops) {
-          errors.push(`Reached max tier 1 loops (${maxLoops}) without winning`);
-          break;
-        }
-        console.log(`\n=== Tier 1 Loop ${loopCount}/${maxLoops} ===`);
+      // Determine loop limit for current tier
+      const maxLoops = maxLoopsPerTier[currentTier] || MAX_LOOPS_T1;
+      loopCounts[currentTier]++;
+      if (loopCounts[currentTier] > maxLoops) {
+        errors.push(`Reached max tier ${currentTier} loops (${maxLoops}) without winning`);
+        break;
       }
+      console.log(`\n=== Tier ${currentTier} Loop ${loopCounts[currentTier]}/${maxLoops} ===`);
 
       // Wait for contracts screen
       console.log('Waiting for contracts screen...');
@@ -225,11 +228,51 @@ async function runSmokeTest() {
         throw new Error('No contracts found on screen');
       }
 
-      // Choose first or last contract based on cheat mode
+      // Choose contract based on cheat mode and tier 3 logic
       let contractIndex = 0;
       if (SMOKE_CHEAT && contracts.length > 1) {
-        contractIndex = contracts.length - 1;
-        console.log(`Found ${contracts.length} contract(s), selecting LAST (cheat mode)...`);
+        // For tier 3 with cheat mode, check for core requirement in contracts
+        if (currentTier === 3) {
+          // Get current objects from state
+          const state = await page.evaluate(() => window.__space?.state);
+          const hasCore = state?.objects?.some(obj => obj.kind === 'core' && !obj.dockedTo);
+
+          if (!hasCore) {
+            // No core yet, need to choose wisely
+            let foundCoreOrValid = false;
+            // Look for contract mentioning "core"
+            for (let i = contracts.length - 1; i >= 0; i--) {
+              const text = await contracts[i].textContent();
+              if (text.toLowerCase().includes('core')) {
+                contractIndex = i;
+                foundCoreOrValid = true;
+                break;
+              }
+            }
+            // If no core contract found, check last row doesn't mention dock/rendezvous
+            if (!foundCoreOrValid) {
+              let chosen = false;
+              for (let i = contracts.length - 1; i >= 0; i--) {
+                const text = await contracts[i].textContent();
+                if (!text.toLowerCase().includes('dock') && !text.toLowerCase().includes('rendezvous')) {
+                  contractIndex = i;
+                  chosen = true;
+                  break;
+                }
+              }
+              if (!chosen) contractIndex = contracts.length - 1;
+            }
+            console.log(`Found ${contracts.length} contract(s), selecting (no core yet, cheat mode)...`);
+          } else {
+            // Core exists, can pick any contract including dock/rendezvous
+            contractIndex = contracts.length - 1;
+            console.log(`Found ${contracts.length} contract(s), selecting LAST (cheat mode, core exists)...`);
+          }
+        } else {
+          // Non-tier-3 cheat mode: just pick last
+          contractIndex = contracts.length - 1;
+          console.log(`Found ${contracts.length} contract(s), selecting LAST (cheat mode)...`);
+        }
       } else {
         console.log(`Found ${contracts.length} contract(s), selecting first...`);
       }
@@ -245,8 +288,9 @@ async function runSmokeTest() {
       await waitForSelector('[data-screen="loadout"]', TIMEOUT);
       await takeScreenshot('loadout');
 
-      // On tier 2, set the turn slider if present
-      if (currentTier === 2) {
+      // Handle loadout sliders
+      // Set turn slider if present (tier 2+)
+      if (currentTier >= 2) {
         const turnSlider = await page.$('input[type=range][data-loadout="turn"]');
         if (turnSlider) {
           console.log(`Setting turn slider to ${SMOKE_TURN}...`);
@@ -255,8 +299,34 @@ async function runSmokeTest() {
             if (elem) {
               elem.value = val;
               elem.dispatchEvent(new Event('input', { bubbles: true }));
+              elem.dispatchEvent(new Event('change', { bubbles: true }));
             }
           }, SMOKE_TURN);
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+
+      // Set window slider if present (tier 3 rendezvous/dock)
+      if (currentTier >= 3) {
+        const windowSlider = await page.$('input[type=range][data-loadout="window"]');
+        if (windowSlider) {
+          // The launch window has to match the target's orbital phase: read it
+          // from the newest undocked core in state (the value is state, not a
+          // prediction), and fall back to 0.5 when there is none.
+          const targetPhase = await page.evaluate(() => {
+            const objs = window.__space?.state?.objects ?? [];
+            const core = [...objs].reverse().find(o => o.kind === 'core' && !o.dockedTo);
+            return core ? core.phase : 0.5;
+          });
+          console.log(`Setting window slider to ${targetPhase.toFixed(2)} (target phase)...`);
+          await page.evaluate((v) => {
+            const elem = document.querySelector('input[type=range][data-loadout="window"]');
+            if (elem) {
+              elem.value = v;
+              elem.dispatchEvent(new Event('input', { bubbles: true }));
+              elem.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }, targetPhase);
           await new Promise(resolve => setTimeout(resolve, 100));
         }
       }
@@ -271,12 +341,22 @@ async function runSmokeTest() {
       await waitForSelector('canvas#ascent', TIMEOUT);
       await takeScreenshot('launch');
 
-      // Tap canvas to skip animation
-      console.log('Tapping canvas to skip playback...');
+      // Tap canvas to skip ascent animation
+      console.log('Tapping canvas to skip ascent playback...');
       const canvas = await page.$('canvas#ascent');
       if (canvas) {
         await canvas.click();
         await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      // For tier 3 with orbital phase, may need to tap canvas again for map view
+      if (currentTier >= 3) {
+        const canvas2 = await page.$('canvas#ascent');
+        if (canvas2) {
+          console.log('Tapping canvas again to skip map view...');
+          await canvas2.click();
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
       }
 
       // Click continue button to advance from launch to result
@@ -299,6 +379,15 @@ async function runSmokeTest() {
 
       if (!readoutText || readoutText.trim().length === 0) {
         throw new Error('Readout is empty');
+      }
+
+      // Check for closest approach if present (tier 3)
+      if (currentTier >= 3) {
+        const closestApproach = await page.$('[data-result="closest-approach"]');
+        if (closestApproach) {
+          const caText = await closestApproach.textContent();
+          console.log(`Closest approach: ${caText}`);
+        }
       }
 
       // Apply cheat if enabled
@@ -339,11 +428,11 @@ async function runSmokeTest() {
         console.log('Win screen detected!');
         await takeScreenshot('win');
 
-        // Click continue to see if tier 2 interstitial or final win
+        // Click continue to see if tier interstitial or final win
         const winContinueBtn = await waitForSelector('[data-action="continue"]', TIMEOUT);
         await winContinueBtn.click();
 
-        // Wait for either tier screen (tier 2) or contracts (final win)
+        // Wait for either tier screen (advancement) or contracts (final win)
         let screenAfterWin = 'unknown';
         let tierAttempts = 0;
         while (screenAfterWin === 'unknown' && tierAttempts < 5) {
@@ -356,11 +445,14 @@ async function runSmokeTest() {
         }
 
         if (screenAfterWin === 'tier') {
-          console.log('Tier 2 interstitial detected!');
+          console.log(`Tier interstitial detected!`);
           await takeScreenshot('tier');
-          currentTier = 2;
 
-          // Verify tier 2 in HUD
+          // Advance tier
+          currentTier++;
+          console.log(`Advanced to tier ${currentTier}`);
+
+          // Verify tier in HUD
           const tierHud = await page.$('#hud [data-hud="tier"]');
           if (tierHud) {
             const tierText = await tierHud.textContent();
@@ -372,11 +464,11 @@ async function runSmokeTest() {
           await tierContinueBtn.click();
 
           // Wait for contracts to loop again
-          console.log('Waiting for tier 2 contracts screen...');
+          console.log(`Waiting for tier ${currentTier} contracts screen...`);
           await waitForSelector('[data-screen="contracts"]', TIMEOUT);
           continue;
         } else if (screenAfterWin === 'contracts') {
-          console.log('Final win confirmed (no tier 2)!');
+          console.log('Final win confirmed (no further tiers)!');
           won = true;
           break;
         } else {
@@ -435,13 +527,36 @@ async function runSmokeTest() {
       console.log(`Tier reached: ${tier}`);
       console.log(`Funds: ${state.funds}`);
       console.log(`Reputation: ${state.reputation}`);
-      console.log(`Launches: ${JSON.stringify(state.launches)}`);
-      console.log(`Launches T1: ${state.launches[1] || 0}`);
-      if (state.launches[2]) console.log(`Launches T2: ${state.launches[2]}`);
+
+      // Launches per tier
+      console.log(`Launches:`);
+      for (let t = 1; t <= tier; t++) {
+        console.log(`  T${t}: ${state.launches[t] || 0}`);
+      }
+
+      // Objects in orbit (tier 3+)
+      if (state.objects && state.objects.length > 0) {
+        console.log(`Objects in orbit:`);
+        state.objects.forEach(obj => {
+          const docked = obj.dockedTo ? ` (docked to ${obj.dockedTo})` : '';
+          console.log(`  - ${obj.name}${docked}`);
+        });
+      }
+
       console.log(`Owned nodes: ${state.owned.join(', ') || 'none'}`);
-      console.log(`Best altitude: ${state.best.maxAltitude || 0}m`);
+      console.log(`Best metrics:`);
+      console.log(`  Max altitude: ${state.best.maxAltitude || 0}m`);
+      if (state.best.maxDownrange !== undefined) {
+        console.log(`  Max downrange: ${state.best.maxDownrange || 0}m`);
+      }
       if (state.best.bestPeriapsis !== null && state.best.bestPeriapsis !== undefined) {
-        console.log(`Best periapsis: ${state.best.bestPeriapsis}m`);
+        console.log(`  Best periapsis: ${state.best.bestPeriapsis}m`);
+      }
+      if (state.best.bestClosestApproach !== null && state.best.bestClosestApproach !== undefined) {
+        console.log(`  Best closest approach: ${state.best.bestClosestApproach}m`);
+      }
+      if (state.best.docked) {
+        console.log(`  Docked: yes`);
       }
     } else {
       console.warn('Could not read game state');
@@ -455,9 +570,13 @@ async function runSmokeTest() {
     }
 
     console.log(`\n=== SUCCESS ===`);
-    const loopMsg = loopCountT2 > 0
-      ? `Completed ${loopCount} T1 loop(s) and ${loopCountT2} T2 loop(s)`
-      : `Completed ${loopCount} gameplay loop(s)`;
+    const loopParts = [];
+    if (loopCounts[1] > 0) loopParts.push(`${loopCounts[1]} T1`);
+    if (loopCounts[2] > 0) loopParts.push(`${loopCounts[2]} T2`);
+    if (loopCounts[3] > 0) loopParts.push(`${loopCounts[3]} T3`);
+    const loopMsg = loopParts.length > 0
+      ? `Completed ${loopParts.map(p => `${p} loop(s)`).join(' and ')}`
+      : `Completed gameplay loop(s)`;
     console.log(`${loopMsg}${won ? ' and reached win screen' : ''}`);
     await cleanup(0);
 

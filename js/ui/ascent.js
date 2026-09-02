@@ -31,9 +31,16 @@
 //     burning, 24x once the last burnout or a failure has passed, both events
 //     the player has already read in the ticker. Never flightLength/duration,
 //     which plays a long flight slowly and a short one fast.
-// The single thing taken from the far end of the timeline is the time of its
-// last event ('end', which the resolver always emits), used only to know when
-// to stop. Nothing drawn or timed before that instant depends on it.
+// The single thing taken from the far end of the timeline is the time
+// playback ENDS at, used only to know when to stop. Nothing drawn or timed
+// before that instant depends on it. That is normally the last event ('end',
+// which the resolver always emits); on a tier 3 target mission the caller
+// passes `opts.stopAtKind = 'insertion'` and it is the first event of that
+// kind instead, because the flight continues on another view from there
+// (js/ui/map.js plays the orbital phase on this same canvas). Stopping at an
+// event leaks nothing either: the screen changes at the instant the player
+// reads that event in the ticker, never before it, and a flight that never
+// inserts has no such event and plays to its end exactly as it always did.
 //
 // What it shows, and why: DESIGN.md §5 says readable failure is the point —
 // the animation has to show *why* the run ended where it did. So altitude is
@@ -309,6 +316,10 @@ function normalizeRequirement(req) {
  * @param {number} [opts.stages] how many stages the vehicle has (from the
  *        vehicle, not the outcome) so the sprite can be drawn as a stack
  *        before the first separation. Defaults to 1.
+ * @param {string} [opts.stopAtKind] stop at the FIRST timeline event of this
+ *        kind instead of at the last event, so another view can take the
+ *        canvas over from there (phase 2: 'insertion' hands off to
+ *        js/ui/map.js). Ignored when the timeline has no such event.
  * @returns {{ skip(): void, stop(): void, done: boolean }}
  */
 export function playOutcome(canvas, outcome, opts = {}) {
@@ -317,8 +328,15 @@ export function playOutcome(canvas, outcome, opts = {}) {
   const failure = outcome?.failure ?? null;
 
   // The only look-ahead in the module: when to stop. The resolver always ends
-  // the timeline with an 'end' event at the final simulated instant.
-  const finalT = timeline.length ? Math.max(timeline[timeline.length - 1].t, 0) : 0;
+  // the timeline with an 'end' event at the final simulated instant; a caller
+  // handing the canvas on at a mid-flight event (opts.stopAtKind) ends there
+  // instead. Either way it is one instant, used for nothing but the stop.
+  const handoff = opts.stopAtKind
+    ? (timeline.find((ev) => ev.kind === opts.stopAtKind) ?? null)
+    : null;
+  const finalT = handoff
+    ? Math.max(handoff.t, 0)
+    : (timeline.length ? Math.max(timeline[timeline.length - 1].t, 0) : 0);
 
   const target = normalizeRequirement(opts.requirement);
   const stageCount = Math.max(opts.stages ?? 1, 1);
