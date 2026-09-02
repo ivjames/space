@@ -53,6 +53,15 @@ function resolveStatPath(vehicle, path) {
   return { container, key };
 }
 
+/**
+ * The fields the Vehicle shape names itself. Everything else that is a
+ * top-level number on the base components is copied through as an extra stat
+ * (see buildVehicle). `guidance` is deliberately NOT in this set: it is seeded
+ * with a default of 0 and then overwritten by the base's own value when the
+ * base supplies one.
+ */
+const NAMED_VEHICLE_FIELDS = new Set(['stages', 'payloadMass', 'dragArea', 'dragCoeff']);
+
 const REQUIRED_STAGE_FIELDS = ['dryMass', 'propMass', 'thrust', 'isp', 'reliability'];
 
 function normalizeStage(stage, where) {
@@ -82,7 +91,19 @@ function normalizeStage(stage, where) {
  * Effect shapes:
  *   { stat: 'stages.0.thrust', op: 'add' | 'mul' | 'set', value: number }
  *   { stat: 'payloadMass',     op: 'set', value: number }
+ *   { stat: 'guidance',        op: 'set', value: 1 }   // see EXTRA STATS below
  *   { addStage: { dryMass, propMass, thrust, isp, reliability } }
+ *
+ * EXTRA STATS (phase 1). Beyond the four fields the Vehicle shape names, any
+ * further TOP-LEVEL numeric field on `baseComponents` is carried through onto
+ * the built vehicle, and `set` / `add` / `mul` effects can target it by name.
+ * That is what makes `vehicle.guidance` (ARCHITECTURE.md, phase 1) a pure data
+ * change: `js/data/components.js` adds `guidance: 0` to the starter and a tree
+ * node sets it to 1, with no edit here. Non-numeric extras are ignored — a
+ * vehicle is a stat block, and only numbers are stats.
+ *
+ * `guidance` itself is always present and defaults to 0, so the resolver can
+ * read `vehicle.guidance` on a hand-written phase 0 fixture without a guard.
  *
  * @param {object} baseComponents a Vehicle-shaped object (js/data/components.js)
  * @param {Array<object>} [effects=[]]
@@ -98,7 +119,13 @@ export function buildVehicle(baseComponents, effects = []) {
     payloadMass: base.payloadMass ?? 0,
     dragArea: base.dragArea ?? 0,
     dragCoeff: base.dragCoeff ?? 0,
+    guidance: 0,
   };
+  for (const key of Object.keys(base)) {
+    if (NAMED_VEHICLE_FIELDS.has(key)) continue;
+    const value = base[key];
+    if (typeof value === 'number' && Number.isFinite(value)) vehicle[key] = value;
+  }
 
   const list = effects ?? [];
   if (!Array.isArray(list)) throw new Error('buildVehicle: effects must be an array');

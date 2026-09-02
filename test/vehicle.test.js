@@ -152,3 +152,69 @@ test('buildVehicle deep-copies: the base and the effects are untouched', () => {
   v.stages[2].propMass = 1;
   assert.equal(upper.propMass, 300, 'the built vehicle must not share structure with the effect');
 });
+
+// ---------------------------------------------------------------------------
+// Phase 1: extra top-level stats (ARCHITECTURE.md — `vehicle.guidance`).
+// ---------------------------------------------------------------------------
+
+test('guidance defaults to 0 when the base does not mention it', () => {
+  const v = buildVehicle(twoStage(), []);
+  assert.equal(v.guidance, 0);
+  // A phase 0 base is untouched by the default: nothing is added to it.
+  assert.ok(!('guidance' in twoStage()));
+});
+
+test('an unknown top-level numeric stat comes through from the base', () => {
+  // This is the whole point: adding `guidance: 0` to js/data/components.js is a
+  // DATA change, with no edit to this module.
+  const base = { ...twoStage(), guidance: 0, restarts: 2 };
+  const v = buildVehicle(base, []);
+  assert.equal(v.guidance, 0);
+  assert.equal(v.restarts, 2);
+
+  // The base's own value wins over the default.
+  assert.equal(buildVehicle({ ...twoStage(), guidance: 3 }, []).guidance, 3);
+
+  // Non-numeric extras are not stats and are dropped, not copied or thrown on.
+  const tagged = buildVehicle({ ...twoStage(), name: 'Kestrel', broken: null }, []);
+  assert.ok(!('name' in tagged));
+  assert.ok(!('broken' in tagged));
+});
+
+test('set, add and mul all work on an extra top-level stat', () => {
+  const base = { ...twoStage(), guidance: 0 };
+  assert.equal(buildVehicle(base, [{ stat: 'guidance', op: 'set', value: 1 }]).guidance, 1);
+  assert.equal(buildVehicle(base, [{ stat: 'guidance', op: 'add', value: 2 }]).guidance, 2);
+  assert.equal(
+    buildVehicle({ ...twoStage(), guidance: 2 }, [{ stat: 'guidance', op: 'mul', value: 3 }]).guidance,
+    6,
+  );
+  // Effects still apply in order on an extra stat, like any other.
+  assert.equal(
+    buildVehicle(base, [
+      { stat: 'guidance', op: 'set', value: 1 },
+      { stat: 'guidance', op: 'add', value: 1 },
+    ]).guidance,
+    2,
+  );
+  // The tree can set guidance even on a base that never declared it, because
+  // buildVehicle always seeds the default.
+  assert.equal(buildVehicle(twoStage(), [{ stat: 'guidance', op: 'set', value: 1 }]).guidance, 1);
+});
+
+test('extra stats do not open the door to arbitrary stat paths', () => {
+  const base = { ...twoStage(), guidance: 0 };
+  assert.throws(
+    () => buildVehicle(base, [{ stat: 'guidence', op: 'set', value: 1 }]),
+    /unknown stat path/,
+    'a typo is still a typo',
+  );
+  assert.throws(
+    () => buildVehicle(base, [{ stat: 'guidance', op: 'set', value: 'yes' }]),
+    /non-numeric value/,
+  );
+  assert.throws(
+    () => buildVehicle(base, [{ stat: 'guidance', op: 'toggle', value: 1 }]),
+    /unknown op 'toggle'/,
+  );
+});

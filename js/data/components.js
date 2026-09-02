@@ -60,4 +60,10 @@ export const baseVehicle = {
   payloadMass: 5, // kg, the contract's payload
   dragArea: 0.03, // m^2, reference cross-section (~0.2 m body diameter)
   dragCoeff: 0.5, // dimensionless, blunt-ish sounding-rocket nose/body
+  // Phase 1: 0..N, integer. 0 = no guidance, flies vertical regardless of
+  // the loadout's `turn`. The tier 2 guidance branch's first node sets this
+  // to 1 via { stat: 'guidance', op: 'set', value: 1 } (js/data/tree.js);
+  // buildVehicle (js/core/vehicle.js) must accept unknown top-level numeric
+  // stats from baseComponents for that effect to resolve.
+  guidance: 0,
 };

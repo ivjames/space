@@ -88,8 +88,94 @@ export const missions = [
     repLoss: 2,
     minReputation: 30,
   },
+
+  // -----------------------------------------------------------------------
+  // TIER 2 — orbit. PROVISIONAL, same caveat as js/data/tree.js: sized to a
+  // plausible ladder shape, not against the real resolver (still being
+  // rewritten alongside this file — see ARCHITECTURE.md's "Phase 1 — tier
+  // 2, orbit"). Re-tune thresholds against `node tools/balance.mjs` once it
+  // lands, the same way the tier 1 altitude ladder above was.
+  //
+  // Five rungs, each a different requirement shape (ARCHITECTURE.md: a
+  // mission has exactly one of `{ altitude }`, `{ downrange }`,
+  // `{ orbit: { periapsis } }`):
+  //
+  //   orbit-down-1   downrange 150 km   the turn matters before orbit does:
+  //                                     a lazy or absent turn still impacts
+  //                                     well short of this
+  //   orbit-down-2   downrange 400 km   a better turn, or partial guidance
+  //   orbit-apogee   altitude 300 km    high-apogee rung: a strong vertical
+  //                                     (or shallow-turn) flight, no orbit
+  //                                     quality required
+  //   orbit-low      periapsis 90 km    low-orbit rung: above
+  //                                     ORBIT_MIN_ALT (80 km, resolver.js)
+  //                                     but short of the tier goal
+  //   orbit-goal     periapsis 100 km   the tier goal itself, offered as a
+  //                                     contract too (matches tierGoals[2])
+  //
+  // Payouts are well above tier 1's (max 2 200): 3 000-14 000. repGain/
+  // repLoss scale up to match (tier 1 tops out at 3/2). minReputation gates
+  // climb through the range reputation can actually reach by tier 2 (tier 1
+  // gates top out at 30) so reputation keeps mattering into the new tier,
+  // per DESIGN.md.
+  {
+    id: 'orbit-down-1',
+    tier: 2,
+    name: 'Downrange telemetry hop',
+    profile: 'orbit',
+    requirement: { downrange: 150000 },
+    payout: 3000,
+    repGain: 3,
+    repLoss: 2,
+    minReputation: 20,
+  },
+  {
+    id: 'orbit-down-2',
+    tier: 2,
+    name: 'Extended downrange hop',
+    profile: 'orbit',
+    requirement: { downrange: 400000 },
+    payout: 4500,
+    repGain: 3,
+    repLoss: 3,
+    minReputation: 35,
+  },
+  {
+    id: 'orbit-apogee',
+    tier: 2,
+    name: 'High-apogee survey',
+    profile: 'orbit',
+    requirement: { altitude: 300000 },
+    payout: 5500,
+    repGain: 4,
+    repLoss: 3,
+    minReputation: 45,
+  },
+  {
+    id: 'orbit-low',
+    tier: 2,
+    name: 'Low-orbit insertion',
+    profile: 'orbit',
+    requirement: { orbit: { periapsis: 90000 } },
+    payout: 8000,
+    repGain: 5,
+    repLoss: 4,
+    minReputation: 60,
+  },
+  {
+    id: 'orbit-goal',
+    tier: 2,
+    name: 'Reach orbit',
+    profile: 'orbit',
+    requirement: { orbit: { periapsis: 100000 } },
+    payout: 12000,
+    repGain: 6,
+    repLoss: 4,
+    minReputation: 75,
+  },
 ];
 
 export const tierGoals = {
   1: { requirement: { altitude: 100000 }, name: 'Reach 100 km' },
+  2: { requirement: { orbit: { periapsis: 100000 } }, name: 'Reach orbit' },
 };

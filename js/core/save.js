@@ -1,16 +1,25 @@
 // Versioned save/load, migrations, storage adapter. Pure. See
 // ARCHITECTURE.md.
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 // migrations[v] transforms a save at version v into version v + 1's shape
 // (the version field itself is stamped by deserialize, not by the
-// migration function). migrations[0] is the "pre-schema" case: a save
-// from before versioning existed, treated as version 0 and back-filled
-// with every field newGame() would have set. migrations[1] is the
-// identity migration for schema version 1 itself — a placeholder kept so
-// the step-by-step loop below has something to run when SCHEMA_VERSION
-// eventually becomes 2 and a v1 save needs to advance one more step.
+// migration function). migrations[0] is the "pre-schema" case: a save from
+// before versioning existed, treated as version 0 and back-filled with
+// every field newGame() would have set (at v1's shape — migrations[1] then
+// carries it the rest of the way to v2, same as any real v1 save).
+//
+// migrations[1] is phase 1's schema bump (ARCHITECTURE.md, "state.js,
+// save.js — tier progression, schema v2"): `best` grows from
+// `{ maxAltitude }` to the per-tier/per-metric shape newGame() now
+// produces. The one non-mechanical part is `best.wins`: phase 0 saves never
+// had a documented `wins` field, but the real UI (js/ui/screens.js) has
+// been setting `best.winShown` (a single boolean — one tier existed) since
+// before this schema existed, so a genuine v1 save may carry it. That
+// boolean becomes `wins[1]`; a save with no `winShown` at all (the
+// documented phase 0 shape, or a save that predates the win screen) just
+// gets an empty `wins`.
 export const migrations = {
   0: (s) => ({
     version: 1,
@@ -32,7 +41,38 @@ export const migrations = {
     contracts: s.contracts ?? [],
     history: s.history ?? [],
   }),
-  1: (s) => s,
+  1: (s) => ({
+    version: 2,
+    seed: s.seed ?? 0,
+    draws: s.draws ?? 0,
+    funds: s.funds ?? 0,
+    reputation: s.reputation ?? 0,
+    resources: {
+      water: 0,
+      fuel: 0,
+      oxidizer: 0,
+      metals: 0,
+      ...(s.resources ?? {}),
+    },
+    owned: s.owned ?? [],
+    tier: s.tier ?? 1,
+    launches: s.launches ?? { 1: 0 },
+    best: {
+      maxAltitude: s.best?.maxAltitude ?? 0,
+      maxDownrange: s.best?.maxDownrange ?? 0,
+      bestPeriapsis: s.best?.bestPeriapsis ?? null,
+      wins: {
+        ...(s.best?.wins ?? {}),
+        ...(s.best?.winShown ? { 1: true } : {}),
+      },
+    },
+    contracts: s.contracts ?? [],
+    history: (s.history ?? []).map((entry) => ({
+      periapsis: null,
+      downrange: null,
+      ...entry,
+    })),
+  }),
 };
 
 // serialize(state) -> string

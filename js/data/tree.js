@@ -246,4 +246,254 @@ export const nodes = [
     requires: ['rel-3', 'struct-4'],
     effects: [{ stat: 'stages.1.reliability', op: 'mul', value: 1.2375 }],
   },
+
+  // ---------------------------------------------------------------------
+  // TIER 2 — orbit. See ARCHITECTURE.md, "Phase 1 — tier 2, orbit".
+  // ---------------------------------------------------------------------
+  //
+  // PROVISIONAL: balance against the resolver in the next pass.
+  //
+  // js/core/resolver.js and js/core/vehicle.js are being rewritten to the
+  // phase 1 spec (central gravity, pitch program, the `guidance` stat,
+  // orbit/downrange requirements, requiredDeltaV for every shape)
+  // concurrently with this file, so none of the numbers below have been
+  // driven through the REAL resolver the way every tier 1 number above was
+  // (see the BALANCING NOTES at the top of this file, and
+  // tools/balance.mjs). They are sized only against the ideal-delta-v
+  // shortcut (Tsiolkovsky, vehicle.js's totalDeltaV) for the full tree:
+  // tier 1 alone tops out at ~3.45 km/s ideal; the tier 2 nodes below add
+  // enough stage/isp/mass headroom to bring the FULL tree (tier 1 + tier 2,
+  // fuelFraction 1) to roughly 9.5-10.5 km/s ideal -- comfortably past the
+  // ~7.8 km/s orbital velocity at 100 km and the "9 km/s or more" a real
+  // ascent pays (ARCHITECTURE.md). Once the resolver lands, re-run
+  // tools/balance.mjs's tier 2 report and retune costs/effects the same way
+  // tier 1's were tuned against the simulation instead of the shortcut --
+  // this is exactly the ideal-dv-vs-simulated-altitude trap tier 1 fell
+  // into before it was fixed (see this file's BALANCING NOTES above).
+  //
+  // STRUCTURE. struct-5/7 are dry-mass-reduction nodes (composite tankage);
+  // struct-6 is the third stage itself (addStage), gated on struct-4 (the
+  // tier 1 second stage must already exist) as well as struct-5; struct-8
+  // is the tier 2 structure trade-off sibling (more third-stage propellant
+  // at a dry-mass cost, same shape as struct-1..3's tier 1 pattern).
+  //
+  // THRUST-TO-WEIGHT SAFETY RAIL, tier 2. Same rule as tier 1 (see the note
+  // above): a node that only ever adds weight must not be reachable without
+  // the matching thrust already in hand. The third stage (struct-6) is by
+  // far the biggest mass add in the tree, and it lands on stage 2 (index 1)
+  // -- whose tier 1 thrust (400 N) is nowhere near enough to lift a third
+  // stage's dry+prop mass on top of the payload (checked: liftoff TWR at
+  // stage 2 ignition drops under 0.5 without a stage 2 engine upgrade
+  // first). So struct-6 requires prop-6 (the stage 2 vacuum engine, which
+  // itself requires prop-5, the booster thrust upgrade) directly, not just
+  // struct-4/struct-5 -- every reachable owned-node combination that
+  // includes the third stage therefore also includes both propulsion
+  // upgrades, and stage 0/1/2 liftoff TWR stays >= ~1.09 (worst case:
+  // struct-5/6 alone, no struct-7/8, no prop-7/8) across every combination
+  // enumerated in test/data.test.js's tier 2 TWR check.
+  //
+  // PROPULSION. prop-5 is a booster (stage 1 / index 0) thrust upgrade,
+  // gated on prop-4 per the spec's own worked example ("the vacuum engine
+  // requires prop-4") -- it exists because the third stage (struct-6) adds
+  // real mass the booster now has to carry the whole way up, and liftoff
+  // TWR is the tree's hard safety rail (see the THRUST-TO-WEIGHT SAFETY
+  // RAIL note above; the same constraint applies here, just one stage
+  // heavier). prop-6 is the stage 2 (index 1) vacuum engine (mul
+  // stages.1.thrust AND stages.1.isp -- a straight upgrade, unlike tier 1's
+  // engine nodes, because stage 2 now has to lift the whole third stage on
+  // top of itself and needs both). prop-7 is its sibling trade-off (more
+  // stage 2 thrust for a bit less isp, layered on top of prop-6). prop-8 is
+  // the stage 3 (index 2) vacuum engine (mul stages.2.isp), gated on both
+  // prop-6 and struct-6 (the third stage must exist) -- collectEffects
+  // (js/core/tree.js) hoists every `addStage` effect ahead of every other
+  // effect specifically so a propulsion-branch node like this one can
+  // safely target a stage that a later-applied structure-branch node adds.
+  //
+  // GUIDANCE. guide-1 is the branch's entry point: it sets vehicle.guidance
+  // to 1, which is what turns the loadout's `turn` slider from ignored to
+  // live (pitchProgram, resolver.js). guide-2/3 raise guidance further (to
+  // 2, then 3) -- refinements the resolver reads as a wider "good turn
+  // window" / lower steering losses at each higher level, per
+  // ARCHITECTURE.md; the exact curve is the resolver's call, not this
+  // file's -- this file only supplies the integer.
+  //
+  // RELIABILITY. rel-5 continues the stage 2 reliability climb rel-4 (tier
+  // 1) started; rel-6 is the first node to touch stage 3 (the third
+  // stage), gated on struct-6 existing.
+  //
+  // COSTS. Tier 1's full tree costs 30 700 funds; tier 2 escalates from
+  // there (137 000 funds for its 13 nodes, ~4.5x tier 1), matching payouts
+  // on the tier 2 mission ladder (js/data/missions.js) that are "well
+  // above" tier 1's.
+  {
+    id: 'prop-5',
+    branch: 'propulsion',
+    level: 5,
+    tier: 2,
+    name: 'Booster thrust upgrade',
+    desc: '+30% stage 1 thrust. Keeps liftoff TWR healthy once the third stage adds its weight.',
+    cost: { funds: 9000 },
+    requires: ['prop-4'],
+    effects: [{ stat: 'stages.0.thrust', op: 'mul', value: 1.3 }],
+  },
+  {
+    id: 'prop-6',
+    branch: 'propulsion',
+    level: 6,
+    tier: 2,
+    name: 'Stage 2 vacuum engine',
+    desc: '+250% stage 2 thrust, +30% stage 2 isp. A much larger engine sized for the third stage riding on top. Needs the second stage to exist.',
+    cost: { funds: 12000 },
+    requires: ['prop-5', 'struct-4'],
+    effects: [
+      { stat: 'stages.1.thrust', op: 'mul', value: 3.5 },
+      { stat: 'stages.1.isp', op: 'mul', value: 1.3 },
+    ],
+  },
+  {
+    id: 'prop-7',
+    branch: 'propulsion',
+    level: 7,
+    tier: 2,
+    name: 'Stage 2 high-flow injector',
+    desc: '+15% stage 2 thrust, -5% stage 2 isp. The booster trade-off, one stage up.',
+    cost: { funds: 9000 },
+    requires: ['prop-6'],
+    effects: [
+      { stat: 'stages.1.thrust', op: 'mul', value: 1.15 },
+      { stat: 'stages.1.isp', op: 'mul', value: 0.95 },
+    ],
+  },
+  {
+    id: 'prop-8',
+    branch: 'propulsion',
+    level: 8,
+    tier: 2,
+    name: 'Stage 3 vacuum engine',
+    desc: '+42% stage 3 isp. Needs the third stage to exist.',
+    cost: { funds: 14000 },
+    requires: ['prop-6', 'struct-6'],
+    effects: [{ stat: 'stages.2.isp', op: 'mul', value: 1.42 }],
+  },
+
+  {
+    id: 'struct-5',
+    branch: 'structure',
+    level: 5,
+    tier: 2,
+    name: 'Composite tankage',
+    desc: '-10 kg stage 1 dry mass, -4 kg stage 2 dry mass.',
+    cost: { funds: 9000 },
+    requires: ['struct-4'],
+    effects: [
+      { stat: 'stages.0.dryMass', op: 'add', value: -10 },
+      { stat: 'stages.1.dryMass', op: 'add', value: -4 },
+    ],
+  },
+  {
+    id: 'struct-6',
+    branch: 'structure',
+    level: 6,
+    tier: 2,
+    name: 'Third stage',
+    desc: 'Adds a vacuum-optimised kick stage. The jump toward orbit. Needs a stage 2 engine that can actually lift it first.',
+    cost: { funds: 16000 },
+    requires: ['struct-5', 'struct-4', 'prop-6'],
+    effects: [
+      {
+        addStage: {
+          dryMass: 8,
+          propMass: 45,
+          thrust: 1300,
+          isp: 320,
+          reliability: 0.82,
+        },
+      },
+    ],
+  },
+  {
+    id: 'struct-7',
+    branch: 'structure',
+    level: 7,
+    tier: 2,
+    name: 'Stretched third-stage tank',
+    desc: '-2 kg stage 3 dry mass, -3 kg stage 2 dry mass.',
+    cost: { funds: 11000 },
+    requires: ['struct-6'],
+    effects: [
+      { stat: 'stages.2.dryMass', op: 'add', value: -2 },
+      { stat: 'stages.1.dryMass', op: 'add', value: -3 },
+    ],
+  },
+  {
+    id: 'struct-8',
+    branch: 'structure',
+    level: 8,
+    tier: 2,
+    name: 'Extended third-stage tank',
+    desc: '+40 kg stage 3 propellant, +3 kg stage 3 dry mass.',
+    cost: { funds: 13000 },
+    requires: ['struct-7'],
+    effects: [
+      { stat: 'stages.2.propMass', op: 'add', value: 40 },
+      { stat: 'stages.2.dryMass', op: 'add', value: 3 },
+    ],
+  },
+
+  {
+    id: 'guide-1',
+    branch: 'guidance',
+    level: 1,
+    tier: 2,
+    name: 'Gravity-turn guidance',
+    desc: 'Unlocks the loadout turn slider. Without this, every flight is vertical.',
+    cost: { funds: 6000 },
+    requires: [],
+    effects: [{ stat: 'guidance', op: 'set', value: 1 }],
+  },
+  {
+    id: 'guide-2',
+    branch: 'guidance',
+    level: 2,
+    tier: 2,
+    name: 'Adaptive pitch program',
+    desc: 'Widens the good turn window and trims steering losses.',
+    cost: { funds: 9000 },
+    requires: ['guide-1'],
+    effects: [{ stat: 'guidance', op: 'add', value: 1 }],
+  },
+  {
+    id: 'guide-3',
+    branch: 'guidance',
+    level: 3,
+    tier: 2,
+    name: 'Closed-loop guidance',
+    desc: 'Further widens the good turn window and trims steering losses.',
+    cost: { funds: 12000 },
+    requires: ['guide-2'],
+    effects: [{ stat: 'guidance', op: 'add', value: 1 }],
+  },
+
+  {
+    id: 'rel-5',
+    branch: 'reliability',
+    level: 5,
+    tier: 2,
+    name: 'Stage 2 requalification',
+    desc: '+1% stage 2 reliability.',
+    cost: { funds: 7000 },
+    requires: ['rel-4'],
+    effects: [{ stat: 'stages.1.reliability', op: 'mul', value: 1.01 }],
+  },
+  {
+    id: 'rel-6',
+    branch: 'reliability',
+    level: 6,
+    tier: 2,
+    name: 'Stage 3 restart qualification',
+    desc: '+20% stage 3 reliability. Requires the third stage to exist.',
+    cost: { funds: 10000 },
+    requires: ['rel-5', 'struct-6'],
+    effects: [{ stat: 'stages.2.reliability', op: 'mul', value: 1.2 }],
+  },
 ];

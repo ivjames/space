@@ -65,13 +65,35 @@ test('loadTree accepts a self-referencing-free longer cycle (a->b->c->a)', () =>
   assert.throws(() => loadTree(cyclic), /cycle/i);
 });
 
-test('branches returns propulsion, structure, reliability in that order', () => {
+test('branches returns propulsion, structure, guidance, reliability in that order', () => {
   const tree = loadTree(nodes);
   const bs = branches(tree);
   assert.deepEqual(
     bs.map((b) => b.id),
-    ['propulsion', 'structure', 'reliability'],
+    ['propulsion', 'structure', 'guidance', 'reliability'],
   );
+});
+
+test('branches(tree, 1) hides tier 2 nodes', () => {
+  const tree = loadTree(nodes);
+  const bs = branches(tree, 1);
+  for (const b of bs) {
+    for (const node of b.nodes) {
+      assert.equal(node.tier ?? 1, 1, `${node.id} should not appear under maxTier 1`);
+    }
+  }
+  // Every tier 1 node is still there.
+  const tier1Ids = nodes.filter((n) => (n.tier ?? 1) === 1).map((n) => n.id);
+  const seenIds = bs.flatMap((b) => b.nodes.map((n) => n.id));
+  assert.deepEqual([...seenIds].sort(), [...tier1Ids].sort());
+});
+
+test('branches(tree) with no maxTier includes tier 2 nodes', () => {
+  const tree = loadTree(nodes);
+  const bs = branches(tree);
+  const seenIds = bs.flatMap((b) => b.nodes.map((n) => n.id));
+  assert.ok(nodes.some((n) => (n.tier ?? 1) === 2), 'sanity: data should have tier 2 nodes');
+  assert.equal(seenIds.length, nodes.length);
 });
 
 test('branches sorts nodes by level within a branch', () => {
@@ -106,6 +128,58 @@ test('canBuy is true when prereqs owned and affordable', () => {
   const tree = loadTree(nodes);
   const state = makeState({ funds: 100000 });
   assert.equal(canBuy(tree, state, 'prop-1'), true);
+});
+
+test('canBuy refuses a tier 2 node while state.tier is 1', () => {
+  const tree = loadTree(nodes);
+  const tier2Node = nodes.find((n) => (n.tier ?? 1) === 2);
+  assert.ok(tier2Node, 'sanity: data should have at least one tier 2 node');
+  // Fully fund and own every prerequisite so tier is the only blocker.
+  const owned = [];
+  const seen = new Set();
+  function addWithPrereqs(id) {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const node = tree.byId.get(id);
+    for (const req of node.requires ?? []) addWithPrereqs(req);
+    owned.push(id);
+  }
+  for (const req of tier2Node.requires ?? []) addWithPrereqs(req);
+  const state = makeState({ funds: 1e9, tier: 1, owned });
+  assert.equal(canBuy(tree, state, tier2Node.id), false);
+});
+
+test('canBuy allows a tier 2 node once state.tier reaches 2', () => {
+  const tree = loadTree(nodes);
+  const tier2Node = nodes.find((n) => (n.tier ?? 1) === 2);
+  const owned = [];
+  const seen = new Set();
+  function addWithPrereqs(id) {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const node = tree.byId.get(id);
+    for (const req of node.requires ?? []) addWithPrereqs(req);
+    owned.push(id);
+  }
+  for (const req of tier2Node.requires ?? []) addWithPrereqs(req);
+  const state = makeState({ funds: 1e9, tier: 2, owned });
+  assert.equal(canBuy(tree, state, tier2Node.id), true);
+});
+
+test('loadTree throws when a node requires a higher-tier prerequisite', () => {
+  const bad = [
+    { id: 'a', branch: 'propulsion', level: 1, tier: 1, cost: { funds: 1 }, requires: ['b'], effects: [] },
+    { id: 'b', branch: 'propulsion', level: 2, tier: 2, cost: { funds: 1 }, requires: [], effects: [] },
+  ];
+  assert.throws(() => loadTree(bad), /higher tier|tier/i);
+});
+
+test('loadTree accepts a tier 2 node requiring a tier 1 prerequisite', () => {
+  const ok = [
+    { id: 'a', branch: 'propulsion', level: 1, tier: 1, cost: { funds: 1 }, requires: [], effects: [] },
+    { id: 'b', branch: 'propulsion', level: 2, tier: 2, cost: { funds: 1 }, requires: ['a'], effects: [] },
+  ];
+  assert.doesNotThrow(() => loadTree(ok));
 });
 
 test('buy returns a new state, debits cost, and adds the node to owned', () => {
@@ -150,4 +224,32 @@ test('collectEffects only includes owned nodes', () => {
   const state = makeState({ owned: ['prop-1'] });
   const effects = collectEffects(tree, state);
   assert.equal(effects.length, 2);
+});
+
+test('collectEffects hoists every addStage effect before other effects', () => {
+  // struct-4 (structure) adds stage 1; a tier 2 propulsion node muls
+  // stages.1.isp. Branch order alone would run propulsion (and its
+  // stages.1 effect) before structure's addStage — collectEffects must
+  // reorder so every addStage runs first regardless of branch.
+  const tree = loadTree(nodes);
+  const vacuumNode = nodes.find(
+    (n) => n.branch === 'propulsion' && n.effects.some((e) => e.stat === 'stages.1.isp'),
+  );
+  assert.ok(vacuumNode, 'sanity: data should have a stage-1-isp propulsion effect');
+  const owned = [];
+  const seen = new Set();
+  function addWithPrereqs(id) {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const node = tree.byId.get(id);
+    for (const req of node.requires ?? []) addWithPrereqs(req);
+    owned.push(id);
+  }
+  addWithPrereqs(vacuumNode.id);
+  const effects = collectEffects(tree, makeState({ owned }));
+  const addStageIndex = effects.findIndex((e) => e.addStage !== undefined);
+  const stage1IspIndex = effects.findIndex((e) => e.stat === 'stages.1.isp');
+  assert.ok(addStageIndex !== -1, 'sanity: the addStage effect should be present');
+  assert.ok(stage1IspIndex !== -1, 'sanity: the stages.1.isp effect should be present');
+  assert.ok(addStageIndex < stage1IspIndex, 'addStage must come before the effect targeting it');
 });

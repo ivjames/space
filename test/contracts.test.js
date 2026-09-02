@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateContracts, floorContract } from '../js/core/contracts.js';
+import { missions as realMissions } from '../js/data/missions.js';
 
 // Deterministic fake rng: pulls from a fixed sequence of "random" indices.
 function fakeRng(sequence) {
@@ -93,6 +94,28 @@ test('generateContracts respects count', () => {
   const rng = fakeRng([2, 1, 0]);
   const ids = generateContracts(state, missions, rng, 3);
   assert.equal(ids.length, 3);
+});
+
+// Real tier 2 data (js/data/missions.js), not the hand-written fake
+// templates above: confirms the real tier 2 mission ladder is invisible at
+// tier 1 and reachable once state.tier is 2, at full reputation so
+// minReputation gates cannot be the thing hiding it.
+test('real tier 2 mission templates are not offered at tier 1', () => {
+  const state = makeState({ tier: 1, reputation: 100 });
+  const rng = fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const ids = generateContracts(state, realMissions, rng, realMissions.length);
+  const tier2Ids = new Set(realMissions.filter((m) => m.tier === 2).map((m) => m.id));
+  assert.ok(ids.every((id) => !tier2Ids.has(id)), 'no tier 2 template should be offered at tier 1');
+});
+
+test('real tier 2 mission templates are offered once state.tier is 2', () => {
+  const state = makeState({ tier: 2, reputation: 100 });
+  const rng = fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const ids = generateContracts(state, realMissions, rng, realMissions.length);
+  const tier2Ids = realMissions.filter((m) => m.tier === 2).map((m) => m.id);
+  for (const id of tier2Ids) {
+    assert.ok(ids.includes(id), `${id} should be offered at tier 2 with reputation 100`);
+  }
 });
 
 test('generateContracts uses rng.int for its draws', () => {
