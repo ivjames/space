@@ -538,3 +538,252 @@ and reaches the tier 2 goal, reported in launches. Target 30 to 60 launches
 for tier 2. `data.test.js` asserts: some set reaches the orbit goal; every
 tier 2 mission is reachable; greedy tier 2 launches ≤ 80; no purchase
 order strands liftoff TWR below 1.05.
+
+---
+
+# Phase 2 — tier 3, orbital maneuvering
+
+Additions to the phase 0 and 1 contracts. Tiers 1 and 2 keep working
+unchanged; every existing test keeps passing.
+
+## What tier 3 is
+
+A capability tier with no destination of its own (DESIGN.md §6). The player
+learns to put something in orbit and leave it there, then to fly a second
+launch to it: match orbits, phase, approach, dock. The goal is to assemble a
+two-part station: a core launched and left in orbit, then a module docked
+to it. What the tier really buys is restartable upper stages, rendezvous
+navigation and docking, which tiers 4 to 6 all need.
+
+Nothing is piloted. After insertion the **orbital phase** is resolved
+analytically as a sequence of burns the vehicle can or cannot perform, and
+the map view plays that sequence back.
+
+## Persistent objects in orbit — js/core/state.js
+
+```js
+state.objects = [
+  { id: 'core-1', kind: 'core' | 'module' | 'satellite', name,
+    periapsis: m, apoapsis: m,
+    phase: 0..1,          // where it is on its orbit at epoch; fixed from a
+                          //   hash of id (js/core/orbit.js: phaseFor(id))
+    dockedTo: id | null,
+    launchedAt: { tier, launch } },
+]
+```
+
+A mission with `deploys: { kind, name }` adds an object on success, with the
+achieved orbit's elements. `unique: true` on a template means it is offered
+only while no undocked object of that kind exists. A template with
+`requiresObject: 'core'` is offered only while one exists. Contracts get
+`state` as they already do; `generateContracts` applies both rules.
+
+```js
+export function findTarget(state, kind)   // newest undocked object of that kind, or null
+export function addObject(state, obj)     // returns new state
+export function dockObject(state, id, toId)
+```
+
+## js/core/orbit.js — new, pure
+
+Kepler helpers shared by the resolver and the map view.
+
+```js
+export const MU, R                          // same planet as resolver.js
+export function elementsFrom(rp, ra)        // { a, e, period }
+export function velocityAt(a, r)            // vis-viva
+export function hohmann(r1, r2)             // { dv1, dv2, tof }  circular to circular
+export function transferDeltaV(rp1, ra1, rp2, ra2)
+  // total delta-v to go from orbit 1 to orbit 2: Hohmann between the two
+  // semi-major axes, plus an eccentricity-mismatch term
+  //   |e1 - e2| * velocityAt(a2, a2) * 0.5. Document the approximation.
+export function phasingDeltaV(angleDeg)     // PHASING_DV_PER_DEG * angleDeg, exported constant 4 m/s per degree
+export function positionAt(rp, ra, argPeriapsis, phase0, t)
+  // { x, y, r, trueAnomaly } in planet-centred coordinates at time t, from a
+  // Kepler solve (mean anomaly -> eccentric -> true). phase0 is the orbit
+  // fraction at t = 0.
+export function phaseFor(id)                // 0..1, stable hash of the id string
+```
+
+## js/core/resolver.js — the orbital phase
+
+**New requirement shapes** (a mission has exactly one):
+
+```js
+{ rendezvous: { target: 'core', within: m } }   // closest approach <= within
+{ dock: { target: 'core' } }                     // docked
+```
+
+Both need the target object. `resolveLaunch(vehicle, mission, loadout, rng,
+opts)` gains `opts.target` (the object, from `findTarget`); absent target on
+a rendezvous/dock mission throws.
+
+**Loadout gains `window`** (0..1): the launch window relative to the target's
+phase. `phaseErrorDeg = wrap(loadout.window - target.phase) * 360`, in
+(−180, 180]. Shown only for rendezvous/dock missions.
+
+**Vehicle gains stats** (all integers, default 0, set by the tree):
+`restarts` (upper-stage relights available), `nav` (0..3 rendezvous
+navigation quality), `docking` (0/1), `rcs` (0/1 fine approach thrusters).
+
+**The sequence**, resolved after insertion only if the vehicle reached
+orbit (periapsis ≥ ORBIT_MIN_ALT); otherwise the outcome is the tier 2 miss
+with `closestApproach = null`:
+
+1. **Budget.** `dvAvailable` = ideal delta-v left in the final stage from
+   the propellant remaining at final burnout (Tsiolkovsky on the remaining
+   mass). Report it.
+2. **Match.** `dvMatch = transferDeltaV(achieved, target orbit)`. Needs 2
+   restarts (one per burn). Burns at insertion + P/2 and + P, where P is the
+   achieved orbit's period.
+3. **Phase.** `dvPhase = phasingDeltaV(|phaseErrorDeg|)`, needs 1 restart if
+   `|phaseErrorDeg| > 5`, else 0. Two burns at + 1.5P and + 2.5P (one
+   restart covers the pair: the second is the same relight window).
+4. **Approach.** `closestApproach = NAV_APPROACH[nav] * (1 + |phaseErrorDeg| / 30)`
+   where `NAV_APPROACH = [50000, 5000, 500, 50]` m; halved if `rcs`. Needs
+   1 restart (or 0 if `rcs`). At + 3P.
+5. **Dock** (dock missions only): needs `docking >= 1` and
+   `closestApproach <= DOCK_RANGE` (100 m). Roll `rng.next() < DOCK_RELIABILITY`
+   (0.90, or 0.98 with `rcs`). At + 3P + 600 s.
+
+Each restart consumes a reliability roll against the final stage's
+reliability (`kind: 'restart'` failure; draw order documented). The
+sequence stops at the first step it cannot afford (delta-v or restarts) or
+that fails; `closestApproach` is then the separation at that point:
+before match, the difference in mean altitude plus the phasing arc
+(`|phaseErrorDeg| / 360 * 2π * a`); after match but before approach, the
+phasing arc alone; after approach, the computed value.
+
+**Outcome** gains:
+
+```js
+{
+  ...phase 0 and 1 fields,
+  insertion: { t, periapsis, apoapsis } | null,
+  orbital: null | {
+    target: { id, periapsis, apoapsis, phase },
+    dvAvailable, dvUsed, phaseErrorDeg,
+    burns: [{ t, kind: 'match' | 'phase' | 'approach' | 'dock', dv, ok }],
+    closestApproach: m,
+    docked: boolean,
+    stoppedAt: null | 'restarts' | 'deltaV' | 'restart-failure' | 'dock-failure',
+  },
+  closestApproach: m | null,
+  docked: boolean,
+}
+```
+
+Success: rendezvous iff `closestApproach <= within`; dock iff `docked`.
+`shortBy`: on a delta-v stop, the delta-v the sequence still needed; on a
+restarts stop, 0 and the readout says restarts; on approach-too-wide, 0 and
+the readout says navigation. `deltaVRequired` for these shapes: the tier 2
+orbit requirement to the target's periapsis plus `dvMatch + dvPhase(0) +
+approach allowance (50 m/s)`.
+
+**Events**: `'insertion'` ("Orbit insertion: 182 × 240 km."), `'burn'`
+("Orbit match burn 1: 140 m/s."), `'restart-failure'`, `'approach'`
+("Closest approach 3.2 km."), `'dock'` ("Docked."), `'dock-failure'`
+("Docking aborted: 0.9 m/s closing rate."). Times as above, so the map view
+can play them at a fixed rate.
+
+**Readouts**: "Docked to Station core." / "Closest approach 14 km." /
+"Closest approach 3.2 km. Short by 210 m/s." / "No restart available for
+the phasing burn." / "Stage 3 restart failure at T+5400s." / "Docking
+aborted." Ascent failures as before.
+
+**Samples** are unchanged (ascent only). The map view computes orbital
+positions from `insertion`, `orbital.burns` and `js/core/orbit.js`.
+
+## js/core/tree.js, js/data/tree.js — tier 3
+
+Tier 3 nodes (`tier: 3`), 12 to 14, four branches:
+- propulsion: restartable upper stage (`restarts` set 1), multi-restart
+  (`restarts` add 2), reaction control (`rcs` set 1), a propellant reserve
+  on the top stage (propMass add, dryMass add).
+- guidance: rendezvous radar (`nav` set 1), star tracker (`nav` set 2),
+  docking sensors (`nav` set 3). Also give `guide-2` from tier 2 an honest
+  effect now if the resolver reads `guidance >= 2` for anything; if not,
+  leave it.
+- structure: docking adapter (`docking` set 1), lighter payload fairing
+  (payloadMass or dryMass reduction), station module (a prerequisite of the
+  dock mission's template via `requiresNode`, see missions).
+- reliability: restart qualification (top stage reliability mul), docking
+  rehearsal (raises DOCK_RELIABILITY via a `dockBonus` stat the resolver
+  adds to the roll threshold, capped at 0.99).
+
+## js/core/state.js, js/core/save.js — schema v3
+
+`SCHEMA_VERSION = 3`; `migrations[2]` adds `objects: []`,
+`best.bestClosestApproach: null`, `best.docked: false`. `recordLaunch`
+updates those from the outcome and applies `deploys` (adds the object) and
+docking (`dockObject`). History entries gain `closestApproach` and `docked`.
+`tierGoalMet` handles `{ dock }` (any object with `dockedTo` set) and
+`{ rendezvous }` (bestClosestApproach ≤ within).
+
+## js/data/missions.js — tier 3 ladder
+
+All `tier: 3`. `satellite` (orbit ≥ 150 km, `deploys: { kind: 'satellite' }`,
+repeatable, the tier's income filler), `core` (orbit ≥ 200 km, `deploys:
+{ kind: 'core', name: 'Station core' }`, `unique: true`), `rdv-1`
+(rendezvous within 5 km, `requiresObject: 'core'`), `rdv-2` (within 500 m),
+`dock` (the goal: `{ dock: { target: 'core' } }`, `deploys: { kind:
+'module', name: 'Lab module' }` docked on success, `requiresNode:
+'struct-module'`). `tierGoals[3] = { requirement: { dock: { target:
+'core' } }, name: 'Assemble a station' }`. Reputation gates rise again.
+
+`generateContracts`: templates with `requiresNode` are offered only when
+the node is owned. The floor contract stays tier 1's.
+
+## js/ui — what tier 3 adds
+
+- **Loadout**: `window` slider `[data-loadout="window"]` 0..1 step 0.01,
+  shown for rendezvous/dock missions, labelled as a launch window with the
+  value shown in degrees of orbit (value × 360). Persisted in `view`. The
+  vehicle stats block shows restarts, nav, docking, rcs when non-zero.
+- **Launch screen** for a mission with a target: the ascent view plays to
+  the `insertion` event (or the end, if the flight never inserts), then the
+  SAME `canvas#ascent` element is handed to the **map view** (`js/ui/map.js`),
+  which plays the orbital phase from insertion. Tap skips everything.
+- **Map view**: planet-centred. Planet drawn as a circle with the day/night
+  terminator implied by shading; orbits as ellipses; altitude exaggerated by
+  a constant factor (`ALT_EXAGGERATION`, about 6) so a 200 km orbit is
+  legible against a 6371 km planet; a note in the header says so. Shows the
+  vehicle on its current orbit, the target on its, both moving by
+  `positionAt` at a fixed playback rate (`MAP_RATE`, 600× real time, so a
+  three-period sequence plays in about 25 s), burns as a flash and a ticker
+  line at their event time, the closest approach as a line between the two
+  when the approach event lands, docking as the two merging. Same no-leak
+  contract: nothing drawn or timed from the outcome ahead of sim time; the
+  vehicle's orbit is drawn from `insertion` (already happened), and after
+  each burn's time from the burn's resulting elements. The target's orbit
+  and phase are state, drawable from the start.
+- **Result**: rows per requirement: closest approach, phase error at
+  insertion as "Target was 62° ahead" (sign from `phaseErrorDeg`), delta-v
+  used of available, docked. Points-at: `stoppedAt: 'restarts'` →
+  propulsion; approach too wide → guidance; no docking adapter → structure;
+  delta-v → propulsion/structure.
+- **Contracts screen**: an "In orbit" block listing `state.objects` with
+  their orbit and docked state; the tier 3 goal hint reads best closest
+  approach / docked.
+- **Tier flow**: tier 2 win → Continue → `[data-screen="tier"]` "Tier 3:
+  Orbital maneuvering" → contracts. Tier 3 win → "Assembled a station in N
+  launches" and phase 2 stops there.
+- HUD tier shows "T3".
+
+## UI hooks, additions (phase 2)
+
+- `[data-loadout="window"]`
+- `[data-screen="contracts"] [data-objects]` the in-orbit block
+- the launch canvas stays `canvas#ascent` through both views; tap skips both
+- `[data-result="closest-approach"]`, `[data-result="docked"]`
+
+## Balance, phase 2
+
+`tools/balance.mjs` gains tier 3: with the core deployed at its template
+orbit, the cheapest prereq-valid set reaching each tier 3 rung (searching
+`turn` and `window` coarsely), the greedy player from the tier 2 end state
+through the tier 3 goal (target 30 to 60 launches), the delta-v budget of
+the top stage after insertion for the cheapest set (must cover match +
+phase(≤ 30°) + approach with margin), and the TWR sweep extended to tier 3
+sets. `data.test.js` asserts reachability of every tier 3 rung and greedy
+≤ 80.
