@@ -1,0 +1,12 @@
+{
+  "name": "space",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "A launch-and-upgrade space program game for mobile.",
+  "scripts": {
+    "test": "node --test test/",
+    "serve": "python3 -m http.server 8080"
+  },
+  "engines": { "node": ">=22" }
+}
