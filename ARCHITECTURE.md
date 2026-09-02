@@ -342,3 +342,198 @@ Every `js/core` module has a test file. Minimum:
   corrupt input reported.
 - data: every node's `requires` exist; tree loads; every mission has a
   requirement; at least one mission is `floor: true`.
+
+---
+
+# Phase 1 — tier 2, orbit
+
+Additions to the phase 0 contract. Everything above still holds; where a
+shape is extended, the phase 0 form stays valid (tier 1 keeps working
+unchanged, and `npm test` from phase 0 keeps passing).
+
+## What tier 2 is
+
+Altitude stops being the answer. The rocket has to turn and gain horizontal
+velocity, and the mission is judged on the orbit it ends up in. DESIGN.md
+§6: "More thrust stops working; the player must buy something different."
+The something different is guidance (a gravity turn) and staging.
+
+The planet is Earth-like and unnamed (fictional setting, real physics):
+R = 6.371e6 m, mu = g0·R². Orbital velocity at 100 km is about 7.8 km/s;
+a real ascent pays 9 km/s or more. The tier 2 tree has to take the player
+from the ~3 km/s ideal of the full tier 1 tree to that.
+
+## js/core/resolver.js — central gravity, pitch program, orbit
+
+**Gravity becomes central.** The planet's centre is at world (0, −R). Altitude
+is |r| − R. Gravity is −mu/|r|² along r. Atmosphere is a function of altitude
+as before. Thrust is along the pitch program's direction, measured from local
+vertical (the r direction), turning toward the prograde horizontal. Tier 1
+flights are vertical, so their results must not change beyond floating-point
+noise (a test asserts the tier 1 fixture's max altitude within 0.5%).
+
+**Pitch program is a loadout choice.** Loadout gains `turn`:
+
+```js
+// Loadout
+// { fuelFraction: 0.5..1.0, turn: 0..1 }
+//   turn is ignored (treated as 0 = vertical) unless vehicle.guidance >= 1
+```
+
+```js
+export function pitchProgram(vehicle, loadout)
+  // -> (t, alt) => angle from vertical in radians, pure, exported for tests
+```
+
+Shape: vertical until `turnStart`, then pitch increases with altitude to 90°
+at `turnEnd`, where `turnStart = lerp(8 km, 1 km, turn)` and
+`turnEnd = lerp(160 km, 60 km, turn)`. `turn` near 0 is a lazy turn (gravity
+losses); near 1 an early hard turn (drag, and a low apogee if the vehicle is
+weak). The right value depends on the vehicle, which is what makes it a
+decision. Constants exported so data and balance tooling can read them.
+
+**Vehicle gains a stat.** `vehicle.guidance` (integer, default 0). The tree
+sets it with `{ stat: 'guidance', op: 'set', value: 1 }`. `buildVehicle`
+must accept unknown top-level numeric stats from the base components so
+this is a data change; `components.js` adds `guidance: 0` to the starter.
+
+**Requirements** (a mission has exactly one):
+
+```js
+{ altitude: m }                  // tier 1: max altitude >= m
+{ downrange: m }                 // surface arc from the pad >= m at impact
+                                 //   (or at orbit, which trivially satisfies it)
+{ orbit: { periapsis: m } }      // after final burnout, periapsis >= m
+```
+
+**Orbit elements** from the state vector: ε = v²/2 − mu/r, h = |r × v|,
+a = −mu/2ε, e = √(1 + 2εh²/mu²), periapsis = a(1−e) − R, apoapsis =
+a(1+e) − R (apoapsis is +Infinity when ε ≥ 0). Exported as
+`orbitElements(r, v)` for tests.
+
+**Outcome** gains fields; existing ones keep their meaning:
+
+```js
+{
+  ...phase 0 fields,
+  maxDownrange: m,
+  periapsis: m | null,          // at end of flight; null if it never left the pad
+  apoapsis: m | null,           // +Infinity allowed
+  orbit: boolean,               // periapsis >= ORBIT_MIN_ALT (80 km, exported)
+                                //   at any point after the final burnout
+}
+```
+
+`deltaVRequired` per requirement: altitude as in phase 0; downrange: the
+ideal ballistic delta-v for that range on a flat-ish planet plus the same
+loss allowance (document the formula); orbit: circular velocity at the
+required periapsis plus a loss allowance of 25% (`ORBIT_LOSS_ALLOWANCE`).
+`shortBy` on a miss: altitude as in phase 0; downrange: floored by the ideal
+delta-v gap between the required and achieved range; orbit: the delta-v to
+raise periapsis from the achieved value to the required one at apoapsis by
+vis-viva, or, if the flight never reached the required altitude at all, the
+altitude gap as in phase 0, whichever is larger. Always > 0 on a miss.
+
+**Flight end.** Tier 1 behaviour is unchanged: an altitude requirement ends
+the flight at apogee. Downrange ends at impact (altitude < 0) or at orbit.
+Orbit ends once orbit is confirmed after the final burnout plus a short
+coast (30 s, so the player sees it), or at impact, or at `opts.maxTime`.
+
+**Events** gain: `'turn'` (pitch program leaves vertical), `'orbit'` (orbit
+confirmed, text like "Orbit: 112 × 340 km."), `'impact'`. Readouts:
+- orbit success: "Orbit: 112 × 340 km."
+- orbit miss with an ellipse: "Apoapsis 240 km, periapsis −1 800 km. Short by 1 240 m/s."
+- downrange: "Impact 640 km downrange." / "Impact 310 km downrange. Short by 420 m/s."
+- failure readouts as in phase 0.
+
+**Samples** gain `x` and `y` (world position, m) and `downrange` (m), so the
+renderer can follow horizontally and draw a trajectory.
+
+## js/core/tree.js, js/data/tree.js — tiers in the tree
+
+Node gains `tier` (integer, default 1). `branches(tree, maxTier = Infinity)`
+returns only nodes with `tier <= maxTier`; `canBuy` refuses a node whose
+tier is above `state.tier`. A new branch `guidance` appears in tier 2.
+Tier 2 nodes require tier 1 nodes as prerequisites where that makes sense
+(the second stage before a third, the top engine before the vacuum engine).
+
+Tier 2 branches, roughly: propulsion (vacuum-optimised upper-stage engines,
+higher Isp), structure (a third stage, lighter tanks: dry-mass reductions),
+guidance (the gravity turn itself, then refinements that widen the good
+`turn` window or reduce losses), reliability (upper-stage and restart
+reliability). Twelve to sixteen nodes. The balance tool proves the ladder.
+
+## js/core/state.js, js/core/save.js — tier progression, schema v2
+
+```js
+export function advanceTier(state)   // tier + 1, launches[tier] = 0, contracts cleared
+export function tierGoalMet(state, tierGoals)   // unchanged signature; checks
+                                                // the goal for state.tier
+```
+
+`best` becomes per-tier and per-metric:
+
+```js
+best: {
+  maxAltitude: 0,            // kept for tier 1 and old saves
+  maxDownrange: 0,
+  bestPeriapsis: null,
+  wins: { 1: true }          // which tier win screens have been shown
+}
+```
+
+`SCHEMA_VERSION = 2`; `migrations[1]` maps `best.winShown` → `best.wins[1]`
+and fills the new fields. Tier goals are evaluated against `best`:
+tier 1 on `maxAltitude`, tier 2 on `bestPeriapsis`.
+
+`recordLaunch` updates `maxDownrange` and `bestPeriapsis` (max) from the
+outcome. History entries gain `periapsis` and `downrange`.
+
+## js/data/missions.js — tier 2 ladder
+
+Tier 2 templates, all `tier: 2`, with `minReputation` gates so the tier is
+where reputation starts to matter: a downrange rung or two (the turn matters
+before orbit is reachable), a high-apogee rung, a low-orbit rung, and the
+goal. `tierGoals[2] = { requirement: { orbit: { periapsis: 100000 } }, name:
+'Reach orbit' }`. Contracts already filter by `tier <= state.tier`; tier 1
+templates stay in the pool as cheap fillers.
+
+## js/ui — what tier 2 adds
+
+- **Loadout** gains a `turn` slider (`input[type=range][data-loadout="turn"]`,
+  0..1, step 0.05, default 0.5) shown only when `vehicle.guidance >= 1`;
+  otherwise a `.hint` "No guidance: flies vertical." Loadout values persist
+  in `view` between launches.
+- **Ascent view** follows the rocket horizontally as well as vertically (same
+  fixed scale in both axes), draws the flown trajectory as a faint trail
+  behind the rocket, shows downrange next to altitude and speed, and prints
+  the `turn`, `orbit` and `impact` events in the ticker. The planet stays
+  drawn flat; curvature is not shown at this scale. No-leak contract holds:
+  nothing read ahead of sim time.
+- **Result** readouts per requirement as above; points-at: orbit or
+  downrange shortfall → propulsion/structure, plus guidance when
+  `vehicle.guidance === 0` ("No guidance: a vertical flight cannot orbit").
+- **Tree** shows nodes with `tier <= state.tier`, grouped by branch; a tier 2
+  node lists its tier 1 prerequisites by name when locked.
+- **Win, tier 1** → Continue → `advanceTier`, contracts regenerate, a short
+  "Tier 2: Orbit" interstitial (`[data-screen="tier"]`) with the goal, then
+  contracts. **Win, tier 2** → "Reached orbit in N launches" and phase 1 stops
+  there (Continue returns to contracts, tier stays 2).
+- HUD shows the tier ("T2") next to launches.
+
+## UI hooks, additions
+
+- `[data-loadout="turn"]`
+- `[data-screen="tier"]`, its continue is `[data-action="continue"]`
+- `#hud [data-hud="tier"]`
+
+## Balance, phase 1
+
+`tools/balance.mjs` gains tier 2: the cheapest prereq-valid set (over tier 1
+and tier 2 nodes) reaching each tier 2 mission, searched over `turn` in
+steps of 0.05 and fuelFraction 1; the full-tree orbit (periapsis with the
+best turn); and a greedy player who starts from the tier 1 greedy end state
+and reaches the tier 2 goal, reported in launches. Target 30 to 60 launches
+for tier 2. `data.test.js` asserts: some set reaches the orbit goal; every
+tier 2 mission is reachable; greedy tier 2 launches ≤ 80; no purchase
+order strands liftoff TWR below 1.05.
