@@ -740,12 +740,11 @@ the node is owned. The floor contract stays tier 1's.
   shown for rendezvous/dock missions, labelled as a launch window with the
   value shown in degrees of orbit (value × 360). Persisted in `view`. The
   vehicle stats block shows restarts, nav, docking, rcs when non-zero.
-  Its hint also names the TARGET's own phase and the resulting phase error
-  ("Station core is at 280°. Target was 8° behind at insertion."), which is
-  what makes the slider a decision rather than a guess: the target's phase is
-  state — the map draws it from its first frame — so quoting it predicts
-  nothing about the flight, exactly as the turn slider's hint describes the
-  pitch program and not the outcome.
+  Its hint names the TARGET's own phase ("Station core is at 280°. Inserts
+  288° round the orbit."): the target's phase is state — the map draws it
+  from its first frame — so quoting it predicts nothing. The hint does NOT
+  compute the resulting phase error; that is the flight's to report on the
+  result screen, and working it out from the two numbers is the decision.
 - **Launch screen** for a mission with a target: the ascent view plays to
   the `insertion` event (or the end, if the flight never inserts), then the
   SAME `canvas#ascent` element is handed to the **map view** (`js/ui/map.js`),

@@ -139,6 +139,47 @@ export const missions = [
   // tier goal in 36 tier 2 launches — inside the 30-60 target (raising
   // tier 2 NODE COSTS, not payouts, is what moved this up from an earlier
   // pass's 20; see js/data/tree.js's COSTS note).
+  //
+  // FILLER, `orbit-entry`. A tier 2 player's very first launches have
+  // nothing to buy: `guide-1` (11 000) is what the CHEAPEST tier 2 rung
+  // needs, and every other tier 2 requirement shape needs guidance too
+  // (a `downrange`/`orbit` flight is vertical, and goes nowhere, without
+  // it) -- so a player arriving in tier 2 on tier 1's own payouts (2 200
+  // at best) faced long runs of identical, ungoverned floor-contract
+  // launches with no ladder rung crossed in between -- both right at tier 2
+  // entry and again mid-ladder while saving for a pricier node (a 5-launch
+  // dry streak measured before this contract existed, saving from
+  // `orbit-down-1`'s own set toward the second node it needs). That is a
+  // dry streak, not a decision. `orbit-entry` is an `altitude` requirement
+  // -- the one shape guidance does not gate -- sized to what the
+  // MINIMAL tier 1 goal-reaching set already flies, not the full tier 1
+  // tree: `node tools/balance.mjs`'s own tier 1 cheapest-goal-set report
+  // gives 117 344 m for that set, and a greedy player owns exactly that
+  // set (never the full tree) on arrival in tier 2, so pricing this against
+  // the full tree's ~189 800 m would make it unreachable for exactly the
+  // player who needs it. 110 000 m sits safely under that with margin, and
+  // is still a genuine step up over sound-5's own 100 000 m ceiling.
+  // `minReputation: 0` (not undefined, so it still carries a gate the
+  // "every tier 2 mission has a minReputation gate" test can read) keeps
+  // it offerable immediately, the same "no gate at all in practice" role
+  // sound-1 and satellite play entering their own tiers. `filler: true` is
+  // a marker only -- it opts the mission OUT of the cumulative ladder
+  // tests below (there is no node to buy on top of the previous rung for
+  // it to reach; it is not a rung in that sense) without touching any
+  // other assertion (payout, requirement shape, minReputation type all
+  // still hold).
+  {
+    id: 'orbit-entry',
+    tier: 2,
+    name: 'High-altitude survey',
+    profile: 'sounding',
+    requirement: { altitude: 110000 },
+    payout: 3500,
+    repGain: 2,
+    repLoss: 1,
+    minReputation: 0,
+    filler: true,
+  },
   {
     id: 'orbit-down-1',
     tier: 2,

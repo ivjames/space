@@ -5,6 +5,7 @@ import { buildVehicle, totalDeltaV, stackMassAbove } from '../js/core/vehicle.js
 import { resolveLaunch, ORBIT_MIN_ALT } from '../js/core/resolver.js';
 import { makeRng } from '../js/core/rng.js';
 import { credit } from '../js/core/economy.js';
+import { phaseFor } from '../js/core/orbit.js';
 import { nodes } from '../js/data/tree.js';
 import { missions, tierGoals } from '../js/data/missions.js';
 import { baseVehicle } from '../js/data/components.js';
@@ -296,13 +297,21 @@ test('every tier 1 mission is reachable by some prereq-valid tier 1 owned set (s
   }
 });
 
-test('a greedy player (best reachable mission, then cheapest altitude-boosting node) reaches the tier 1 goal within 40 launches', () => {
+test('a greedy player (best reachable mission, then cheapest altitude-boosting node) reaches the tier 1 goal within 40 launches, with no dry streak over 4', () => {
   const goalAltitude = tierGoals[1].requirement.altitude;
   const floorMission = missions.find((m) => m.floor);
   let state = { owned: [], funds: 0, resources: {} };
   let altitude = maxAltitudeOf(buildOwnedVehicle(state.owned), 1);
   let launches = 0;
   const MAX_LAUNCHES = 40;
+  // Dry streak (coordinator follow-up): a launch is "dry" when it buys no
+  // node AND flies the same mission as the previous launch -- nothing
+  // changed, so the player is just waiting on funds with no new rung in
+  // sight. A launch that unlocks a new, better-paying mission (even
+  // without buying anything yet) is NOT dry -- the ladder moved.
+  let dryStreak = 0;
+  let maxDryStreak = 0;
+  let prevBestId = null;
 
   while (altitude < goalAltitude && launches < MAX_LAUNCHES) {
     let best = floorMission;
@@ -312,6 +321,7 @@ test('a greedy player (best reachable mission, then cheapest altitude-boosting n
     state = { ...state, funds: state.funds + best.payout };
     launches += 1;
 
+    const ownedBefore = state.owned.length;
     for (;;) {
       let pick = null;
       for (const node of tier1Tree.nodes) {
@@ -328,6 +338,11 @@ test('a greedy player (best reachable mission, then cheapest altitude-boosting n
       state = buy(tier1Tree, state, pick.id);
       altitude = maxAltitudeOf(buildOwnedVehicle(state.owned), 1);
     }
+
+    const dry = state.owned.length === ownedBefore && best.id === prevBestId;
+    dryStreak = dry ? dryStreak + 1 : 0;
+    maxDryStreak = Math.max(maxDryStreak, dryStreak);
+    prevBestId = best.id;
   }
 
   assert.ok(
@@ -335,6 +350,7 @@ test('a greedy player (best reachable mission, then cheapest altitude-boosting n
     `greedy player stalled at ${altitude.toFixed(0)} m after ${launches} launches, goal is ${goalAltitude} m`,
   );
   assert.ok(launches <= MAX_LAUNCHES, `greedy player took ${launches} launches, expected <= ${MAX_LAUNCHES}`);
+  assert.ok(maxDryStreak <= 4, `tier 1 greedy dry streak was ${maxDryStreak} consecutive launches, expected <= 4`);
 });
 
 // =======================================================================
@@ -568,10 +584,15 @@ function chainedCheapestReaching(startOwned, requirement) {
   return { owned: state.owned, metric, reached: metric >= target };
 }
 
+// `orbit-entry` is a dry-streak filler (js/data/missions.js's own doc
+// comment): it needs no node on top of the tier 1 baseline to reach (that
+// is the whole point of it), so it is not a rung in the "1-3 new nodes"
+// ladder sense and is excluded here via its `filler` marker.
+const tier2LadderMissions = tier2Missions.filter((m) => !m.filler);
 const tier2Ladder = (() => {
   let owned = [...tier1CheapestGoalOwned];
   const rungs = [];
-  for (const m of tier2Missions) {
+  for (const m of tier2LadderMissions) {
     const result = chainedCheapestReaching(owned, m.requirement);
     rungs.push({ mission: m, ...result, delta: result.owned.length - owned.length });
     owned = result.owned;
@@ -715,6 +736,13 @@ test('a greedy player reaches the tier 2 goal in 30-60 tier 2 launches, crossing
   let state = { owned: [], funds: 0, resources: {}, reputation: 0, tier: 1 };
   let launches = 0;
   const MAX_TOTAL_LAUNCHES = 150;
+  // Dry streak (coordinator follow-up): see the tier 1 greedy test's own
+  // comment for the definition. Tracked separately per tier -- a tier
+  // change is itself progress, so the streak resets crossing into tier 2.
+  let dryStreak = 0;
+  let maxDryStreakTier1 = 0;
+  let maxDryStreakTier2 = 0;
+  let prevBestId = null;
 
   // Tier 1 leg: same shape as the tier 1 greedy test above, reusing
   // maxAltitudeOf/tier1Missions so this genuinely starts from a tier 1
@@ -730,6 +758,7 @@ test('a greedy player reaches the tier 2 goal in 30-60 tier 2 launches, crossing
     }
     state = credit(state, { funds: best.payout, reputation: best.repGain });
     launches += 1;
+    const ownedBefore = state.owned.length;
     for (;;) {
       let pick = null;
       for (const node of fullTree.nodes) {
@@ -744,11 +773,17 @@ test('a greedy player reaches the tier 2 goal in 30-60 tier 2 launches, crossing
       state = buy(fullTree, state, pick.node.id);
       altitude = pick.a;
     }
+    const dry = state.owned.length === ownedBefore && best.id === prevBestId;
+    dryStreak = dry ? dryStreak + 1 : 0;
+    maxDryStreakTier1 = Math.max(maxDryStreakTier1, dryStreak);
+    prevBestId = best.id;
   }
   const tier1Launches = launches;
 
   // Tier 2 leg.
   state = { ...state, tier: 2 };
+  dryStreak = 0;
+  prevBestId = null;
   let metrics = bestMetricsOverTurns(buildVehicle(baseVehicle, collectEffects(fullTree, state)), 1);
   const reputationCurve = [];
   while ((metrics.bestPeriapsis ?? -Infinity) < goalPeriapsis && launches < MAX_TOTAL_LAUNCHES) {
@@ -762,6 +797,7 @@ test('a greedy player reaches the tier 2 goal in 30-60 tier 2 launches, crossing
     launches += 1;
     reputationCurve.push({ tier2Launch: launches - tier1Launches, reputation: state.reputation });
 
+    const ownedBefore = state.owned.length;
     for (;;) {
       let pick = null;
       const baseMetric = metricAtDecisionTurn(buildVehicle(baseVehicle, collectEffects(fullTree, state)));
@@ -777,6 +813,10 @@ test('a greedy player reaches the tier 2 goal in 30-60 tier 2 launches, crossing
       state = buy(fullTree, state, pick.id);
     }
     metrics = bestMetricsOverTurns(buildVehicle(baseVehicle, collectEffects(fullTree, state)), 1);
+    const dry = state.owned.length === ownedBefore && best.id === prevBestId;
+    dryStreak = dry ? dryStreak + 1 : 0;
+    maxDryStreakTier2 = Math.max(maxDryStreakTier2, dryStreak);
+    prevBestId = best.id;
   }
 
   const tier2Launches = launches - tier1Launches;
@@ -784,6 +824,8 @@ test('a greedy player reaches the tier 2 goal in 30-60 tier 2 launches, crossing
     (metrics.bestPeriapsis ?? -Infinity) >= goalPeriapsis,
     `greedy player stalled at periapsis ${metrics.bestPeriapsis} after ${launches} total launches`,
   );
+  assert.ok(maxDryStreakTier1 <= 4, `tier 1 leg dry streak was ${maxDryStreakTier1} consecutive launches, expected <= 4`);
+  assert.ok(maxDryStreakTier2 <= 4, `tier 2 leg dry streak was ${maxDryStreakTier2} consecutive launches, expected <= 4`);
   // ARCHITECTURE.md's own bound ("data.test.js asserts ... greedy tier 2
   // launches ≤ 80") plus the task's tighter 30-60 economy target -- 30-60
   // implies ≤80, so this one assertion covers both.
@@ -868,28 +910,37 @@ test('the five phase 2 vehicle stats are each set/raised by some tier 3 node', (
   assert.ok(vehicle.dockBonus > 0, 'dockBonus: rel-8 should raise it above 0');
 });
 
-test('restarts stays 0 until prop-10 is owned, and multi-restart plumbing needs restart-1 first', () => {
+// ownedWithPrereqs(id): the FULL transitive closure of a node's prereq
+// chain, plus the node itself (topologically ordered by the recursion, so
+// every prereq lands before its dependent). A node's `requires` is only its
+// DIRECT prerequisites (js/data/tree.js), not the full chain -- prop-10's
+// own `requires` is just ['prop-9'], but prop-9 itself needs struct-6 (the
+// third stage) to already exist, since prop-9 targets `stages.2.isp`. Two
+// tier 3 tests below build an owned set from a node id and need the whole
+// chain resolvable, not just the one direct prerequisite, or buildVehicle
+// throws on the unresolved stage path -- this is the shared helper both use.
+function ownedWithPrereqs(id) {
+  const seen = new Set();
+  const owned = [];
+  function add(nodeId) {
+    if (seen.has(nodeId)) return;
+    seen.add(nodeId);
+    for (const req of fullTree.byId.get(nodeId).requires ?? []) add(req);
+    owned.push(nodeId);
+  }
+  add(id);
+  return owned;
+}
+
+test('restarts stays 0 until prop-10 is owned, and multi-restart plumbing needs prop-10 first', () => {
   const bare = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: [] }));
   assert.equal(bare.restarts, 0);
-  const prop10Owned = [...(fullTree.byId.get('prop-10').requires ?? []), 'prop-10'];
-  const withPropTen = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: prop10Owned }));
+  const withPropTen = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: ownedWithPrereqs('prop-10') }));
   assert.equal(withPropTen.restarts, 1);
   assert.ok((fullTree.byId.get('prop-11').requires ?? []).includes('prop-10'), 'prop-11 should require prop-10');
 });
 
 test('multi-restart plumbing (prop-11) costs top-stage reliability, and restart qualification (rel-7) recovers it', () => {
-  function ownedWithPrereqs(id) {
-    const seen = new Set();
-    const owned = [];
-    function add(nodeId) {
-      if (seen.has(nodeId)) return;
-      seen.add(nodeId);
-      for (const req of fullTree.byId.get(nodeId).requires ?? []) add(req);
-      owned.push(nodeId);
-    }
-    add(id);
-    return owned;
-  }
   const withoutRestarts = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: ownedWithPrereqs('struct-6') }));
   const baseReliability = withoutRestarts.stages[2].reliability;
 
@@ -899,10 +950,20 @@ test('multi-restart plumbing (prop-11) costs top-stage reliability, and restart 
     'prop-11 alone should lower top-stage reliability relative to not owning it',
   );
 
+  // rel-7 requires rel-6 (js/data/tree.js: the reliability branch continues
+  // tier 2's own chain), and rel-6 itself raises stages.2.reliability by
+  // 20% -- so the FAIR baseline for "does rel-7 cancel prop-11's cut back
+  // out" is the reliability WITH rel-6 owned but WITHOUT prop-11/rel-7, not
+  // the bare struct-6 baseline above (which omits rel-6 entirely and so
+  // isn't the number rel-7's own -3%-recovering multiplier is ever applied
+  // on top of in a reachable owned set).
+  const baseWithRel6 = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: ownedWithPrereqs('rel-6') }));
+  const baseWithRel6Reliability = baseWithRel6.stages[2].reliability;
+
   const withBoth = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: ownedWithPrereqs('rel-7') }));
   assert.ok(
-    Math.abs(withBoth.stages[2].reliability - baseReliability) < 1e-6,
-    `rel-7 should cancel prop-11's cut back out (got ${withBoth.stages[2].reliability}, base ${baseReliability})`,
+    Math.abs(withBoth.stages[2].reliability - baseWithRel6Reliability) < 1e-6,
+    `rel-7 should cancel prop-11's cut back out (got ${withBoth.stages[2].reliability}, base with rel-6 ${baseWithRel6Reliability})`,
   );
 });
 
@@ -977,41 +1038,13 @@ test('tierGoals[3] is a dock requirement targeting the core', () => {
 });
 
 // ---------------------------------------------------------------------
-// Resolver-driven TIER 3 assertions. Guarded: skip with an explanatory
-// message rather than fail when the checkout's resolver doesn't produce a
-// `closestApproach` field yet (js/core/resolver.js's orbital phase hasn't
-// landed). The probe mirrors tools/balance.mjs's own PHASE2_RESOLVER
-// check.
+// Resolver-driven TIER 3 assertions. js/core/resolver.js's orbital phase
+// has landed for good, so these run unconditionally -- no more test.skip
+// guard (the guard existed only while resolveLaunch didn't understand a
+// rendezvous/dock requirement or opts.target; that build is over).
 // ---------------------------------------------------------------------
 
-const PHASE2_RESOLVER = (() => {
-  try {
-    const fullOwned = nodes.map((n) => n.id);
-    const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
-    const target = {
-      id: 'core-1', kind: 'core', name: 'probe', periapsis: 200000, apoapsis: 200000, phase: 0, dockedTo: null,
-    };
-    const outcome = resolveLaunch(
-      forceReliability(vehicle),
-      { requirement: { rendezvous: { target: 'core', within: 5000 } } },
-      { fuelFraction: 1, turn: 0.3, window: 0 },
-      makeRng(SEED),
-      { target },
-    );
-    return typeof outcome.closestApproach === 'number' || outcome.closestApproach === null;
-  } catch {
-    return false;
-  }
-})();
-
-const PHASE2_SKIP_MESSAGE = 'js/core/resolver.js does not produce closestApproach yet (phase 2 orbital phase not landed) '
-  + '-- this test is exercised once it does; the balance pass then removes this guard';
-
-test('every tier 3 mission is reachable by the full tree (simulated, target = core at its template orbit)', (t) => {
-  if (!PHASE2_RESOLVER) {
-    t.skip(PHASE2_SKIP_MESSAGE);
-    return;
-  }
+test('every tier 3 mission is reachable by the full tree (simulated, target = core at its template orbit)', () => {
   const fullOwned = nodes.map((n) => n.id);
   const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
   const coreMission = missions.find((m) => m.id === 'core');
@@ -1021,7 +1054,7 @@ test('every tier 3 mission is reachable by the full tree (simulated, target = co
     name: 'Station core',
     periapsis: coreMission.requirement.orbit.periapsis,
     apoapsis: coreMission.requirement.orbit.periapsis,
-    phase: 0,
+    phase: phaseFor('core-1'),
     dockedTo: null,
   };
   const WINDOW_STEPS = Array.from({ length: 21 }, (_, i) => i * 0.05);
@@ -1050,6 +1083,83 @@ test('every tier 3 mission is reachable by the full tree (simulated, target = co
       assert.ok(best !== null && best <= m.requirement.rendezvous.within, `full tree's best closest approach for ${m.id} was ${best}, needs <= ${m.requirement.rendezvous.within}`);
     }
   }
+});
+
+// =========================================================================
+// GOAL 3 (phase 2): the `window` slider has to matter. For the full tree at
+// its own best turn, sweep `window` in 0.05 steps and read off closest
+// approach / docked -- the same shape as tier 2's turn-window tests, one
+// slider over.
+//
+// MEASURED, not assumed (`node tools/balance.mjs`'s TIER 3 window table has
+// the full sweep): docking passes for window steps 0.70-0.85 against this
+// target's phase (~0.778, i.e. ~280 deg) -- a ~4-notch, ~±27 deg band, wider
+// than the "roughly ±15 deg" ARCHITECTURE.md's balance section anticipates
+// but the same order of magnitude, not absurd. rdv-1 (within 5 km) passes
+// on the SAME 4 notches here: at this reserve level the sequence's
+// PHASE-BURN affordability (restarts=3 exactly covers match(2)+phase(1),
+// and dvAvailable is thin once phase is needed) is the binding constraint
+// for both rungs, not nav quality -- outside the band the phase burn simply
+// can't be afforded and closestApproach reports the raw (unclosed) phasing
+// arc, which is enormous regardless of nav. So "rendezvous tolerates a
+// wider band than dock" does not show up as a wider WINDOW band here; it
+// would need a materially bigger dv reserve than this tree carries to
+// separate the two, and growing that reserve runs straight into the
+// eccentricity trap the tree.js BALANCING NOTES documents. Reported
+// honestly rather than forced.
+test('the window slider matters: docking needs a bounded band around the target phase, not the whole slider', () => {
+  const fullOwned = nodes.map((n) => n.id);
+  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
+  const coreMission = missions.find((m) => m.id === 'core');
+  const target = {
+    id: 'core-1',
+    kind: 'core',
+    name: 'Station core',
+    periapsis: coreMission.requirement.orbit.periapsis,
+    apoapsis: coreMission.requirement.orbit.periapsis,
+    phase: phaseFor('core-1'),
+  };
+  const dockMission = missions.find((m) => m.id === 'dock');
+  const rdv1Mission = missions.find((m) => m.id === 'rdv-1');
+  const WINDOW_STEPS = Array.from({ length: 21 }, (_, i) => i * 0.05);
+
+  // Find the turn that gives the closest overall approach (what a player
+  // chasing this rung would dial in), the same way the reachability test
+  // above searches -- then hold it fixed and sweep window.
+  let bestTurn = null;
+  let bestCA = null;
+  for (const turn of TURN_STEPS) {
+    for (const w of WINDOW_STEPS) {
+      const rng = makeRng(SEED);
+      const outcome = resolveLaunch(forceReliability(vehicle), dockMission, { fuelFraction: 1, turn, window: w }, rng, { target });
+      if (typeof outcome.closestApproach === 'number' && (bestCA === null || outcome.closestApproach < bestCA)) {
+        bestCA = outcome.closestApproach;
+        bestTurn = turn;
+      }
+    }
+  }
+  assert.ok(bestTurn !== null, 'no turn ever produced a closest approach at all');
+
+  const dockRows = WINDOW_STEPS.map((w) => {
+    const rng = makeRng(SEED);
+    const outcome = resolveLaunch(forceReliability(vehicle), dockMission, { fuelFraction: 1, turn: bestTurn, window: w }, rng, { target });
+    return { window: w, closestApproach: outcome.closestApproach, docked: outcome.docked };
+  });
+  const rdv1Rows = WINDOW_STEPS.map((w) => {
+    const rng = makeRng(SEED);
+    const outcome = resolveLaunch(forceReliability(vehicle), rdv1Mission, { fuelFraction: 1, turn: bestTurn, window: w }, rng, { target });
+    return { window: w, closestApproach: outcome.closestApproach };
+  });
+
+  const dockBand = dockRows.filter((r) => r.docked).length;
+  const rdv1Band = rdv1Rows.filter((r) => typeof r.closestApproach === 'number' && r.closestApproach <= rdv1Mission.requirement.rendezvous.within).length;
+
+  assert.ok(dockBand >= 1, 'no window step ever docks at the best turn -- the slider would be unusable');
+  assert.ok(dockBand <= 10, `dock's window band was ${dockBand}/21 notches, expected well under half the slider (not "the whole slider matters nothing")`);
+  assert.ok(
+    rdv1Band >= dockBand,
+    `rdv-1's window band (${rdv1Band}/21) should be at least as wide as dock's (${dockBand}/21) -- a looser requirement should never be pickier about the window`,
+  );
 });
 
 test('a greedy player reaches the tier 3 goal (dock) in at most 80 tier 3 launches, continuing from the tier 2 end state', (t) => {

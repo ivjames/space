@@ -551,12 +551,16 @@ function chainedCheapestReaching(startOwned, requirement) {
 
 console.log('\n=== Tier 2 mission ladder: CUMULATIVE cheapest reaching sets (goal 2) ===');
 console.log('  (each rung buys on top of the previous rung\'s owned set; delta = new nodes bought)');
+// orbit-entry is the dry-streak filler (js/data/missions.js) -- it needs no
+// node beyond the tier 1 baseline to reach by design, so it is not a ladder
+// rung and is excluded from the delta-tracking chain below.
+const tier2LadderMissions = tier2Missions.filter((m) => !m.filler);
 const tier1GoalOwned = goalBest ? goalBest.owned : [];
 let ladderOwned = [...tier1GoalOwned];
 let ladderPrevCount = ladderOwned.length;
 console.log(`  tier 1 baseline: ${ladderOwned.length} node(s) [${ladderOwned.join(', ')}]`);
 const ladderRungs = [];
-for (const m of tier2Missions) {
+for (const m of tier2LadderMissions) {
   const result = chainedCheapestReaching(ladderOwned, m.requirement);
   const delta = result.owned.length - ladderPrevCount;
   ladderRungs.push({ mission: m, ...result, delta });

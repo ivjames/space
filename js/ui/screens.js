@@ -416,9 +416,11 @@ export function mountScreens(ctx) {
   function windowHintText(value, target) {
     const deg = Math.round(value * 360);
     if (!target) return `Inserts ${deg}° round the orbit.`;
-    const err = phaseErrorText(((value - (target.phase ?? 0)) * 360 + 540) % 360 - 180);
+    // The target's position is world state (the map draws it from frame
+    // one). The error between it and this window is NOT shown: that is the
+    // flight's to report, afterwards, and working it out is the decision.
     const at = Math.round((target.phase ?? 0) * 360);
-    return `${target.name ?? target.id} is at ${at}°. ${err} at insertion.`;
+    return `${target.name ?? target.id} is at ${at}°. Inserts ${deg}° round the orbit.`;
   }
 
   function loadoutHtml() {
