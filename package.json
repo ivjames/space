@@ -5,7 +5,7 @@
   "type": "module",
   "description": "A launch-and-upgrade space program game for mobile.",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test",
     "serve": "python3 -m http.server 8080"
   },
   "engines": { "node": ">=22" }

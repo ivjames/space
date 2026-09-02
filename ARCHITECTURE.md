@@ -78,8 +78,12 @@ export function stageDeltaV(vehicle, i, fuelFraction = 1)
 
 export function totalDeltaV(vehicle, fuelFraction = 1)
 
-export function stackMassAbove(vehicle, i)   // helper, exported for tests
+export function stackMassAbove(vehicle, i, fuelFraction = 1)   // helper, exported for tests
 ```
+
+`fuelFraction` loads every stage to that fraction, so stage i only lifts that
+much of the upper stages' propellant; `totalDeltaV(v, ff)` then agrees with
+the simulated mass history.
 
 Effects (from tree.js) are applied here. Shapes:
 
@@ -115,8 +119,11 @@ Outcome:
   maxSpeed: m/s,
   deltaVAchieved: m/s,      // sum of stage burns actually completed
   deltaVRequired: m/s,      // mission's requirement expressed as delta-v
-  shortBy: m/s,             // max(0, required - achieved); 0 on success
+  shortBy: m/s,             // 0 on success; on a miss, at least the ideal
+                            //   delta-v gap sqrt(2 g0 h_req) - sqrt(2 g0 maxAlt)
   failure: null | { t, stage, kind: 'ignition' | 'burn' | 'separation' },
+                            // stage is 1-BASED everywhere in an Outcome
+                            //   (events, samples, failure), matching readouts
   readout: string,          // one line the result screen shows,
                             //   e.g. "Reached 62 km. Short by 410 m/s."
                             //   e.g. "Stage 2 ignition failure at T+142s."
@@ -141,8 +148,18 @@ Why 2D now: tier 2 is a data change (a pitch program and a velocity
 requirement), not a rewrite. See DESIGN.md §14.
 
 `deltaVRequired` for an altitude requirement: the ideal vertical delta-v to
-coast to that altitude from rest, plus a fixed gravity/drag loss allowance.
-Document the formula in the module.
+coast to that altitude from rest, plus a fixed 15% loss allowance
+(`LOSS_ALLOWANCE`, exported). A vertical ascent loses more than that, so
+`required - achieved` can be negative on a miss; `shortBy` is therefore
+floored by the ideal delta-v gap between the required and reached altitude,
+which is positive exactly when the altitude was missed. Raising the constant
+or making it per-profile is the tuning lever.
+
+Determinism: the mid-burn reliability roll resolves at the first integrator
+boundary at or after its random time, so a reliability-1 vehicle flies
+bit-identically under any seed. Draw order per ignition: ignition roll, then
+(only if it passed) burn-roll fraction, then the burn roll. `makeRng(seed,
+draws)` fast-forwards for save replay.
 
 ## js/core/tree.js
 
@@ -199,10 +216,12 @@ player can never be stuck (DESIGN.md §7).
 
 ```js
 export function newGame(seed)      // -> State
-export function deriveVehicle(state, tree, components)  // buildVehicle(...)
-export function recordLaunch(state, mission, outcome)   // launches, best, tier progress
-export function tierGoalMet(state, missions)            // boolean
+export async function deriveVehicle(state, tree, components)  // buildVehicle(...); async (dynamic import)
+export function recordLaunch(state, mission, outcome, draws = 0) // launches[state.tier], best, history (cap 20), draws
+export function tierGoalMet(state, tierGoals)           // accepts the tierGoals map or a module exposing .tierGoals
 ```
+
+History entries: `{ tier, missionId, success, maxAltitude, readout }`.
 
 State (this is also the save schema, version 1):
 
@@ -271,6 +290,22 @@ export const tierGoals = { 1: { requirement: { altitude: 100000 }, name: 'Reach 
 - Tier 1 win: `tierGoalMet` after a launch → win screen with the launch
   count. Phase 0 stops there; the button says "Continue" and returns to
   contracts.
+
+## UI hooks
+
+Stable selectors so an end-to-end smoke test does not depend on copy:
+
+- `#hud [data-hud="funds"|"reputation"|"launches"]`
+- `#screen [data-screen="contracts"|"loadout"|"launch"|"result"|"tree"|"win"]`
+  — exactly one present at a time
+- `.tabs [data-tab="contracts"|"tree"]` in the hud or top of screen
+- contracts: `.row[data-contract="<missionId>"]`, tapping selects it
+- loadout: `input[type=range][data-loadout="fuelFraction"]`
+- launch: `canvas#ascent`; tapping it skips playback
+- result: `.readout[data-readout]`, and `[data-points-at="propulsion"|"structure"|"reliability"]` when applicable
+- tree: `.row[data-node="<id>"]` with classes owned / buyable / locked
+- primary button: `#actions .btn-primary[data-action="select"|"launch"|"continue"|"back"]`
+- `window.__space` exposes `{ state, tree, missions }` getters for tests only
 
 ## Testing
 

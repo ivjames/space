@@ -1,0 +1,194 @@
+// Vehicle stat model and delta-v. Pure: no DOM, no globals, no randomness.
+//
+// A vehicle is a stat block derived from the tech tree, never assembled by
+// the player (ARCHITECTURE.md §js/core/vehicle.js):
+//
+//   Stage   { dryMass, propMass, thrust, isp, reliability }  kg, kg, N, s, 0..1
+//   Vehicle { stages: Stage[], payloadMass, dragArea, dragCoeff }
+//
+// stages[0] is the bottom stage — the one that lifts off — and each stage
+// carries every stage above it plus the payload.
+
+/** Standard gravity, m/s^2. The Isp -> exhaust-velocity constant. */
+export const G0 = 9.80665;
+
+/**
+ * Structural deep copy of plain objects, arrays and primitives.
+ * Deliberately hand-rolled rather than structuredClone: keeps this module
+ * dependent on nothing but the language, which is the point of js/core.
+ */
+function deepCopy(value) {
+  if (Array.isArray(value)) return value.map(deepCopy);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const key of Object.keys(value)) out[key] = deepCopy(value[key]);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Resolve a dotted stat path to its container and key, e.g.
+ * 'stages.0.thrust' -> { container: vehicle.stages[0], key: 'thrust' }.
+ * Throws on anything that does not name an existing numeric field.
+ */
+function resolveStatPath(vehicle, path) {
+  if (typeof path !== 'string' || path.length === 0) {
+    throw new Error(`buildVehicle: effect has an invalid stat path: ${JSON.stringify(path)}`);
+  }
+  const parts = path.split('.');
+  let container = vehicle;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const key = parts[i];
+    const next = container?.[key];
+    if (next === undefined || next === null || typeof next !== 'object') {
+      throw new Error(`buildVehicle: unknown stat path '${path}' (failed at '${key}')`);
+    }
+    container = next;
+  }
+  const key = parts[parts.length - 1];
+  if (typeof container?.[key] !== 'number') {
+    throw new Error(`buildVehicle: unknown stat path '${path}' (no number at '${key}')`);
+  }
+  return { container, key };
+}
+
+const REQUIRED_STAGE_FIELDS = ['dryMass', 'propMass', 'thrust', 'isp', 'reliability'];
+
+function normalizeStage(stage, where) {
+  if (!stage || typeof stage !== 'object') {
+    throw new Error(`buildVehicle: ${where} is not a stage object`);
+  }
+  const out = {};
+  for (const field of REQUIRED_STAGE_FIELDS) {
+    const v = stage[field];
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      throw new Error(`buildVehicle: ${where} is missing a numeric '${field}'`);
+    }
+    out[field] = v;
+  }
+  return out;
+}
+
+/**
+ * Build a Vehicle from base components plus the tree's effects.
+ *
+ * The base is deep-copied first, so neither `baseComponents` nor any effect
+ * object is mutated and two builds from the same base never share structure.
+ * Effects are applied in the order given — order matters for mul/add mixes,
+ * and `addStage` effects must therefore come before any effect targeting the
+ * stage they add.
+ *
+ * Effect shapes:
+ *   { stat: 'stages.0.thrust', op: 'add' | 'mul' | 'set', value: number }
+ *   { stat: 'payloadMass',     op: 'set', value: number }
+ *   { addStage: { dryMass, propMass, thrust, isp, reliability } }
+ *
+ * @param {object} baseComponents a Vehicle-shaped object (js/data/components.js)
+ * @param {Array<object>} [effects=[]]
+ * @returns {object} Vehicle
+ */
+export function buildVehicle(baseComponents, effects = []) {
+  if (!baseComponents || typeof baseComponents !== 'object') {
+    throw new Error('buildVehicle: baseComponents must be a Vehicle-shaped object');
+  }
+  const base = deepCopy(baseComponents);
+  const vehicle = {
+    stages: (base.stages ?? []).map((s, i) => normalizeStage(s, `stages.${i}`)),
+    payloadMass: base.payloadMass ?? 0,
+    dragArea: base.dragArea ?? 0,
+    dragCoeff: base.dragCoeff ?? 0,
+  };
+
+  const list = effects ?? [];
+  if (!Array.isArray(list)) throw new Error('buildVehicle: effects must be an array');
+
+  for (let i = 0; i < list.length; i += 1) {
+    const effect = list[i];
+    if (!effect || typeof effect !== 'object') {
+      throw new Error(`buildVehicle: effect ${i} is not an object`);
+    }
+
+    if (effect.addStage !== undefined) {
+      vehicle.stages.push(normalizeStage(effect.addStage, `effect ${i} addStage`));
+      continue;
+    }
+
+    const { stat, op, value } = effect;
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error(`buildVehicle: effect ${i} ('${stat}') has a non-numeric value`);
+    }
+    const { container, key } = resolveStatPath(vehicle, stat);
+    switch (op) {
+      case 'add': container[key] += value; break;
+      case 'mul': container[key] *= value; break;
+      case 'set': container[key] = value; break;
+      default:
+        throw new Error(`buildVehicle: effect ${i} ('${stat}') has unknown op '${op}'`);
+    }
+  }
+
+  return vehicle;
+}
+
+/**
+ * Mass sitting on top of stage `i`: every stage above it, plus the payload.
+ *
+ * `fuelFraction` scales the propellant of the stages above, because a loadout
+ * fuel fraction is a decision about how much propellant the whole vehicle is
+ * loaded with — the upper stages fly with the same fraction, so stage i has
+ * to lift only that much of their propellant. (ARCHITECTURE.md writes this
+ * helper as `stackMassAbove(vehicle, i)`; the third parameter is optional and
+ * defaults to a fully fuelled stack, so that signature still holds.)
+ *
+ * @param {object} vehicle
+ * @param {number} i stage index, 0 = bottom
+ * @param {number} [fuelFraction=1]
+ * @returns {number} kg
+ */
+export function stackMassAbove(vehicle, i, fuelFraction = 1) {
+  let mass = vehicle.payloadMass ?? 0;
+  for (let j = i + 1; j < vehicle.stages.length; j += 1) {
+    const stage = vehicle.stages[j];
+    mass += stage.dryMass + stage.propMass * fuelFraction;
+  }
+  return mass;
+}
+
+/**
+ * Ideal delta-v of stage `i` — Tsiolkovsky, with the stage carrying every
+ * stage above it plus the payload:
+ *
+ *   dv = isp * g0 * ln(m0 / mf)
+ *   m0 = above + dryMass_i + propMass_i * fuelFraction
+ *   mf = above + dryMass_i
+ *
+ * @param {object} vehicle
+ * @param {number} i stage index, 0 = bottom
+ * @param {number} [fuelFraction=1] 0..1, scales usable propellant
+ * @returns {number} m/s
+ */
+export function stageDeltaV(vehicle, i, fuelFraction = 1) {
+  const stage = vehicle.stages?.[i];
+  if (!stage) throw new Error(`stageDeltaV: no stage ${i}`);
+  const above = stackMassAbove(vehicle, i, fuelFraction);
+  const mf = above + stage.dryMass;
+  const m0 = mf + stage.propMass * fuelFraction;
+  if (mf <= 0 || m0 <= mf) return 0;
+  return stage.isp * G0 * Math.log(m0 / mf);
+}
+
+/**
+ * Sum of every stage's ideal delta-v.
+ *
+ * @param {object} vehicle
+ * @param {number} [fuelFraction=1]
+ * @returns {number} m/s
+ */
+export function totalDeltaV(vehicle, fuelFraction = 1) {
+  let total = 0;
+  for (let i = 0; i < (vehicle.stages?.length ?? 0); i += 1) {
+    total += stageDeltaV(vehicle, i, fuelFraction);
+  }
+  return total;
+}

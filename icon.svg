@@ -1,0 +1,33 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- Dark rounded square background -->
+  <rect width="512" height="512" rx="96" fill="#0a0a0a"/>
+
+  <!-- Rocket body -->
+  <path d="M 256 140 L 290 220 L 222 220 Z" fill="#00d4ff" stroke="#00d4ff" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- Rocket fuselage -->
+  <rect x="235" y="220" width="42" height="120" fill="#00d4ff" stroke="#00d4ff" stroke-width="2"/>
+
+  <!-- Left fin -->
+  <path d="M 220 300 L 180 360 L 220 340 Z" fill="#00d4ff" stroke="#00d4ff" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- Right fin -->
+  <path d="M 292 300 L 332 360 L 292 340 Z" fill="#00d4ff" stroke="#00d4ff" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- Engine nozzle -->
+  <rect x="240" y="340" width="32" height="30" fill="#00d4ff" stroke="#00d4ff" stroke-width="2"/>
+
+  <!-- Flame/exhaust -->
+  <path d="M 245 370 Q 240 400 256 420 Q 272 400 267 370 Z" fill="#ff6b6b" opacity="0.8"/>
+  <path d="M 255 375 Q 250 400 256 415 Q 262 400 257 375 Z" fill="#ffaa00" opacity="0.6"/>
+
+  <!-- Window/porthole -->
+  <circle cx="256" cy="250" r="8" fill="rgba(255,255,255,0.3)" stroke="#00d4ff" stroke-width="1.5"/>
+
+  <!-- Launch arc (arc above rocket) -->
+  <path d="M 150 160 Q 256 80 360 180" fill="none" stroke="#00d4ff" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+
+  <!-- Arc indicator dots -->
+  <circle cx="200" cy="125" r="3" fill="#00d4ff" opacity="0.6"/>
+  <circle cx="310" cy="120" r="3" fill="#00d4ff" opacity="0.6"/>
+</svg>
