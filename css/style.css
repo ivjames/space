@@ -5,11 +5,13 @@
 }
 
 :root {
-  --bg: #0a0a0a;
-  --fg: #e8e8e8;
+  /* Lifted off pure black, and the secondary text well clear of the WCAG
+     floor: --muted reads at roughly 9:1 on --bg, not the 4.5:1 minimum. */
+  --bg: #141414;
+  --fg: #f2f2f2;
   --accent: #00d4ff;
-  --muted: #8d8d8d;
-  --border: #333;
+  --muted: #b8b8b8;
+  --border: #484848;
   --success: #00d4ff;
   --fail: #ff6b6b;
 }
@@ -18,8 +20,8 @@
   :root {
     --bg: #f5f5f5;
     --fg: #1a1a1a;
-    --muted: #999;
-    --border: #ddd;
+    --muted: #5c5c5c;
+    --border: #c8c8c8;
   }
 }
 
@@ -132,13 +134,10 @@ html, body {
   background-color: rgba(0, 212, 255, 0.1);
 }
 
-.row.owned {
-  opacity: 0.78;
-}
-
-.row.locked {
-  opacity: 0.7;
-}
+/* Owned and locked rows are told apart by their side column (a tick or a
+   muted price, and the note under it), not by dimming the whole row: a
+   title at 70% opacity on a dark ground is the least readable thing on the
+   screen, and a row you can't buy yet is still a row you want to read. */
 
 .row.buyable:active {
   background-color: rgba(0, 212, 255, 0.15);
@@ -397,9 +396,9 @@ canvas {
   color: var(--accent);
 }
 
-.row.owned .cost { color: var(--muted); }
+.row.owned .cost, .row.locked .cost { color: var(--muted); }
 .row-desc { margin-top: 2px; }
-.row-effects { margin-top: 2px; color: var(--accent); opacity: 0.8; }
+.row-effects { margin-top: 2px; color: var(--accent); }
 .row.locked .row-effects { color: var(--muted); opacity: 1; }
 
 .row.selected {

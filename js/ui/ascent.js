@@ -441,14 +441,14 @@ export function playOutcome(canvas, outcome, opts = {}) {
   const colors = {
     bg: '#0a0f18',
     fg: '#e8e8e8',
-    muted: '#6b7280',
-    border: '#242a33',
+    muted: '#a4adb9',
+    border: '#3a4350',
     accent: cssVar(canvas, '--accent', '#00d4ff'),
     fail: cssVar(canvas, '--fail', '#ff6b6b'),
   };
   const rgbFg = parseHex(colors.fg, [232, 232, 232]);
-  const rgbMuted = parseHex(colors.muted, [107, 114, 128]);
-  const rgbBorder = parseHex(colors.border, [36, 42, 51]);
+  const rgbMuted = parseHex(colors.muted, [164, 173, 185]);
+  const rgbBorder = parseHex(colors.border, [58, 67, 80]);
   const rgbAccent = parseHex(colors.accent, [0, 212, 255]);
 
   // Per-frame sky state, recomputed by updateSky(alt) at the top of frame().

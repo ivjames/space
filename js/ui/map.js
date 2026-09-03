@@ -217,7 +217,7 @@ export function playOrbital(canvas, outcome, opts = {}) {
   const colors = {
     bg: '#05060a',
     fg: '#e8e8e8',
-    muted: '#7c8794',
+    muted: '#a4adb9',
     accent: cssVar(canvas, '--accent', '#00d4ff'),
     fail: cssVar(canvas, '--fail', '#ff6b6b'),
     land: '#2b3a4a',
