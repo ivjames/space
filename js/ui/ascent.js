@@ -1004,7 +1004,12 @@ export function playOutcome(canvas, outcome, opts = {}) {
     const age = ageOf(stamps.get(timeline.find((e) => e.kind === 'failure')));
 
     // The wreck keeps coasting, so the camera still has something to follow:
-    // whatever was attached when it failed, tumbling, engine out.
+    // whatever was attached when it failed, tumbling, engine out. The stage
+    // comes from the failure itself, not the sample at failure.t: an upper
+    // stage that fails at ignition does so at the same instant as the
+    // separation below it, before any sample carries the new stage number,
+    // so the sample would still say the booster was attached while
+    // drawDebris() shows it falling away.
     const wx = drToX(dr);
     const wy = altToY(alt);
     if (wy < h + 40 && wy > -40 && wx > -40 && wx < w + 40) {
@@ -1012,7 +1017,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
       ctx.globalAlpha = 0.9;
       ctx.translate(wx, wy);
       ctx.rotate(age * 2.4);
-      drawStack(attachedAt(at.stage ?? 1), false);
+      drawStack(attachedAt(failure.stage ?? at.stage ?? 1), false);
       ctx.restore();
     }
 
