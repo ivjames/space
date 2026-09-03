@@ -980,7 +980,8 @@ export function playOutcome(canvas, outcome, opts = {}) {
     // — and it is exactly at the two altitudes where the ground is in frame
     // that it matters. On top of that, for the moment after a separation the
     // stack is still settling down onto the point (separationLift).
-    ctx.translate(0, stackHeight(segs) * (1 - Math.cos(heading)) / 2 - separationLift());
+    const pivot = (1 - Math.cos(heading)) / 2;
+    ctx.translate(0, stackHeight(segs) * pivot - separationLift(pivot));
     drawStack(segs, burning);
     ctx.restore();
   }
@@ -1009,21 +1010,27 @@ export function playOutcome(canvas, outcome, opts = {}) {
   }
 
   /**
-   * How far above the sample point the attached stack is still drawn, px
-   * along the body axis: the height of every stage dropped within the last
-   * SEPARATION_SETTLE_S real seconds, fading to zero, so the stack stays
-   * where it was at the instant of separation and eases down onto the point
-   * instead of snapping. Reads only separations already passed; a skipped
-   * playback (age 1e9) has settled completely.
+   * How far toward its nose the attached stack is still drawn, px along the
+   * body axis, from every stage dropped within the last SEPARATION_SETTLE_S
+   * real seconds, fading to zero: the stack stays where it was at the instant
+   * of separation and eases onto its new anchor instead of snapping.
+   *
+   * `pivot` is where on the stack the anchor sits, 0 at the nozzle lip to 1
+   * at the nose tip (drawRocket slides it with the heading, the wreck uses
+   * the middle). Dropping a segment of height h moves the stack's own anchor
+   * by h * pivot toward the nose, so the retained stages jump only by the
+   * remaining h * (1 - pivot) — that is the lift that keeps them still.
+   * Reads only separations already passed; a skipped playback (age 1e9) has
+   * settled completely.
    */
-  function separationLift() {
+  function separationLift(pivot) {
     let lift = 0;
     for (const ev of timeline) {
       if (ev.kind !== 'separation') continue;
       if (simT < ev.t) break;
       const age = ageOf(stamps.get(ev));
       if (age >= SEPARATION_SETTLE_S) continue;
-      lift += stageSeg(ev.stage).height * (1 - age / SEPARATION_SETTLE_S);
+      lift += stageSeg(ev.stage).height * (1 - pivot) * (1 - age / SEPARATION_SETTLE_S);
     }
     return lift;
   }
@@ -1087,7 +1094,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
       // A tumbling wreck turns about its middle, so on the ground it is never
       // more than half buried whichever way up it has landed.
       const segs = attachedAt(failure.stage ?? at.stage ?? 1);
-      ctx.translate(0, stackHeight(segs) / 2 - separationLift());
+      ctx.translate(0, stackHeight(segs) / 2 - separationLift(0.5));
       drawStack(segs, false);
       ctx.restore();
     }
