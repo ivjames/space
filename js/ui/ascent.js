@@ -970,13 +970,24 @@ export function playOutcome(canvas, outcome, opts = {}) {
     // as the gravity turn takes hold, nose-down again on the way back in.
     ctx.rotate(heading);
     // Which segments are attached comes from the vehicle and the stage flying
-    // now — never from a separation that has not happened yet. The stack is
-    // drawn standing on (x, y), and pitches about that point, its engine —
-    // except for the moment after a separation, when it is still settling
-    // down onto it (separationLift).
-    ctx.translate(0, -separationLift());
-    drawStack(attachedAt(stage), burning);
+    // now — never from a separation that has not happened yet.
+    const segs = attachedAt(stage);
+    // The point the sprite pivots on slides along its axis with the heading:
+    // the engine while the nose is up (a rocket at altitude 0 stands on the
+    // pad), the nose once it is down (a rocket back at altitude 0 has hit the
+    // ground nose first, and lies on the line rather than under it), and the
+    // middle in between. Continuous in the heading, so the pivot never jumps
+    // — and it is exactly at the two altitudes where the ground is in frame
+    // that it matters. On top of that, for the moment after a separation the
+    // stack is still settling down onto the point (separationLift).
+    ctx.translate(0, stackHeight(segs) * (1 - Math.cos(heading)) / 2 - separationLift());
+    drawStack(segs, burning);
     ctx.restore();
+  }
+
+  /** Full drawn height of a stack, nozzle lip to nose tip, px. */
+  function stackHeight(segs) {
+    return segs.reduce((sum, seg) => sum + seg.height, 0) + NOSE_H + NOZZLE_H;
   }
 
   /** A spent stage tumbling away: the actual segment that dropped. */
@@ -1073,8 +1084,11 @@ export function playOutcome(canvas, outcome, opts = {}) {
       ctx.globalAlpha = 0.9;
       ctx.translate(wx, wy);
       ctx.rotate(age * 2.4);
-      ctx.translate(0, -separationLift());
-      drawStack(attachedAt(failure.stage ?? at.stage ?? 1), false);
+      // A tumbling wreck turns about its middle, so on the ground it is never
+      // more than half buried whichever way up it has landed.
+      const segs = attachedAt(failure.stage ?? at.stage ?? 1);
+      ctx.translate(0, stackHeight(segs) / 2 - separationLift());
+      drawStack(segs, false);
       ctx.restore();
     }
 
