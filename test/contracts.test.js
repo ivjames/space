@@ -109,51 +109,70 @@ test('real tier 2 mission templates are not offered at tier 1', () => {
   assert.ok(ids.every((id) => !tier2Ids.has(id)), 'no tier 2 template should be offered at tier 1');
 });
 
-test('real tier 2 mission templates are offered once state.tier is 2 and guide-1 is owned', () => {
-  const state = makeState({ tier: 2, reputation: 100, owned: ['guide-1'] });
+// The ladder's own sets (js/data/tree.js's LADDER notes, tools/balance.mjs):
+// what a player who won tier 1, and then tier 2, owns on arrival in the
+// next tier. Every gate in js/data/missions.js is the generators of a
+// cheapest reaching set, so these are exactly the sets that open each
+// tier's board (ARCHITECTURE.md, "js/core/contracts.js", gating rule).
+const TIER1_GOAL_SET = ['prop-1', 'prop-2', 'prop-3', 'prop-4', 'struct-1', 'struct-2', 'struct-3'];
+const TIER2_GOAL_SET = [...TIER1_GOAL_SET, 'guide-1', 'struct-4', 'struct-5', 'prop-5', 'prop-6', 'struct-6', 'prop-8', 'prop-9'];
+
+test('real tier 2 mission templates are all offered once state.tier is 2 and the tier 2 goal set is owned', () => {
+  const state = makeState({ tier: 2, reputation: 100, owned: TIER2_GOAL_SET });
   const rng = fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const ids = generateContracts(state, realMissions, rng, realMissions.length);
   const tier2Ids = realMissions.filter((m) => m.tier === 2).map((m) => m.id);
   for (const id of tier2Ids) {
-    assert.ok(ids.includes(id), `${id} should be offered at tier 2 with reputation 100 and guide-1`);
+    assert.ok(ids.includes(id), `${id} should be offered at tier 2 with reputation 100 and the goal set`);
   }
 });
 
-// The bug this guards against: at tier 2, before buying guide-1, the board
-// offered orbit-down-1 (150 km downrange). Without guide-1 `vehicle.guidance`
-// is 0, pitchProgram (js/core/resolver.js) ignores the turn slider, the
-// flight goes straight up, and the contract cannot be completed. Every
-// tier 2 template with a downrange or orbit requirement needs a turn, so
-// none of them may be drawn until guide-1 is owned; the two altitude-shaped
-// templates (orbit-entry, the sounding filler, and orbit-apogee, which a
-// strong enough vehicle clears straight up) must still show up with
-// nothing owned -- the gate is for the impossible, not the merely hard.
+// The bug the first gate guarded against: at tier 2, before buying guide-1,
+// the board offered orbit-down-1 (150 km downrange). Without guide-1
+// `vehicle.guidance` is 0, pitchProgram (js/core/resolver.js) ignores the
+// turn slider, the flight goes straight up, and the contract cannot be
+// completed. The rule has since widened from "unflyable without" to "the
+// ladder path to it is owned" (ARCHITECTURE.md, gating rule): a contract
+// the vehicle cannot fly is never on the board, hard or impossible.
 test('real data: orbit-down-1 is NOT offered at tier 2 with full reputation and nothing owned', () => {
   const state = makeState({ tier: 2, reputation: 100, owned: [] });
   const rng = fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const ids = generateContracts(state, realMissions, rng, realMissions.length);
-  assert.ok(!ids.includes('orbit-down-1'), 'orbit-down-1 needs guide-1 to be flyable at all');
-  assert.deepEqual(lockReasons(state, realMissions.find((m) => m.id === 'orbit-down-1')), [{ kind: 'node', id: 'guide-1' }]);
+  assert.ok(!ids.includes('orbit-down-1'), 'orbit-down-1 needs its ladder set to be flyable');
+  assert.deepEqual(lockReasons(state, realMissions.find((m) => m.id === 'orbit-down-1')), [
+    { kind: 'node', id: 'prop-4' },
+    { kind: 'node', id: 'struct-3' },
+    { kind: 'node', id: 'guide-1' },
+  ]);
 });
 
-test('real data: no tier 2 downrange/orbit template is offered with nothing owned, and every one is once guide-1 is', () => {
-  const orbitIds = realMissions
-    .filter((m) => m.tier === 2 && m.requirement.altitude === undefined)
-    .map((m) => m.id);
-  assert.ok(orbitIds.length >= 4, 'the tier 2 ladder should have at least four turning rungs');
+test('real data: a tier 2 board offers nothing of tier 2 with nothing owned, only the filler with the tier 1 goal set, and every rung with the tier 2 goal set', () => {
+  const tier2Ids = realMissions.filter((m) => m.tier === 2).map((m) => m.id);
+  assert.ok(tier2Ids.length >= 5, 'the tier 2 ladder should have at least five rungs');
+  const draw = (owned) => generateContracts(makeState({ tier: 2, reputation: 100, owned }), realMissions, fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), realMissions.length);
 
-  const bare = makeState({ tier: 2, reputation: 100, owned: [] });
-  const bareIds = generateContracts(bare, realMissions, fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), realMissions.length);
-  for (const id of orbitIds) {
-    assert.ok(!bareIds.includes(id), `${id} should not be offered without guide-1`);
+  const bareIds = draw([]);
+  for (const id of tier2Ids) {
+    assert.ok(!bareIds.includes(id), `${id} should not be offered to a vehicle that cannot fly it`);
   }
-  assert.ok(bareIds.includes('orbit-entry'), 'the sounding filler stays offerable with nothing owned');
-  assert.ok(bareIds.includes('orbit-apogee'), 'an altitude requirement is flyable vertical, so it stays offerable');
 
-  const guided = makeState({ tier: 2, reputation: 100, owned: ['guide-1'] });
-  const guidedIds = generateContracts(guided, realMissions, fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), realMissions.length);
-  for (const id of orbitIds) {
-    assert.ok(guidedIds.includes(id), `${id} should be offered once guide-1 is owned`);
+  // A tier 2 arrival owns the tier 1 goal set: the filler is flyable, the
+  // rest of the ladder is not yet.
+  const arrivalIds = draw(TIER1_GOAL_SET);
+  assert.ok(arrivalIds.includes('orbit-entry'), 'the sounding filler is offerable on arrival');
+  for (const id of tier2Ids.filter((i) => i !== 'orbit-entry')) {
+    assert.ok(!arrivalIds.includes(id), `${id} should wait for its ladder purchases`);
+  }
+
+  // guide-1 alone opens nothing beyond the filler: a turn without the
+  // stack is still a vehicle that cannot fly the rung.
+  const guidedIds = draw([...TIER1_GOAL_SET, 'guide-1']);
+  assert.ok(guidedIds.includes('orbit-down-1'), 'orbit-down-1 needs only the turn on top of the tier 1 goal set');
+  assert.ok(!guidedIds.includes('orbit-low'), 'orbit-low needs the third stage');
+
+  const goalIds = draw(TIER2_GOAL_SET);
+  for (const id of tier2Ids) {
+    assert.ok(goalIds.includes(id), `${id} should be offered once the goal set is owned`);
   }
 });
 
@@ -307,11 +326,11 @@ test('a repeatable template (no unique flag) can be offered any number of times'
 
 // Real tier 3 data (js/data/missions.js): `satellite` has no `unique`
 // flag and is offered at tier 3 with no objects deployed at all yet
-// (it has no requiresObject gate; its only requiresNode is guide-1, the
-// turn a tier 3 player owns by construction) -- the tier's income filler,
-// reachable from the very first tier 3 contract screen.
+// (it has no requiresObject gate; its requiresNode is the tier 2 goal's
+// own gate, which a tier 3 player owns by construction) -- the tier's
+// income filler, reachable from the very first tier 3 contract screen.
 test('real data: the satellite template is offered at tier 3 with no objects deployed', () => {
-  const state = makeState({ tier: 3, reputation: 100, objects: [], owned: ['guide-1'] });
+  const state = makeState({ tier: 3, reputation: 100, objects: [], owned: TIER2_GOAL_SET });
   const rng = fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const ids = generateContracts(state, realMissions, rng, realMissions.length);
   assert.ok(ids.includes('satellite'));

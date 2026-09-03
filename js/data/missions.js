@@ -33,6 +33,18 @@
 // 53% of the full tree's cost) leaves struct-4 (the second stage) and the
 // whole reliability branch as deliberate headroom past the goal, not a
 // requirement to reach it.
+//
+// GATES (`requiresNode`). Each rung is offered only once the player owns
+// the generators of its cheapest reaching set above — the set's nodes minus
+// those another member's prerequisite chain already implies, so a locked
+// rung names each missing purchase once. `node tools/gates.mjs` derives
+// them from the resolver and test/data.test.js pins them; ARCHITECTURE.md
+// ("js/core/contracts.js") states the rule. The board therefore never
+// offers a rung the vehicle cannot fly along the ladder. A rung reachable
+// by another path stays hidden until that purchase (sound-2 is also
+// flyable with struct-1 and the first three engine upgrades, 6 200 funds
+// against the gate's 2 600, which the gate does not admit); the ladder tab
+// names the purchase, so the path is still visible.
 export const missions = [
   {
     id: 'sound-1',
@@ -51,6 +63,7 @@ export const missions = [
     name: 'Upper-atmosphere sample',
     profile: 'sounding',
     requirement: { altitude: 25000 },
+    requiresNode: 'struct-2',
     payout: 700,
     repGain: 1,
     repLoss: 1,
@@ -61,6 +74,7 @@ export const missions = [
     name: 'Mesosphere probe',
     profile: 'sounding',
     requirement: { altitude: 35000 },
+    requiresNode: ['prop-1', 'struct-2'],
     payout: 1100,
     repGain: 2,
     repLoss: 1,
@@ -72,6 +86,7 @@ export const missions = [
     name: 'Thermosphere survey',
     profile: 'sounding',
     requirement: { altitude: 60000 },
+    requiresNode: ['prop-3', 'struct-3'],
     payout: 1600,
     repGain: 2,
     repLoss: 2,
@@ -83,6 +98,7 @@ export const missions = [
     name: 'Karman line delivery',
     profile: 'sounding',
     requirement: { altitude: 100000 },
+    requiresNode: ['prop-4', 'struct-3'],
     payout: 2200,
     repGain: 3,
     repLoss: 2,
@@ -140,30 +156,45 @@ export const missions = [
   // tier 2 NODE COSTS, not payouts, is what moved this up from an earlier
   // pass's 20; see js/data/tree.js's COSTS note).
   //
-  // HARDWARE GATE, `requiresNode: 'guide-1'`. Every rung whose requirement
-  // the resolver cannot meet without a turn carries it: `pitchProgram`
-  // (js/core/resolver.js) returns the identically-vertical program unless
-  // `vehicle.guidance >= 1`, and guide-1 (js/data/tree.js) is the only
-  // tier 2 node that sets `guidance` at all. A downrange requirement needs
-  // the vehicle to go sideways; a periapsis requirement needs a sideways
-  // velocity. Before this gate the random draw could put orbit-down-1 on a
-  // fresh tier 2 board, where a player with no guidance owned could accept
-  // it, fly straight up, and lose reputation on a contract that was never
-  // completable -- the rule (js/core/contracts.js, lockReasons) is that
-  // hardware a mission cannot be flown without is a gate on the draw, not
-  // a surprise after the launch.
+  // GATES (`requiresNode`): the generators of each rung's cheapest reaching
+  // set, per `node tools/gates.mjs` (the tier 1 note above states the rule;
+  // ARCHITECTURE.md "js/core/contracts.js" owns it). Read off the tool:
   //
-  // The gate is about what is IMPOSSIBLE, not what is hard, so the two
-  // altitude-shaped tier 2 templates do not carry it. `orbit-entry` is a
-  // `sounding` profile (see FILLER, next). `orbit-apogee` is a `profile:
-  // 'orbit'` contract, but its 300 km is an altitude shape and, probed
-  // against the real resolver, a vehicle with prop-5/6 and struct-4/5 and
-  // NO guidance tops out around 620 km straight up -- a player who bought
-  // thrust before the flight computer can fly it vertical and win it. Its
-  // balanced cheapest set happens to include guide-1 (tree.js's LADDER
-  // note walks the cumulative chain), but that is a cost story, the same
-  // way sound-5 sits on a tier 1 board before its tree is affordable; it
-  // is not a lock.
+  //   orbit-entry   prop-4, struct-3      the tier 1 goal set's generators,
+  //                                       so every tier 2 arrival owns them
+  //   orbit-down-1  prop-4, struct-3,     the same, plus the turn: pitchProgram
+  //                 guide-1               (js/core/resolver.js) flies straight
+  //                                       up unless `guidance >= 1`, and
+  //                                       guide-1 is the only node that sets it
+  //   orbit-down-2  struct-5, guide-1     struct-5 carries struct-4 (the second
+  //                                       stage); struct-4 alone tops out at
+  //                                       330 km downrange
+  //   orbit-apogee  prop-5, struct-5      an altitude shape, flown vertical, so
+  //                                       no guide-1: thrust and the second
+  //                                       stage are what clear 300 km
+  //   orbit-low     prop-8, guide-1       prop-8 carries prop-6 and struct-6
+  //                                       (the third stage and its engine)
+  //   orbit-goal    prop-9, guide-1       prop-9 on top of orbit-low's set is
+  //                                       the last 5 km of periapsis
+  //
+  // Before gates the random draw could put orbit-down-1 on a fresh tier 2
+  // board, where a player with no guidance could accept it, fly straight
+  // up, and lose reputation on a contract that was never completable; and
+  // orbit-apogee sat on a board the vehicle could not clear. The rule
+  // (js/core/contracts.js, lockReasons) is now that a rung is a gate on the
+  // draw until the ladder path to it is bought, not a surprise after the
+  // launch.
+  //
+  // Two paths the gates do not admit, both documented by the tool: a
+  // vehicle can reach 400 km downrange with struct-4 and thrust but no
+  // struct-5 (orbit-down-2 stays hidden until struct-5), and reach orbit
+  // with struct-7/8 instead of prop-9 (orbit-goal stays hidden until the
+  // 9 000-fund prop-9). HARMFUL NODE: prop-7 (the stage 2 high-flow
+  // injector, more thrust at lower isp) lowers periapsis, and with it on
+  // top of orbit-low's set the vehicle comes in at 89 877 m, 123 m under
+  // orbit-low's 90 km -- the one superset of a tier 2 gate that falls
+  // short. Data cannot say "not this node"; test/data.test.js pins that
+  // every such exception carries prop-7.
   //
   // FILLER, `orbit-entry`. A tier 2 player's very first launches have
   // nothing to buy: `guide-1` (11 000) is what the CHEAPEST tier 2 rung
@@ -187,7 +218,9 @@ export const missions = [
   // `minReputation: 0` (not undefined, so it still carries a gate the
   // "every tier 2 mission has a minReputation gate" test can read) keeps
   // it offerable immediately, the same "no gate at all in practice" role
-  // sound-1 and satellite play entering their own tiers. `filler: true` is
+  // sound-1 and satellite play entering their own tiers (its requiresNode
+  // is the tier 1 goal set's generators, owned by construction on
+  // arrival). `filler: true` is
   // a marker only -- it opts the mission OUT of the cumulative ladder
   // tests below (there is no node to buy on top of the previous rung for
   // it to reach; it is not a rung in that sense) without touching any
@@ -199,6 +232,7 @@ export const missions = [
     name: 'High-altitude survey',
     profile: 'sounding',
     requirement: { altitude: 110000 },
+    requiresNode: ['prop-4', 'struct-3'],
     payout: 5000,
     repGain: 2,
     repLoss: 1,
@@ -211,7 +245,7 @@ export const missions = [
     name: 'Downrange telemetry hop',
     profile: 'orbit',
     requirement: { downrange: 150000 },
-    requiresNode: 'guide-1',
+    requiresNode: ['prop-4', 'struct-3', 'guide-1'],
     payout: 6500,
     repGain: 3,
     repLoss: 2,
@@ -223,7 +257,7 @@ export const missions = [
     name: 'Extended downrange hop',
     profile: 'orbit',
     requirement: { downrange: 400000 },
-    requiresNode: 'guide-1',
+    requiresNode: ['struct-5', 'guide-1'],
     payout: 8500,
     repGain: 3,
     repLoss: 3,
@@ -235,6 +269,7 @@ export const missions = [
     name: 'High-apogee survey',
     profile: 'orbit',
     requirement: { altitude: 300000 },
+    requiresNode: ['prop-5', 'struct-5'],
     payout: 10500,
     repGain: 4,
     repLoss: 3,
@@ -246,7 +281,7 @@ export const missions = [
     name: 'Low-orbit insertion',
     profile: 'orbit',
     requirement: { orbit: { periapsis: 90000 } },
-    requiresNode: 'guide-1',
+    requiresNode: ['prop-8', 'guide-1'],
     payout: 13000,
     repGain: 5,
     repLoss: 4,
@@ -258,7 +293,7 @@ export const missions = [
     name: 'Reach orbit',
     profile: 'orbit',
     requirement: { orbit: { periapsis: 100000 } },
-    requiresNode: 'guide-1',
+    requiresNode: ['prop-9', 'guide-1'],
     payout: 16000,
     repGain: 6,
     repLoss: 4,
@@ -343,15 +378,36 @@ export const missions = [
   //               two-gate shape ARCHITECTURE.md calls out by name for
   //               this exact rung.
   //
-  // HARDWARE GATES (`requiresNode`, string or array — js/core/contracts.js,
-  // lockReasons). Same rule as tier 2's: a node the resolver makes a
-  // mission unflyable without is a gate on the random draw, so the board
-  // never offers a contract the player cannot complete. Each gate below is
-  // read off js/core/resolver.js's actual checks, not the node blurbs:
+  // GATES (`requiresNode`, string or array — js/core/contracts.js,
+  // lockReasons). The two orbit-shaped rungs follow the ladder rule (tier 1
+  // note: the generators of the cheapest reaching set, per `node
+  // tools/gates.mjs`):
   //
-  //   guide-1     satellite, core, and (via the guidance chain) everything
-  //               else: an orbit requirement needs a turn, and pitchProgram
-  //               flies straight up unless `guidance >= 1`.
+  //   satellite   prop-9, guide-1: the tier 2 goal's own gate, since it is
+  //               the tier 2 goal's own orbit -- owned by every tier 3
+  //               arrival who came up the ladder. HARMFUL NODE: prop-13
+  //               (the top-stage reserve tank, +30 kg of propellant on the
+  //               stage that has to circularise) bought before struct-10
+  //               (the lighter fairing) drops the ladder set from 127 848 m
+  //               periapsis to -365 703 m: no orbit at all. Every superset
+  //               of this gate that falls short carries prop-13, and
+  //               test/data.test.js pins that. It is a tree trap, not a
+  //               gate matter; it is called out in js/data/tree.js.
+  //   core        prop-8, guide-1, struct-10: no vehicle without struct-10
+  //               reaches 160 km (the best set without it tops out at
+  //               146 175 m), so this gate is both the ladder's and the
+  //               only possible one -- struct-10 carries struct-7/8 through
+  //               its chain, prop-8 the third stage and its engine.
+  //
+  // The three target-shaped rungs (rendezvous, dock) are gated on the
+  // orbital sequence's own checks instead. Each gate below is read off
+  // js/core/resolver.js's actual checks, not the node blurbs:
+  //
+  //   guide-1     via the guidance chain, everything below: an orbit needs
+  //               a turn, and pitchProgram flies straight up unless
+  //               `guidance >= 1`. The ascent to the core's orbit needs the
+  //               core's own hardware too, and a core in orbit
+  //               (requiresObject) means the player bought it.
   //   prop-11     rdv-1, rdv-2, dock. resolveOrbitalSequence's match step
   //               stops for want of restarts when `restarts < 2`, before
   //               spending any delta-v at all; prop-10 alone sets restarts
@@ -415,7 +471,7 @@ export const missions = [
     profile: 'orbit',
     requirement: { orbit: { periapsis: 100000 } },
     deploys: { kind: 'satellite', name: 'Comsat' },
-    requiresNode: 'guide-1',
+    requiresNode: ['prop-9', 'guide-1'],
     payout: 20000,
     repGain: 5,
     repLoss: 3,
@@ -428,7 +484,7 @@ export const missions = [
     requirement: { orbit: { periapsis: 160000 } },
     deploys: { kind: 'core', name: 'Station core' },
     unique: true,
-    requiresNode: 'guide-1',
+    requiresNode: ['prop-8', 'guide-1', 'struct-10'],
     payout: 30000,
     repGain: 7,
     repLoss: 4,

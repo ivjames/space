@@ -248,18 +248,26 @@ construction, never drawn) and returns every unmet gate, in this order:
 | `{ kind: 'object', objectKind }` | `m.requiresObject`, and no object of that kind exists |
 | `{ kind: 'unique', objectKind }` | `m.unique`, and an undocked object of `m.deploys.kind` exists |
 
-**Hardware gating rule.** `requiresNode` is a node id or an array of them,
-and every listed node must be owned. It started as the station-module gate
-(`dock` needs `struct-module`, hardware the flight carries up) and is also
-the gate for hardware a mission is *unflyable* without: if the resolver
-cannot meet a template's requirement without a node — a downrange or orbit
-flight without `guide-1` flies straight up; a rendezvous without the
-restarts to burn twice stops at the match step — the template lists that
-node, so the random draw never offers a contract the player has no way to
-complete. Which node each template needs, and the resolver line that
-decides it, is documented per tier in `js/data/missions.js`. List the
-nodes the resolver checks; nodes those imply through their prerequisite
-chain need not be repeated.
+**Gating rule.** `requiresNode` is a node id or an array of them, and every
+listed node must be owned. DESIGN.md §9 says contracts follow the player's
+unlocked capabilities, and this is how: the board never offers a contract
+the current vehicle cannot fly. For an altitude, downrange or orbit
+template the gate is the *generator set of the cheapest prereq-valid node
+set that reaches its requirement* — that set's nodes minus those another
+member's prerequisite chain already implies, so a locked contract reports
+each missing purchase once. `tools/gates.mjs` derives these from the real
+resolver (every prereq-valid set of trajectory-affecting nodes, full fuel,
+reliability forced to 1, the turn range swept) and `test/data.test.js`
+pins each template's list to it. A rung reachable by some other path stays
+hidden until that purchase; the ladder tab names it. A node that makes the
+vehicle worse for a shape can leave a superset of a gate short of the rung
+(prop-7 on orbit-low, prop-13 on satellite); data cannot say "not this
+node", so each such exception is named at the template and pinned by test.
+For a rendezvous or dock template the gate is the hardware the orbital
+sequence's own checks refuse to run without (restarts, nav level, the
+docking adapter, the station module), read off `js/core/resolver.js` and
+documented per node in `js/data/missions.js`; a core in orbit already
+proves the ascent hardware.
 
 ## js/core/state.js
 
@@ -561,16 +569,13 @@ goal. `tierGoals[2] = { requirement: { orbit: { periapsis: 100000 } }, name:
 'Reach orbit' }`. Contracts already filter by `tier <= state.tier`; tier 1
 templates stay in the pool as cheap fillers.
 
-Every template with a `downrange` or `orbit` requirement carries
-`requiresNode: 'guide-1'`: `pitchProgram` flies straight up unless
-`vehicle.guidance >= 1`, and guide-1 is the only node that sets it, so those
-shapes are unflyable without it and must not be drawn until it is owned
-(the hardware gating rule under "js/core/contracts.js"). The two
-altitude-shaped templates are deliberately ungated — an altitude
-requirement is the one shape guidance does not gate: the sounding filler
-`orbit-entry` so a tier 2 board has something on it before the first
-purchase, and `orbit-apogee`, which a strong enough vehicle clears straight
-up (the gate is for the impossible, not the merely hard).
+Every template carries the gate the rule under "js/core/contracts.js"
+gives it: the generators of its cheapest reaching set. The `downrange` and
+`orbit` shapes all include `guide-1` (`pitchProgram` flies straight up
+unless `vehicle.guidance >= 1`, and guide-1 is the only node that sets it);
+the two altitude shapes do not, since they are flown vertical. The sounding
+filler `orbit-entry` is gated on the tier 1 goal set's generators, which a
+tier 2 arrival owns by construction, so a fresh tier 2 board still has it.
 
 ## js/ui — what tier 2 adds
 
@@ -926,9 +931,11 @@ again.
 
 `generateContracts`: templates with `requiresNode` (a node id or an array
 of them) are offered only when every listed node is owned. The floor
-contract stays tier 1's. Under the hardware gating rule ("js/core/
-contracts.js"), the tier's gates follow the orbital sequence's own checks:
-`satellite` and `core` need `guide-1` (an orbit needs a turn); `rdv-1`
+contract stays tier 1's. Under the gating rule ("js/core/contracts.js"),
+`satellite` carries the tier 2 goal's gate (`prop-9`, `guide-1`: it is the
+tier 2 goal's orbit) and `core` needs `struct-10` on top of `prop-8` and
+`guide-1` — no vehicle without the lighter fairing reaches 160 km. The
+target-shaped rungs follow the orbital sequence's own checks: `rdv-1`
 needs `['prop-11', 'guide-3', 'prop-12']` and `rdv-2` `['prop-11',
 'guide-4', 'prop-12']` — the match step stops at `restarts < 2`, which
 only prop-11 lifts (rcs waives the approach restart, never the match's);
