@@ -560,11 +560,22 @@ function raisePeriapsisDeltaV(apo, fromPeri, toPeri) {
  *
  * RNG DRAW ORDER. The ascent's draw order is untouched (ARCHITECTURE.md: it is
  * the save's replay contract), and the orbital phase draws only after every
- * ascent draw has been made. Within it: one draw per RESTART CONSUMED, in burn
- * order — match burn 1, match burn 2, the phasing pair (one draw for both), the
- * approach (none when the vehicle has `rcs`) — followed, on a dock mission that
- * reaches step 5, by exactly one draw for the docking roll. A step that is
- * never reached, is free, or cannot be afforded draws nothing.
+ * ascent draw has been made. Within it, per RESTART CONSUMED, in burn order —
+ * match burn 1, match burn 2, the phasing pair (one relight for both), the
+ * approach (none when the vehicle has `rcs`): the restart roll; then, only if
+ * it passed, the performance roll; then, only if THAT failed, the deficit —
+ * followed, on a dock mission that reaches step 5, by exactly one draw for the
+ * docking roll. A step that is never reached, is free, or cannot be afforded
+ * draws nothing.
+ *
+ * UNDERPERFORMING RELIGHTS. A relight is an ignition, so it rolls for
+ * performance like one (see the anomalies block above). An impulsive burn does
+ * not care about thrust, but a lower isp burns more propellant for the same
+ * delta-v: an underperforming relight delivers the burn it was asked for and
+ * charges the budget dv / (1 - deficit / 2) for it, so a later burn can turn
+ * out to be unaffordable — the sequence then stops there, for want of
+ * delta-v, exactly as it would have with a smaller reserve. Every burn under
+ * the same relight (the phasing pair) is charged the same way.
  *
  * @param {object} vehicle
  * @param {object} target    { id, name, periapsis, apoapsis, phase }
@@ -574,7 +585,7 @@ function raisePeriapsisDeltaV(apo, fromPeri, toPeri) {
  * @param {object} rng
  * @param {boolean} wantsDock
  * @returns {{ orbital: object, events: object[], failure: object|null,
- *             readout: string, shortBy: number }}
+ *             anomalies: object[], readout: string, shortBy: number }}
  */
 function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseErrorDeg, rng, wantsDock) {
   const stages = vehicle?.stages ?? [];
@@ -630,30 +641,61 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
   let shortBy = 0;
   const burns = [];
   const events = [];
+  const anomalies = [];
+  // Budget charged per m/s of the burns the latest relight covers: 1 to spec,
+  // more when the relight underperforms (see UNDERPERFORMING RELIGHTS above).
+  let relightCost = 1;
 
-  /** Consume one restart, rolling against the final stage's reliability. */
+  /**
+   * Consume one restart: the restart roll against the final stage's
+   * reliability, then — a relight is an ignition — the performance roll.
+   */
   const restartOk = (time) => {
     restartsLeft -= 1;
-    if (rng.next() < reliability) return true;
-    failure = { t: time, stage: stageNo, kind: 'restart' };
-    stoppedAt = 'restart-failure';
-    events.push({
-      t: time, kind: 'restart-failure', text: failureSentence(failure), stage: stageNo,
-    });
-    return false;
-  };
-
-  const spend = (time, kindName, dv, elements, text) => {
-    dvLeft -= dv;
-    dvUsed += dv;
-    burns.push({ t: time, kind: kindName, dv, ok: true, elements });
-    events.push({ t: time, kind: 'burn', text });
+    if (!(rng.next() < reliability)) {
+      failure = { t: time, stage: stageNo, kind: 'restart' };
+      stoppedAt = 'restart-failure';
+      events.push({
+        t: time, kind: 'restart-failure', text: failureSentence(failure), stage: stageNo,
+      });
+      return false;
+    }
+    relightCost = 1;
+    if (!(rng.next() < reliability)) {
+      const deficit = lerp(ENGINE_DEFICIT_MIN, ENGINE_DEFICIT_MAX, rng.next());
+      relightCost = 1 / (1 - deficit / 2);
+      const anomaly = { t: time, stage: stageNo, kind: 'underperform', factor: 1 - deficit };
+      anomalies.push(anomaly);
+      events.push({ t: time, kind: 'anomaly', text: anomalySentence(anomaly), stage: stageNo });
+    }
+    return true;
   };
 
   const cannotAfford = (step, needed) => {
     stoppedAt = 'deltaV';
     stoppedStep = step;
     shortBy = Math.max(0, needed - dvLeft);
+  };
+
+  /**
+   * Make a burn of `dv` under the latest relight, charging the budget at
+   * `relightCost`. False, and the sequence stops for want of delta-v, when
+   * the charge is more than is left — only ever the case after an
+   * underperforming relight, since each step is priced to spec up front;
+   * `restAfter` is what the steps after this burn would still need, so
+   * `shortBy` reads the same way it does for an up-front stop.
+   */
+  const spend = (time, kindName, dv, elements, text, step, restAfter) => {
+    const cost = dv * relightCost;
+    if (dvLeft < cost - EPS) {
+      cannotAfford(step, cost + restAfter);
+      return false;
+    }
+    dvLeft -= cost;
+    dvUsed += cost;
+    burns.push({ t: time, kind: kindName, dv, ok: true, elements });
+    events.push({ t: time, kind: 'burn', text });
+    return true;
   };
 
   // --- 2. Match ------------------------------------------------------------
@@ -672,14 +714,16 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
     const dv1 = Math.min(legs.dv1, dvMatch);
     const dv2 = dvMatch - dv1;
     if (restartOk(tMatch1)) {
-      spend(tMatch1, 'match', dv1, transferElements,
-        `Orbit match burn 1: ${Math.round(dv1)} m/s.`);
-      if (restartOk(tMatch2)) {
-        spend(tMatch2, 'match', dv2, targetElements,
-          `Orbit match burn 2: ${Math.round(dv2)} m/s.`);
-        matched = true;
-      } else {
-        burns.push({ t: tMatch2, kind: 'match', dv: 0, ok: false, elements: transferElements });
+      if (spend(tMatch1, 'match', dv1, transferElements,
+        `Orbit match burn 1: ${Math.round(dv1)} m/s.`, 'orbit match', dv2 + dvPhase + APPROACH_DV)) {
+        if (restartOk(tMatch2)) {
+          if (spend(tMatch2, 'match', dv2, targetElements,
+            `Orbit match burn 2: ${Math.round(dv2)} m/s.`, 'orbit match', dvPhase + APPROACH_DV)) {
+            matched = true;
+          }
+        } else {
+          burns.push({ t: tMatch2, kind: 'match', dv: 0, ok: false, elements: transferElements });
+        }
       }
     } else {
       burns.push({ t: tMatch1, kind: 'match', dv: 0, ok: false, elements: insertionElements });
@@ -712,13 +756,14 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
         periapsis: target.periapsis,
         apoapsis: target.apoapsis + sign * 2 * da,
       };
-      spend(tPhase1, 'phase', half, phasingElements,
-        `Phasing burn 1: ${Math.round(half)} m/s.`);
       // One restart covers the pair: the second burn is the same relight
       // window, so it costs no further restart and no further roll.
-      spend(tPhase2, 'phase', half, targetElements,
-        `Phasing burn 2: ${Math.round(half)} m/s.`);
-      phased = true;
+      if (spend(tPhase1, 'phase', half, phasingElements,
+        `Phasing burn 1: ${Math.round(half)} m/s.`, 'phasing', half + APPROACH_DV)
+        && spend(tPhase2, 'phase', half, targetElements,
+          `Phasing burn 2: ${Math.round(half)} m/s.`, 'phasing', APPROACH_DV)) {
+        phased = true;
+      }
     }
   }
 
@@ -732,13 +777,17 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
     } else if (dvLeft < APPROACH_DV) {
       cannotAfford('approach', APPROACH_DV);
     } else if (rcs || restartOk(tApproach)) {
-      closestApproach = (NAV_APPROACH[nav] * (1 + absErr / 30)) / (rcs ? 2 : 1);
-      spend(tApproach, 'approach', APPROACH_DV, targetElements,
-        `Approach burn: ${Math.round(APPROACH_DV)} m/s.`);
-      events.push({
-        t: tApproach, kind: 'approach', text: `Closest approach ${formatRange(closestApproach)}.`,
-      });
-      approached = true;
+      // Fine thrusters are not the engine: with rcs there is no relight, and
+      // nothing to underperform.
+      if (rcs) relightCost = 1;
+      if (spend(tApproach, 'approach', APPROACH_DV, targetElements,
+        `Approach burn: ${Math.round(APPROACH_DV)} m/s.`, 'approach', 0)) {
+        closestApproach = (NAV_APPROACH[nav] * (1 + absErr / 30)) / (rcs ? 2 : 1);
+        events.push({
+          t: tApproach, kind: 'approach', text: `Closest approach ${formatRange(closestApproach)}.`,
+        });
+        approached = true;
+      }
     } else {
       burns.push({ t: tApproach, kind: 'approach', dv: 0, ok: false, elements: targetElements });
     }
@@ -801,6 +850,7 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
     },
     events,
     failure,
+    anomalies,
     readout,
     shortBy,
   };
@@ -1423,6 +1473,9 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     // failure that still made orbit is not overwritten by a later restart
     // failure (the orbital phase's own stop is reported by `stoppedAt`).
     if (failure === null && orbitalResult.failure) failure = orbitalResult.failure;
+    // Anomalies are all carried, in time order: the relights come after
+    // every ascent event.
+    anomalies.push(...orbitalResult.anomalies);
   }
 
   // ---- Outcome ------------------------------------------------------------

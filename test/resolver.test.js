@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeRng } from '../js/core/rng.js';
+import { loadTree, collectEffects } from '../js/core/tree.js';
+import { baseVehicle } from '../js/data/components.js';
+import { nodes as treeNodes } from '../js/data/tree.js';
+import { missions } from '../js/data/missions.js';
 import { G0, buildVehicle, stageDeltaV, totalDeltaV } from '../js/core/vehicle.js';
 import {
   resolveLaunch,
@@ -1052,4 +1056,61 @@ test('an ignition failure still costs exactly one draw; a to-spec ignition costs
   const countedGuided = makeRng(1);
   resolveLaunch(guided, MISSION_20KM, { fuelFraction: 1, turn: 0.5 }, countedGuided);
   assert.equal(countedGuided.draws, 5);
+});
+
+test('a relight is an ignition: it can underperform, and then the burn costs more of the budget', () => {
+  // The full tree flying a rendezvous at the core's template orbit, with the
+  // window set to the target's own phase so the phasing step is free. That
+  // leaves exactly two relights (the match pair) and an rcs approach, so the
+  // orbital phase draws four times when everything passes: restart roll and
+  // performance roll, twice. The probe run counts the flight's draws so the
+  // script below can land on the first relight without hand-counting the
+  // ascent's.
+  const tree = loadTree(treeNodes);
+  const vehicle = buildVehicle(baseVehicle, collectEffects(tree, { owned: treeNodes.map((n) => n.id) }));
+  assert.ok((vehicle.rcs ?? 0) >= 1, 'the full tree has rcs, so the approach is not a relight');
+  const core = missions.find((m) => m.id === 'core');
+  const target = {
+    id: 'core-1', name: 'Station core',
+    periapsis: core.requirement.orbit.periapsis, apoapsis: core.requirement.orbit.periapsis,
+    phase: phaseFor('core-1'),
+  };
+  const mission = missions.find((m) => m.requirement.rendezvous !== undefined);
+  // turn 0.1 is inside the band the full tree reaches this orbit from.
+  const load = { fuelFraction: 1, turn: 0.1, window: target.phase };
+  const probeRng = (() => { let i = 0; return { next: () => { i += 1; return 0.1; }, int: () => 0, get draws() { return i; } }; })();
+  const clean = resolveLaunch(vehicle, mission, load, probeRng, { target });
+  assert.ok(clean.orbital, 'the probe flight reached orbit and ran the sequence');
+  assert.ok(Math.abs(clean.orbital.phaseErrorDeg) <= PHASE_TOLERANCE_DEG, 'phasing is free');
+  assert.deepEqual(clean.orbital.burns.map((b) => b.kind), ['match', 'match', 'approach']);
+  assert.deepEqual(clean.anomalies, []);
+  const cleanDv = clean.orbital.burns.reduce((sum, b) => sum + b.dv, 0);
+  assert.ok(Math.abs(clean.orbital.dvUsed - cleanDv) < 1e-9, 'to spec, a burn costs what it delivers');
+  const ascentDraws = probeRng.draws - 4;
+
+  // Same flight; the first relight passes its restart roll and fails its
+  // performance roll (the top stage's reliability is under 0.999), deficit
+  // at u = 0.5 -> 7.5%; the second relight is to spec.
+  const reliability = vehicle.stages.at(-1).reliability;
+  assert.ok(reliability < 0.999 && reliability > 0.1);
+  let i = 0;
+  const script = [0.1, 0.999, 0.5, 0.1, 0.1];
+  const scripted = { next: () => (i++ < ascentDraws ? 0.1 : (script.shift() ?? 0.1)), int: () => 0 };
+  const o = resolveLaunch(vehicle, mission, load, scripted, { target });
+  assert.deepEqual(o.samples, clean.samples, 'the ascent is the same flight');
+  assert.equal(o.anomalies.length, 1);
+  const [a] = o.anomalies;
+  assert.equal(a.kind, 'underperform');
+  assert.equal(a.stage, vehicle.stages.length);
+  assert.equal(a.t, o.orbital.burns[0].t, 'decided at the relight');
+  assert.ok(Math.abs(a.factor - 0.925) < 1e-9);
+  assert.equal(o.failure, null);
+  assert.deepEqual(o.orbital.burns.map((b) => b.dv), clean.orbital.burns.map((b) => b.dv),
+    'the burns deliver what they were asked for');
+  // ...but the first one cost dv / (1 - 0.075 / 2) of the budget.
+  const expectedUsed = clean.orbital.burns[0].dv / (1 - 0.075 / 2)
+    + clean.orbital.burns[1].dv + clean.orbital.burns[2].dv;
+  assert.ok(Math.abs(o.orbital.dvUsed - expectedUsed) < 1e-6, `dvUsed ${o.orbital.dvUsed} vs ${expectedUsed}`);
+  assert.ok(o.timeline.some((e) => e.kind === 'anomaly' && e.t === a.t));
+  assert.match(o.readout, /Stage \d engine underperforming: 93% thrust\.$/);
 });

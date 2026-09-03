@@ -937,13 +937,26 @@ the deficit uniform in [`ENGINE_DEFICIT_MIN`, `ENGINE_DEFICIT_MAX`] (3% to
 delta-v gone outright, and `deltaVAchieved` credits the isp the burn actually
 ran at. The mid-burn roll is independent of it.
 
+A relight in the orbital phase is an ignition too, so each restart consumed
+rolls for performance after its restart roll. An impulsive burn does not
+care about thrust, but a lower isp burns more propellant for the same
+delta-v: an underperforming relight delivers the burn it was asked for
+(`orbital.burns[].dv` is unchanged) and charges the budget
+dv / (1 − deficit/2) for it (`dvUsed` counts the charge), every burn under
+that relight alike (the phasing pair). A later burn the budget can then no
+longer carry stops the sequence there for want of delta-v, as a smaller
+reserve would have. An rcs approach is thrusters, not a relight, and never
+underperforms.
+
 **Draw order.** Per ignition: ignition roll; then, only if it passed, the
 performance roll; then, only if *that* failed, the deficit; then the
 burn-roll fraction; later the burn roll. An ignition failure still costs
 exactly one draw. Per flight, right after the first stage's ignition draws
 and only on a guided flight: the guidance roll; then, only if it failed, the
 moment and the direction. The orbital phase draws after every ascent draw,
-as before. This is the replay contract from here on.
+as before, and per restart consumed: the restart roll; then, only if it
+passed, the performance roll; then, only if that failed, the deficit. The
+docking roll is unchanged. This is the replay contract from here on.
 
 **Outcome** gains one field; `failure` keeps its meaning (nothing here ends
 the flight, so it is never set by an anomaly):
