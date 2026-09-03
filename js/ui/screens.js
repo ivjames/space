@@ -439,7 +439,20 @@ export function mountScreens(ctx) {
     // (resolver.js, pitchProgram), so offering the control would be a lie.
     // Nothing here predicts the flight — no required delta-v, no verdict —
     // only what the pitch program itself is.
-    const turnField = guidance >= 1
+    // A sounding contract is a vertical flight by definition: the turn slider
+    // is not offered for an altitude requirement and the flight goes straight
+    // up, whatever guidance the vehicle carries.
+    const missionTurns = !!(mission?.requirement && mission.requirement.altitude === undefined);
+    const turnField = !missionTurns
+      ? `
+          <div class="field">
+            <label class="field-label">
+              <span>Turn</span>
+              <span class="field-value">—</span>
+            </label>
+            <p class="hint">Sounding flight: straight up.</p>
+          </div>`
+      : guidance >= 1
       ? `
           <div class="field">
             <label class="field-label" for="turn">
@@ -838,7 +851,9 @@ export function mountScreens(ctx) {
     const outcome = resolveLaunch(
       vehicle,
       mission,
-      { fuelFraction: view.fuelFraction, turn: view.turn, window: view.window },
+      // Altitude contracts fly vertical whatever the slider says (the loadout
+      // does not offer it for them).
+      { fuelFraction: view.fuelFraction, turn: view.turn, window: view.window, vertical: mission.requirement.altitude !== undefined },
       rng,
       target ? { target } : {},
     );

@@ -58,13 +58,21 @@ export function generateContracts(state, missions, rng, count = 3) {
 
   const eligible = missions.filter((m) => isEligible(state, m));
 
-  const pool = [...eligible];
+  // The board is the current tier's board: draw from this tier's templates
+  // first, and reach back to earlier tiers only when this tier cannot fill
+  // the slots (early in a tier, before its reputation gates open). Without
+  // this, tier 1 sounding contracts keep turning up at tier 3.
+  const tier = state.tier ?? 1;
+  const current = eligible.filter((m) => (m.tier ?? 1) === tier);
+  const earlier = eligible.filter((m) => (m.tier ?? 1) !== tier);
   const picked = [];
   const want = Math.max(0, count - 1);
-  for (let i = 0; i < want && pool.length > 0; i++) {
-    const idx = rng.int(pool.length);
-    picked.push(pool[idx]);
-    pool.splice(idx, 1);
+  for (const pool of [current, earlier]) {
+    while (picked.length < want && pool.length > 0) {
+      const idx = rng.int(pool.length);
+      picked.push(pool[idx]);
+      pool.splice(idx, 1);
+    }
   }
 
   return [floor.id, ...picked.map((m) => m.id)];

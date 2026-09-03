@@ -206,6 +206,9 @@ export function densityAt(h) {
 export function pitchProgram(vehicle, loadout = {}) {
   const guidance = vehicle?.guidance ?? 0;
   if (!(guidance >= 1)) return () => 0;
+  // `vertical: true` asks for a straight-up flight regardless of guidance: a
+  // sounding contract. turn 0 is the laziest gravity turn, not vertical.
+  if (loadout?.vertical) return () => 0;
 
   const turn = clamp(Number(loadout?.turn) || 0, 0, 1);
   const turnStart = lerp(TURN_START_LAZY, TURN_START_HARD, turn);

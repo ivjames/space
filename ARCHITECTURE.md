@@ -210,7 +210,9 @@ export function floorContract(missions)
 ```
 
 The floor contract is always affordable and always offered. It exists so the
-player can never be stuck (DESIGN.md §7).
+player can never be stuck (DESIGN.md §7). The other slots draw from the
+current tier's templates first and reach back to earlier tiers only when
+the current tier cannot fill them, so a tier 3 board is a tier 3 board.
 
 ## js/core/state.js
 
@@ -376,8 +378,10 @@ noise (a test asserts the tier 1 fixture's max altitude within 0.5%).
 
 ```js
 // Loadout
-// { fuelFraction: 0.5..1.0, turn: 0..1 }
-//   turn is ignored (treated as 0 = vertical) unless vehicle.guidance >= 1
+// { fuelFraction: 0.5..1.0, turn: 0..1, vertical?: boolean }
+//   turn is ignored (flies vertical) unless vehicle.guidance >= 1;
+//   vertical: true flies straight up whatever the guidance (sounding
+//   contracts; note turn 0 is the laziest gravity turn, not vertical)
 ```
 
 ```js
@@ -501,9 +505,11 @@ templates stay in the pool as cheap fillers.
 ## js/ui — what tier 2 adds
 
 - **Loadout** gains a `turn` slider (`input[type=range][data-loadout="turn"]`,
-  0..1, step 0.05, default 0.5) shown only when `vehicle.guidance >= 1`;
-  otherwise a `.hint` "No guidance: flies vertical." Loadout values persist
-  in `view` between launches.
+  0..1, step 0.05, default 0.5) shown only when `vehicle.guidance >= 1` AND
+  the mission is not an altitude (sounding) contract; a sounding flight goes
+  straight up whatever guidance the vehicle carries, and the loadout says
+  so. With no guidance the hint reads "No guidance: flies vertical."
+  Loadout values persist in `view` between launches.
 - **Ascent view** follows the rocket horizontally as well as vertically (same
   fixed scale in both axes), draws the flown trajectory as a faint trail
   behind the rocket, shows downrange next to altitude and speed, and prints

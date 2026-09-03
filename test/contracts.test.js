@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { makeRng } from '../js/core/rng.js';
 import assert from 'node:assert/strict';
 import { generateContracts, floorContract } from '../js/core/contracts.js';
 import { missions as realMissions } from '../js/data/missions.js';
@@ -299,4 +300,26 @@ test('real data: the dock template is offered only once a core object exists and
   });
   const idsWithBoth = generateContracts(withBoth, realMissions, fakeRng([0, 1, 2, 3, 4]), realMissions.length);
   assert.ok(idsWithBoth.includes('dock'));
+});
+
+test('the board draws from the current tier first and reaches back only to fill', () => {
+  const missions = [
+    { id: 'f', tier: 1, floor: true, requirement: { altitude: 1 }, payout: 1, repGain: 0, repLoss: 0 },
+    { id: 'a1', tier: 1, requirement: { altitude: 2 }, payout: 1, repGain: 0, repLoss: 0 },
+    { id: 'a2', tier: 1, requirement: { altitude: 3 }, payout: 1, repGain: 0, repLoss: 0 },
+    { id: 'b1', tier: 2, requirement: { altitude: 4 }, payout: 1, repGain: 0, repLoss: 0 },
+    { id: 'b2', tier: 2, requirement: { altitude: 5 }, payout: 1, repGain: 0, repLoss: 0 },
+    { id: 'b3', tier: 2, requirement: { altitude: 6 }, payout: 1, repGain: 0, repLoss: 0, minReputation: 50 },
+  ];
+  const at2 = { tier: 2, reputation: 0, owned: [], objects: [] };
+  for (let seed = 1; seed < 40; seed += 1) {
+    const ids = generateContracts(at2, missions, makeRng(seed), 3);
+    assert.equal(ids[0], 'f');
+    assert.deepEqual(ids.slice(1).sort(), ['b1', 'b2'], `seed ${seed} drew ${ids}`);
+  }
+  // Only one tier 2 template eligible: the second slot falls back to tier 1.
+  const gated = missions.map((m) => (m.id === 'b2' ? { ...m, minReputation: 50 } : m));
+  const ids = generateContracts(at2, gated, makeRng(3), 3);
+  assert.ok(ids.includes('b1'));
+  assert.ok(ids.some((id) => id === 'a1' || id === 'a2'));
 });

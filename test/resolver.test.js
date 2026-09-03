@@ -850,3 +850,13 @@ test('a long orbital flight at dt 0.1 resolves well under 100 ms', () => {
   assert.ok(flight > 600, `expected a 600 s+ flight, got ${flight}s`);
   assert.ok(best < 100, `resolve took ${best.toFixed(2)} ms`);
 });
+
+test('loadout.vertical flies straight up even with guidance, unlike turn 0', () => {
+  const vehicle = { stages: [{ dryMass: 150, propMass: 380, thrust: 20000, isp: 250, reliability: 1 }, { dryMass: 200, propMass: 105, thrust: 8000, isp: 300, reliability: 1 }], payloadMass: 100, dragArea: 0.2, dragCoeff: 0.3, guidance: 1 };
+  const mission = { requirement: { altitude: 100000 } };
+  const lazy = resolveLaunch(vehicle, mission, { fuelFraction: 1, turn: 0 }, makeRng(1), {});
+  const up = resolveLaunch(vehicle, mission, { fuelFraction: 1, turn: 0.5, vertical: true }, makeRng(1), {});
+  assert.ok(lazy.maxDownrange > 0, 'turn 0 with guidance is a lazy turn, not vertical');
+  assert.equal(up.maxDownrange, 0);
+  assert.ok(up.samples.every((s) => s.x === 0));
+});
