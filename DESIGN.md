@@ -109,6 +109,10 @@ Two sources, both pre-launch. A third is available but weak.
 2. **Reliability rolls.** Each component has a reliability stat. Failures
    happen visibly at a stage of the flight ("second stage cut out at T+142s").
    Reliability improves with tech and with flight count on that component.
+   Not every failed roll ends the flight: an engine can run below spec, and
+   guidance can fail and drift the vehicle off its program. Both leave the
+   rocket flying and put it off target ("short by 400 m/s" with the reason
+   appended) rather than on the ground, and each points at its own branch.
 3. **Environmental variance** (weather, solar event). Cheap, but pure
    randomness feels unfair if the player had no lever against it. Use
    sparingly, and only where a tech node gives a lever (weather forecasting,

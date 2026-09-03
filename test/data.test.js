@@ -224,6 +224,9 @@ const NO_CEILING = { requirement: { altitude: 1e9 } };
 function forceReliability(vehicle) {
   const copy = JSON.parse(JSON.stringify(vehicle));
   for (const stage of copy.stages) stage.reliability = 1;
+  // The guidance roll (ARCHITECTURE.md, "Anomalies") is the one roll that is
+  // not a stage's; forced for the same reason.
+  copy.guidanceReliability = 1;
   return copy;
 }
 

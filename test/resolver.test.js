@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeRng } from '../js/core/rng.js';
+import { loadTree, collectEffects } from '../js/core/tree.js';
+import { baseVehicle } from '../js/data/components.js';
+import { nodes as treeNodes } from '../js/data/tree.js';
+import { missions } from '../js/data/missions.js';
 import { G0, buildVehicle, stageDeltaV, totalDeltaV } from '../js/core/vehicle.js';
 import {
   resolveLaunch,
@@ -25,6 +29,8 @@ import {
   DOCK_RELIABILITY_RCS,
   APPROACH_DV,
   PHASE_TOLERANCE_DEG,
+  ENGINE_DEFICIT_MIN,
+  ENGINE_DEFICIT_MAX,
   ORBIT_CONFIRM_COAST,
 } from '../js/core/resolver.js';
 import {
@@ -254,8 +260,9 @@ test('a mid-burn failure credits the partial burn and cuts thrust', () => {
     { stat: 'stages.0.reliability', op: 'set', value: 0.5 },
     { stat: 'stages.1.reliability', op: 'set', value: 0.5 },
   ]);
-  // Draws: ignition roll (pass), burn-roll fraction (halfway), burn roll (fail).
-  const o = resolveLaunch(v, MISSION_100KM, FULL, scriptedRng([0.1, 0.5, 0.9]));
+  // Draws: ignition roll (pass), performance roll (pass), burn-roll fraction
+  // (halfway), burn roll (fail).
+  const o = resolveLaunch(v, MISSION_100KM, FULL, scriptedRng([0.1, 0.1, 0.5, 0.9]));
 
   assert.equal(o.failure.kind, 'burn');
   assert.equal(o.failure.stage, 1);
@@ -859,4 +866,251 @@ test('loadout.vertical flies straight up even with guidance, unlike turn 0', () 
   assert.ok(lazy.maxDownrange > 0, 'turn 0 with guidance is a lazy turn, not vertical');
   assert.equal(up.maxDownrange, 0);
   assert.ok(up.samples.every((s) => s.x === 0));
+});
+
+// ---------------------------------------------------------------------------
+// Anomalies: guidance failure, engine underperformance (ARCHITECTURE.md,
+// "Anomalies"). Neither ends the flight; both put it off target.
+// ---------------------------------------------------------------------------
+
+test('every outcome carries an anomalies array, empty on a clean flight', () => {
+  const o = resolveLaunch(fixture(), MISSION_100KM, FULL, makeRng(1));
+  assert.deepEqual(o.anomalies, []);
+  const grounded = resolveLaunch(
+    fixture([{ stat: 'stages.0.propMass', op: 'set', value: 9000 }]), MISSION_100KM, FULL, makeRng(1),
+  );
+  assert.deepEqual(grounded.anomalies, []);
+});
+
+test('an unguided flight never rolls for guidance, whatever guidanceReliability says', () => {
+  // Tier 1 must not move: no guidance, no guidance roll, no extra draw.
+  const v = { ...fixture(), guidanceReliability: 0 };
+  for (const seed of [0, 1, 7, 12345]) {
+    const o = resolveLaunch(v, MISSION_100KM, FULL, makeRng(seed));
+    assert.deepEqual(o.anomalies, []);
+    assert.equal(o.failure, null);
+  }
+  // Nor does a sounding flight on a guided vehicle: `vertical` means there is
+  // no program to drop off.
+  const guided = { ...strongFixture(), guidanceReliability: 0 };
+  const up = resolveLaunch(guided, MISSION_100KM, { fuelFraction: 1, turn: 0.5, vertical: true }, makeRng(1));
+  assert.deepEqual(up.anomalies, []);
+  assert.ok(up.samples.every((s) => s.x === 0));
+});
+
+test('a vehicle that does not declare guidanceReliability never fails guidance', () => {
+  const v = strongFixture();
+  assert.equal(v.guidanceReliability, undefined);
+  for (const seed of [1, 77, 4242]) {
+    const o = resolveLaunch(v, MISSION_ORBIT, { fuelFraction: 0.9, turn: 0.45 }, makeRng(seed));
+    assert.deepEqual(o.anomalies, []);
+  }
+});
+
+test('guidanceReliability 0 on a guided flight always drops off the program and drifts off target', () => {
+  const load = { fuelFraction: 1, turn: 0.5 };
+  const clean = resolveLaunch(strongFixture(), MISSION_ORBIT, load, makeRng(1));
+  assert.equal(clean.success, true, 'the strong fixture orbits when nothing goes wrong');
+
+  const v = { ...strongFixture(), guidanceReliability: 0 };
+  let changed = 0;
+  for (const seed of [0, 1, 2, 3, 5, 8, 13, 21]) {
+    const o = resolveLaunch(v, MISSION_ORBIT, load, makeRng(seed));
+    assert.equal(o.anomalies.length, 1, `seed ${seed}: exactly one guidance anomaly`);
+    const [a] = o.anomalies;
+    assert.equal(a.kind, 'guidance');
+    assert.ok(a.t >= 0 && Number.isFinite(a.t));
+    assert.ok(a.direction === 1 || a.direction === -1);
+    assert.ok(a.stage >= 1);
+    // Not a failure: the engines kept running, so the burns all completed.
+    assert.equal(o.failure, null);
+    assert.ok(o.timeline.filter((e) => e.kind === 'burnout').length === 2, 'both stages burnt out');
+    // Announced on the timeline, and in the readout whatever the verdict.
+    const ev = o.timeline.find((e) => e.kind === 'anomaly');
+    assert.ok(ev, 'an anomaly event');
+    assert.equal(ev.t, a.t);
+    assert.match(ev.text, /^Guidance failure at T\+\d+s\.$/);
+    assert.match(o.readout, /Guidance failure at T\+\d+s\.$/);
+    // Off target: the orbit it ended in is not the clean flight's.
+    if (Math.abs(o.periapsis - clean.periapsis) > 1000) changed += 1;
+  }
+  assert.ok(changed >= 6, `a guidance failure should move the orbit almost every time: ${changed}/8`);
+});
+
+test('a guidance failure drawn after the last burnout never happens', () => {
+  // Scripted: stage 1 ignition ok, to spec, burn roll fraction; guidance roll
+  // fails, moment at the very END of the nominal powered flight (fraction ~1),
+  // direction; then stage 1's burn roll passes and stage 2's draws... but the
+  // stage 2 ignition fails, so the powered flight ends early and the drawn
+  // moment falls in the coast — where there is no program to drop off.
+  const v = {
+    ...strongFixture([{ stat: 'stages.1.reliability', op: 'set', value: 0.5 }]),
+    guidanceReliability: 0.5,
+  };
+  const o = resolveLaunch(v, MISSION_ORBIT, { fuelFraction: 1, turn: 0.45 }, scriptedRng([
+    0.1,      // stage 1 ignition: pass
+    0.1,      // stage 1 performance: to spec
+    0.5,      // stage 1 burn-roll fraction
+    0.9,      // guidance roll: fail (>= 0.5)
+    0.999999, // moment: end of the nominal powered flight
+    0.2,      // direction: -1
+    0.1,      // stage 1 burn roll: pass
+    0.9999,   // stage 2 ignition: fail
+  ]));
+  assert.deepEqual(o.failure, { t: o.failure.t, stage: 2, kind: 'ignition' });
+  assert.deepEqual(o.anomalies, []);
+  assert.ok(!o.timeline.some((e) => e.kind === 'anomaly'));
+});
+
+test('a guidance moment inside the last step of powered flight is still announced', () => {
+  // Codex finding on PR #6: the last burnout lands on the integrator boundary
+  // BEFORE the guidance check runs, so a moment drawn inside that final step
+  // used to be dropped as "after the burn". It is powered flight by the draw,
+  // so it is reported — at the burn's end, where it can no longer steer.
+  const v = { ...strongFixture(), guidanceReliability: 0.5 };
+  const load = { fuelFraction: 1, turn: 0.45 };
+  const o = resolveLaunch(v, MISSION_ORBIT, load, scriptedRng([
+    0.1, 0.1, 0.5,    // stage 1: ignition, performance, burn-roll fraction
+    0.9,              // guidance roll: fail
+    0.999999,         // moment: the very end of the nominal powered flight
+    0.8,              // direction: +1
+    0.1,              // stage 1 burn roll
+    0.1, 0.1, 0.5, 0.1, // stage 2: ignition, performance, fraction, burn roll
+  ]));
+  const lastBurnout = o.timeline.filter((e) => e.kind === 'burnout').at(-1);
+  assert.equal(o.anomalies.length, 1);
+  assert.equal(o.anomalies[0].kind, 'guidance');
+  assert.ok(Math.abs(o.anomalies[0].t - lastBurnout.t) < 1e-6,
+    `announced at the burn's end: ${o.anomalies[0].t} vs ${lastBurnout.t}`);
+  assert.match(o.readout, /Guidance failure at T\+\d+s\.$/);
+  // With no thrust left to steer, the flight itself is the clean one.
+  const clean = resolveLaunch(strongFixture(), MISSION_ORBIT, load, makeRng(1));
+  assert.deepEqual(o.samples, clean.samples);
+  assert.equal(o.periapsis, clean.periapsis);
+});
+
+test('an engine that fails its performance roll runs the whole burn below spec', () => {
+  // Draws: ignition (pass), performance (fail at reliability 0.5), deficit
+  // (u = 0.5 -> 7.5%), burn-roll fraction, burn roll (pass, 0.1) — then the
+  // second stage: ignition pass, performance pass, fraction, burn roll pass.
+  const v = fixture([{ stat: 'stages.0.reliability', op: 'set', value: 0.5 }]);
+  const o = resolveLaunch(v, MISSION_100KM, FULL, scriptedRng([
+    0.1, 0.9, 0.5, 0.5, 0.1,
+    0.1, 0.1, 0.5, 0.1,
+  ]));
+  const clean = resolveLaunch(fixture(), MISSION_100KM, FULL, makeRng(1));
+
+  assert.equal(o.failure, null, 'underperformance is not a failure');
+  assert.equal(o.anomalies.length, 1);
+  const [a] = o.anomalies;
+  assert.equal(a.kind, 'underperform');
+  assert.equal(a.stage, 1);
+  assert.equal(a.t, 0, 'decided at ignition');
+  assert.ok(Math.abs(a.factor - (1 - 0.075)) < 1e-9, `factor ${a.factor}`);
+  assert.match(o.readout, /Stage 1 engine underperforming: 93% thrust\.$/);
+  assert.ok(o.timeline.some((e) => e.kind === 'anomaly' && e.t === 0 && e.stage === 1));
+
+  // Both stages still burnt out; the weak one just did less.
+  assert.equal(o.timeline.filter((e) => e.kind === 'burnout').length, 2);
+  const stage1Burnout = o.timeline.find((e) => e.kind === 'burnout');
+  const cleanBurnout = clean.timeline.find((e) => e.kind === 'burnout');
+  assert.ok(stage1Burnout.t > cleanBurnout.t, 'less thrust: a longer burn');
+  // Isp × (1 - deficit/2): stage 1's delta-v is credited at the isp it ran at.
+  const expected = stageDeltaV(v, 0, 1) * (1 - 0.075 / 2) + stageDeltaV(v, 1, 1);
+  assert.ok(Math.abs(o.deltaVAchieved - expected) < 1e-6,
+    `deltaVAchieved ${o.deltaVAchieved} vs ${expected}`);
+  assert.ok(o.deltaVAchieved < clean.deltaVAchieved);
+  assert.ok(o.maxAltitude < clean.maxAltitude, 'and it does not get as high');
+});
+
+test('the deficit spans ENGINE_DEFICIT_MIN..MAX and a reliability-1 stage never underperforms', () => {
+  const v = fixture([{ stat: 'stages.0.reliability', op: 'set', value: 0.5 }]);
+  const lo = resolveLaunch(v, MISSION_100KM, FULL, scriptedRng([0.1, 0.9, 0, 0.5, 0.1, 0.1, 0.1, 0.5, 0.1]));
+  const hi = resolveLaunch(v, MISSION_100KM, FULL, scriptedRng([0.1, 0.9, 0.999999, 0.5, 0.1, 0.1, 0.1, 0.5, 0.1]));
+  assert.ok(Math.abs(lo.anomalies[0].factor - (1 - ENGINE_DEFICIT_MIN)) < 1e-9);
+  assert.ok(Math.abs(hi.anomalies[0].factor - (1 - ENGINE_DEFICIT_MAX)) < 1e-5);
+  assert.ok(hi.maxAltitude < lo.maxAltitude);
+
+  for (const seed of [0, 1, 2, 7, 12345]) {
+    assert.deepEqual(resolveLaunch(fixture(), MISSION_100KM, FULL, makeRng(seed)).anomalies, []);
+  }
+});
+
+test('an ignition failure still costs exactly one draw; a to-spec ignition costs three', () => {
+  // Stage 1 fails to light on the first draw: nothing else is drawn.
+  const dud = fixture([{ stat: 'stages.0.reliability', op: 'set', value: 0.5 }]);
+  const rng = scriptedRng([0.9]);
+  const o = resolveLaunch(dud, MISSION_100KM, FULL, rng);
+  assert.deepEqual(o.failure, { t: 0, stage: 1, kind: 'ignition' });
+  assert.equal(rng.draws, 1);
+
+  // Clean single-stage flight: ignition, performance, burn-roll fraction, burn
+  // roll — four draws, and no guidance draw on an unguided vehicle.
+  const single = buildVehicle({ ...fixtureBase(), stages: [fixtureBase().stages[0]] });
+  const counted = makeRng(1);
+  resolveLaunch(single, MISSION_20KM, FULL, counted);
+  assert.equal(counted.draws, 4);
+
+  // Guided and clean: one more, the guidance roll, right after liftoff.
+  const guided = { ...single, guidance: 1, guidanceReliability: 1 };
+  const countedGuided = makeRng(1);
+  resolveLaunch(guided, MISSION_20KM, { fuelFraction: 1, turn: 0.5 }, countedGuided);
+  assert.equal(countedGuided.draws, 5);
+});
+
+test('a relight is an ignition: it can underperform, and then the burn costs more of the budget', () => {
+  // The full tree flying a rendezvous at the core's template orbit, with the
+  // window set to the target's own phase so the phasing step is free. That
+  // leaves exactly two relights (the match pair) and an rcs approach, so the
+  // orbital phase draws four times when everything passes: restart roll and
+  // performance roll, twice. The probe run counts the flight's draws so the
+  // script below can land on the first relight without hand-counting the
+  // ascent's.
+  const tree = loadTree(treeNodes);
+  const vehicle = buildVehicle(baseVehicle, collectEffects(tree, { owned: treeNodes.map((n) => n.id) }));
+  assert.ok((vehicle.rcs ?? 0) >= 1, 'the full tree has rcs, so the approach is not a relight');
+  const core = missions.find((m) => m.id === 'core');
+  const target = {
+    id: 'core-1', name: 'Station core',
+    periapsis: core.requirement.orbit.periapsis, apoapsis: core.requirement.orbit.periapsis,
+    phase: phaseFor('core-1'),
+  };
+  const mission = missions.find((m) => m.requirement.rendezvous !== undefined);
+  // turn 0.1 is inside the band the full tree reaches this orbit from.
+  const load = { fuelFraction: 1, turn: 0.1, window: target.phase };
+  const probeRng = (() => { let i = 0; return { next: () => { i += 1; return 0.1; }, int: () => 0, get draws() { return i; } }; })();
+  const clean = resolveLaunch(vehicle, mission, load, probeRng, { target });
+  assert.ok(clean.orbital, 'the probe flight reached orbit and ran the sequence');
+  assert.ok(Math.abs(clean.orbital.phaseErrorDeg) <= PHASE_TOLERANCE_DEG, 'phasing is free');
+  assert.deepEqual(clean.orbital.burns.map((b) => b.kind), ['match', 'match', 'approach']);
+  assert.deepEqual(clean.anomalies, []);
+  const cleanDv = clean.orbital.burns.reduce((sum, b) => sum + b.dv, 0);
+  assert.ok(Math.abs(clean.orbital.dvUsed - cleanDv) < 1e-9, 'to spec, a burn costs what it delivers');
+  const ascentDraws = probeRng.draws - 4;
+
+  // Same flight; the first relight passes its restart roll and fails its
+  // performance roll (the top stage's reliability is under 0.999), deficit
+  // at u = 0.5 -> 7.5%; the second relight is to spec.
+  const reliability = vehicle.stages.at(-1).reliability;
+  assert.ok(reliability < 0.999 && reliability > 0.1);
+  let i = 0;
+  const script = [0.1, 0.999, 0.5, 0.1, 0.1];
+  const scripted = { next: () => (i++ < ascentDraws ? 0.1 : (script.shift() ?? 0.1)), int: () => 0 };
+  const o = resolveLaunch(vehicle, mission, load, scripted, { target });
+  assert.deepEqual(o.samples, clean.samples, 'the ascent is the same flight');
+  assert.equal(o.anomalies.length, 1);
+  const [a] = o.anomalies;
+  assert.equal(a.kind, 'underperform');
+  assert.equal(a.stage, vehicle.stages.length);
+  assert.equal(a.t, o.orbital.burns[0].t, 'decided at the relight');
+  assert.ok(Math.abs(a.factor - 0.925) < 1e-9);
+  assert.equal(o.failure, null);
+  assert.deepEqual(o.orbital.burns.map((b) => b.dv), clean.orbital.burns.map((b) => b.dv),
+    'the burns deliver what they were asked for');
+  // ...but the first one cost dv / (1 - 0.075 / 2) of the budget.
+  const expectedUsed = clean.orbital.burns[0].dv / (1 - 0.075 / 2)
+    + clean.orbital.burns[1].dv + clean.orbital.burns[2].dv;
+  assert.ok(Math.abs(o.orbital.dvUsed - expectedUsed) < 1e-6, `dvUsed ${o.orbital.dvUsed} vs ${expectedUsed}`);
+  assert.ok(o.timeline.some((e) => e.kind === 'anomaly' && e.t === a.t));
+  assert.match(o.readout, /Stage \d engine underperforming: 93% thrust\.$/);
 });

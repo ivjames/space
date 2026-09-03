@@ -644,6 +644,17 @@ export function mountScreens(ctx) {
     // player must buy something DIFFERENT).
     const points = [];
     const orb = o?.orbital ?? null;
+    // An anomaly points at its own branch whatever the verdict: guidance
+    // drifted the flight off its program, or an engine ran below spec. Both
+    // are rolls, so the hint names what makes the roll rarer; one hint per
+    // kind, however many stages underperformed.
+    const anomalyKinds = new Set((o?.anomalies ?? []).map((a) => a.kind));
+    if (anomalyKinds.has('guidance')) {
+      points.push(`<p class="hint points" data-points-at="guidance">Guidance failed mid-flight and the vehicle drifted off its program. Guidance refinements make that rarer.</p>`);
+    }
+    if (anomalyKinds.has('underperform')) {
+      points.push(`<p class="hint points" data-points-at="reliability">An engine ran below spec. Reliability upgrades make engines run to spec; delta-v margin absorbs the ones that don't.</p>`);
+    }
     if (o?.failure) {
       points.push(`<p class="hint points" data-points-at="reliability">Reliability upgrades reduce this.</p>`);
     } else if (o && !o.success && orb) {
