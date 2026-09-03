@@ -167,6 +167,13 @@ const NOSE_H = 8;
 const NOZZLE_H = 3;
 /** Interstage band at the top of a lower segment, px. */
 const BAND_H = 2;
+/**
+ * Real seconds the stack above a spent stage takes to settle onto the sample
+ * point after a separation. The nozzle of the new bottom stage would otherwise
+ * re-anchor on the point and drop the whole stack by the spent stage's height
+ * in one frame, while the trajectory itself is continuous.
+ */
+const SEPARATION_SETTLE_S = 1.2;
 /** What a stage counts as when only a stage COUNT is given: the starter. */
 const NOMINAL_STAGE = { dryMass: 40, propMass: 30 };
 
@@ -927,9 +934,12 @@ export function playOutcome(canvas, outcome, opts = {}) {
    */
   function drawStack(segs, burning) {
     if (segs.length === 0) return;
-    const bodyH = segs.reduce((sum, seg) => sum + seg.height, 0);
+    // The stack stands on the origin: the bottom nozzle's lip is at y = 0 and
+    // the body rises into negative y. The origin is the sample's (downrange,
+    // altitude), so a rocket at altitude 0 sits ON the pad; centring it there
+    // instead would bury half of it, and the taller the stack the deeper.
     const bottoms = [];
-    let y = bodyH / 2;
+    let y = -NOZZLE_H;
     for (const seg of segs) {
       bottoms.push(y);
       y -= seg.height;
@@ -961,8 +971,24 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.rotate(heading);
     // Which segments are attached comes from the vehicle and the stage flying
     // now — never from a separation that has not happened yet.
-    drawStack(attachedAt(stage), burning);
+    const segs = attachedAt(stage);
+    // The point the sprite pivots on slides along its axis with the heading:
+    // the engine while the nose is up (a rocket at altitude 0 stands on the
+    // pad), the nose once it is down (a rocket back at altitude 0 has hit the
+    // ground nose first, and lies on the line rather than under it), and the
+    // middle in between. Continuous in the heading, so the pivot never jumps
+    // — and it is exactly at the two altitudes where the ground is in frame
+    // that it matters. On top of that, for the moment after a separation the
+    // stack is still settling down onto the point (separationLift).
+    const pivot = (1 - Math.cos(heading)) / 2;
+    ctx.translate(0, stackHeight(segs) * pivot - separationLift(pivot));
+    drawStack(segs, burning);
     ctx.restore();
+  }
+
+  /** Full drawn height of a stack, nozzle lip to nose tip, px. */
+  function stackHeight(segs) {
+    return segs.reduce((sum, seg) => sum + seg.height, 0) + NOSE_H + NOZZLE_H;
   }
 
   /** A spent stage tumbling away: the actual segment that dropped. */
@@ -978,6 +1004,55 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.restore();
   }
 
+  /** The full-vehicle segment of a 1-based stage number, clamped into range. */
+  function stageSeg(stageNo) {
+    return fullStack[Math.min(Math.max((stageNo ?? 1) - 1, 0), fullStack.length - 1)];
+  }
+
+  /**
+   * How far toward its nose the attached stack is still drawn, px along the
+   * body axis, from every stage dropped within the last SEPARATION_SETTLE_S
+   * real seconds, fading to zero: the stack stays where it was at the instant
+   * of separation and eases onto its new anchor instead of snapping.
+   *
+   * `pivot` is where on the stack the anchor sits, 0 at the nozzle lip to 1
+   * at the nose tip (drawRocket slides it with the heading, the wreck uses
+   * the middle). Dropping a segment of height h moves the stack's own anchor
+   * by h * pivot toward the nose, so the retained stages jump only by the
+   * remaining h * (1 - pivot) — that is the lift that keeps them still.
+   * Reads only separations already passed; a skipped playback (age 1e9) has
+   * settled completely.
+   */
+  function separationLift(pivot) {
+    let lift = 0;
+    for (const ev of timeline) {
+      if (ev.kind !== 'separation') continue;
+      if (simT < ev.t) break;
+      const age = ageOf(stamps.get(ev));
+      if (age >= SEPARATION_SETTLE_S) continue;
+      lift += stageSeg(ev.stage).height * (1 - pivot) * (1 - age / SEPARATION_SETTLE_S);
+    }
+    return lift;
+  }
+
+  /**
+   * The stage flying at simT. Normally the sample's; but a separation that
+   * falls between two samples leaves the interpolated sample on the old stage
+   * until the next one (sampleAt keeps the earlier sample's stage), during
+   * which the spent stage would be drawn still attached — and lifted by
+   * separationLift — while it also tumbles away as debris. So the count of
+   * separations already passed wins when it is ahead. Reads only events at
+   * or before simT.
+   */
+  function stageAt(sample) {
+    let passed = 0;
+    for (const ev of timeline) {
+      if (ev.t > simT) break;
+      if (ev.kind === 'separation') passed += 1;
+    }
+    return Math.max(sample.stage ?? 1, passed + 1);
+  }
+
   function drawDebris() {
     // A spent stage drops away and falls behind. Its world position is the
     // position at separation (a past event); the fall itself is a screen-space
@@ -991,8 +1066,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
       const at = sampleAt(samples, ev.t);
       const y = altToY(at.alt) + age * age * 90 + age * 12;
       // The event names the stage that separated (1-based, from the resolver).
-      const seg = fullStack[Math.min(Math.max((ev.stage ?? 1) - 1, 0), fullStack.length - 1)];
-      drawDroppedStage(seg, drToX(at.downrange ?? 0) + age * 14, y, age, fade);
+      drawDroppedStage(stageSeg(ev.stage), drToX(at.downrange ?? 0) + age * 14, y, age, fade);
     }
   }
 
@@ -1016,8 +1090,17 @@ export function playOutcome(canvas, outcome, opts = {}) {
       ctx.save();
       ctx.globalAlpha = 0.9;
       ctx.translate(wx, wy);
-      ctx.rotate(age * 2.4);
-      drawStack(attachedAt(failure.stage ?? at.stage ?? 1), false);
+      // The wreck starts exactly where and how the rocket was drawn the frame
+      // before — same heading, same pivot along the body — and from there
+      // tumbles, with the pivot easing to its middle so that on the ground it
+      // is never more than half buried whichever way up it has landed.
+      const heading = headingAt(failure.t);
+      const flightPivot = (1 - Math.cos(heading)) / 2;
+      const pivot = flightPivot + (0.5 - flightPivot) * Math.min(age / SEPARATION_SETTLE_S, 1);
+      ctx.rotate(heading + age * 2.4);
+      const segs = attachedAt(failure.stage ?? at.stage ?? 1);
+      ctx.translate(0, stackHeight(segs) * pivot - separationLift(pivot));
+      drawStack(segs, false);
       ctx.restore();
     }
 
@@ -1107,7 +1190,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     drawTrail(dr, alt);
     drawDebris();
     if (!failure || simT < failure.t) {
-      drawRocket(dr, alt, s.stage ?? 1, burningAt(timeline, simT), headingAt(simT));
+      drawRocket(dr, alt, stageAt(s), burningAt(timeline, simT), headingAt(simT));
     }
     drawFailure(dr, alt);
     drawReadout(alt, s.vel ?? 0, dr);
