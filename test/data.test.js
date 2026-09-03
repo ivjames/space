@@ -1098,11 +1098,13 @@ test('every tier 2/3 mission that needs a turn (downrange, orbit, rendezvous or 
     const closure = prerequisiteClosure(requiredNodeIds(m));
     assert.ok(closure.has('guide-1'), `${m.id} can be drawn without guide-1, but pitchProgram flies straight up without it`);
   }
-  // And the one tier 2 template that does NOT need a turn stays ungated:
-  // it is the tier's income filler, offerable on arrival with nothing bought.
+  // And the one tier 2 template that does NOT need a turn carries no
+  // guide-1: it is the tier's income filler, gated only on the tier 1 goal
+  // set's generators, which a tier 2 arrival owns by construction.
   const entry = missions.find((m) => m.id === 'orbit-entry');
   assert.equal(entry.profile, 'sounding');
-  assert.equal(entry.requiresNode, undefined);
+  assert.deepEqual([...requiredNodeIds(entry)].sort(), ['prop-4', 'struct-3']);
+  assert.ok(!prerequisiteClosure(requiredNodeIds(entry)).has('guide-1'), 'an altitude filler must not wait on the flight computer');
 });
 
 test('rendezvous and dock templates gate on the restarts and nav level the orbital sequence actually checks', () => {
@@ -1527,4 +1529,56 @@ test('a greedy player reaches the tier 3 goal (dock) in at most 80 tier 3 launch
   assert.ok(dockedGoalMet(state.objects), `greedy player never docked within ${MAX_LAUNCHES} total launches`);
   const tier3Launches = launches - tier3LaunchStart;
   assert.ok(tier3Launches <= 80, `greedy player took ${tier3Launches} tier 3 launches, expected <= 80`);
+});
+
+// =========================================================================
+// GATING RULE (ARCHITECTURE.md, "js/core/contracts.js"): every altitude /
+// downrange / orbit template's `requiresNode` is the generator set of the
+// cheapest prereq-valid node set that reaches its requirement, derived from
+// the real resolver by tools/gates.mjs. The board never offers a rung the
+// vehicle cannot fly along the ladder. This re-derives the table (every
+// prereq-valid set of trajectory-affecting nodes, ~10 s) and pins the data
+// to it, so a resolver, tree or mission change that moves a gate fails here
+// with the new answer in the message: run `node tools/gates.mjs` and copy
+// it across. It also pins the documented exceptions: a superset of a gate
+// that still falls short must carry a node the mission's note names as
+// harmful (prop-7 on the tier 2 orbit rungs, prop-13 on satellite), and
+// nothing else may.
+// =========================================================================
+
+test('every altitude/downrange/orbit mission gates on the generators of its cheapest reaching set (tools/gates.mjs), and every exception is a documented harmful node', async () => {
+  const { deriveGates } = await import('../tools/gates.mjs');
+  const { gates } = deriveGates(21);
+  const HARMFUL = new Set(['prop-7', 'prop-13']);
+  let checked = 0;
+  for (const m of missions) {
+    const g = gates.get(m.id);
+    if (g === null) continue; // rendezvous / dock: gated on the orbital sequence's checks
+    assert.ok(g.gate, `${m.id} is unreachable by any node set up to its tier`);
+    const listed = m.requiresNode === undefined ? [] : [].concat(m.requiresNode);
+    assert.deepEqual(
+      [...listed].sort(),
+      [...g.gate].sort(),
+      `${m.id}: requiresNode is [${listed}] but the cheapest reaching set's generators are [${g.gate}] (cheapest set: [${g.cheapest.owned}], ${g.cheapest.cost} funds)`,
+    );
+    for (const row of g.failing) {
+      const extra = row.owned.filter((id) => !g.gateClosure.has(id));
+      assert.ok(
+        extra.some((id) => HARMFUL.has(id)),
+        `${m.id}: a vehicle owning its gate plus [${extra}] falls short (periapsis ${Math.round(row.m.periapsis)}, downrange ${Math.round(row.m.downrange)}, altitude ${Math.round(row.m.altitude)}) and none of those nodes is a documented harmful one`,
+      );
+    }
+    checked += 1;
+  }
+  assert.ok(checked >= 12, `expected the tier 1-3 altitude/downrange/orbit rungs, checked ${checked}`);
+});
+
+test('the gates admit the ladder: each tier\'s goal set is offered every rung of its tier, and a tier 3 arrival is offered satellite', () => {
+  const tier1Goal = ['prop-1', 'prop-2', 'prop-3', 'prop-4', 'struct-1', 'struct-2', 'struct-3'];
+  const tier2Goal = [...tier1Goal, 'guide-1', 'struct-4', 'struct-5', 'prop-5', 'prop-6', 'struct-6', 'prop-8', 'prop-9'];
+  const owns = (owned, m) => (m.requiresNode === undefined ? [] : [].concat(m.requiresNode)).every((id) => owned.includes(id));
+  for (const m of tier1Missions) assert.ok(owns(tier1Goal, m), `${m.id} should be open to the tier 1 goal set`);
+  for (const m of tier2Missions) assert.ok(owns(tier2Goal, m), `${m.id} should be open to the tier 2 goal set`);
+  assert.ok(owns(tier2Goal, missions.find((m) => m.id === 'satellite')), 'satellite should be open to a tier 3 arrival');
+  assert.ok(!owns(tier2Goal, missions.find((m) => m.id === 'core')), 'core should wait for struct-10');
 });

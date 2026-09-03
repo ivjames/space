@@ -690,6 +690,16 @@ export const nodes = [
     desc: 'A bigger propellant reserve held back on the top stage for the rendezvous burns.',
     cost: { funds: 32500 },
     requires: ['prop-10'],
+    // TRAP, documented rather than fixed here: bought before struct-10 (the
+    // lighter fairing), the extra 35 kg on the stage that has to circularise
+    // drops the tier 2 goal set from 127 848 m periapsis to -365 703 m -- no
+    // orbit at all, and with struct-7 added still only 83 669 m. `node
+    // tools/gates.mjs` lists every such set under satellite's "falls short"
+    // and test/data.test.js pins that prop-13 is the only tier 3 node that
+    // does this. The contract gates cannot express "not this node", so the
+    // ladder tab will say satellite is available to a player who owns this
+    // and cannot fly it. Rebalancing prop-13 (or making it require
+    // struct-10) is the fix; it is out of the gating change's scope.
     effects: [
       { stat: 'stages.2.propMass', op: 'add', value: 30 },
       { stat: 'stages.2.dryMass', op: 'add', value: 5 },
