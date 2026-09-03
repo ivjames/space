@@ -321,7 +321,7 @@ Stable selectors so an end-to-end smoke test does not depend on copy:
 - contracts: `.row[data-contract="<missionId>"]`, tapping selects it
 - loadout: `input[type=range][data-loadout="fuelFraction"]`
 - launch: `canvas#ascent`; tapping it skips playback
-- result: `.readout[data-readout]`, and `[data-points-at="propulsion"|"structure"|"reliability"]` when applicable
+- result: `.readout[data-readout]`, and `[data-points-at="propulsion"|"structure"|"reliability"|"guidance"|"loadout"]` when applicable
 - tree: `.row[data-node="<id>"]` with classes owned / buyable / locked
 - primary button: `#actions .btn-primary[data-action="select"|"launch"|"continue"|"back"]`
 - `window.__space` exposes `{ state, tree, missions }` getters for tests only
@@ -519,6 +519,9 @@ templates stay in the pool as cheap fillers.
 - **Result** readouts per requirement as above; points-at: orbit or
   downrange shortfall → propulsion/structure, plus guidance when
   `vehicle.guidance === 0` ("No guidance: a vertical flight cannot orbit").
+  A branch that is fully owned at this tier (`branchExhausted`, tree.js) is
+  not pointed at; when both are, the shortfall points at `loadout` ("fuel
+  load and turn are the levers") — it names the levers, never the setting.
 - **Tree** shows nodes with `tier <= state.tier`, grouped by branch; a tier 2
   node lists its tier 1 prerequisites by name when locked.
 - **Win, tier 1** → Continue → `advanceTier`, contracts regenerate, a short

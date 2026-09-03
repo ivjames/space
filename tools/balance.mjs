@@ -284,8 +284,13 @@ if (!PHASE1_RESOLVER) {
   process.exit(0);
 }
 
-const fullTree = loadTree(nodes); // tier 1 + tier 2 together
-const fullIds = nodes.map((n) => n.id);
+// Tier 1 + tier 2 together, and ONLY those: js/data/tree.js now carries
+// tier 3 too, and a "full tree" that swept tier 3's nodes in reported a
+// turn window (0.00-0.50, peaking at the boundary) that no tier 2 player can
+// fly. The maxed tier 2 vehicle is what the tier 2 goal is balanced against.
+const tier12Nodes = nodes.filter((n) => (n.tier ?? 1) <= 2);
+const fullTree = loadTree(tier12Nodes);
+const fullIds = tier12Nodes.map((n) => n.id);
 const NO_CEILING_ORBIT = { requirement: { orbit: { periapsis: 1e9 } } };
 // 0, 0.05, ..., 1 — ARCHITECTURE.md: "searched over turn in steps of 0.05".
 const TURN_STEPS = Array.from({ length: 21 }, (_, i) => i * 0.05);

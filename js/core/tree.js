@@ -120,6 +120,19 @@ export function canBuy(tree, state, id) {
 }
 
 // buy(tree, state, id) -> new state. Throws if not canBuy.
+// branchExhausted(tree, state, branch) -> boolean
+// True when every node of `branch` at or below state.tier is already owned:
+// there is nothing left in that branch this tier could ever sell the player,
+// whatever their funds or prerequisites. The result screen uses it to stop
+// pointing a shortfall at a branch that has nothing left to buy, and to point
+// at the loadout instead (ARCHITECTURE.md, "Result" points-at).
+export function branchExhausted(tree, state, branch) {
+  const tier = state.tier ?? 1;
+  return tree.nodes
+    .filter((node) => node.branch === branch && nodeTier(node) <= tier)
+    .every((node) => state.owned.includes(node.id));
+}
+
 export function buy(tree, state, id) {
   if (!canBuy(tree, state, id)) {
     throw new Error(`cannot buy node: ${id}`);
