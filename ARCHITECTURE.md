@@ -516,16 +516,16 @@ templates stay in the pool as cheap fillers.
   the `turn`, `orbit` and `impact` events in the ticker. The planet stays
   drawn flat; curvature is not shown at this scale. No-leak contract holds:
   nothing read ahead of sim time.
-- **Result** readouts per requirement as above; points-at: any shortfall
+- **Result** readouts per requirement as above; points-at: with
+  `vehicle.guidance === 0` on anything but an altitude contract, guidance
+  alone ("No guidance: a vertical flight cannot orbit") — no delta-v and no
+  loadout orbits a vehicle that cannot turn. Otherwise any shortfall
   (altitude, orbit, downrange, or an ascent that never inserted) →
-  propulsion/structure, plus guidance when `vehicle.guidance === 0` on
-  anything but an altitude contract ("No guidance: a vertical flight cannot
-  orbit"). A branch that is fully owned at this tier (`branchExhausted`,
-  tree.js) is not pointed at; when both are, the shortfall points at
-  `loadout` — "fuel load and turn are the levers", or "fuel load is the
-  lever" on an altitude contract, which flies vertical — naming the levers,
-  never the setting. With guidance 0 the guidance hint stands alone: no
-  loadout orbits a vehicle that cannot turn.
+  propulsion/structure; a branch that is fully owned at this tier
+  (`branchExhausted`, tree.js) is not pointed at, and when both are the
+  shortfall points at `loadout` — "fuel load and turn are the levers", or
+  "fuel load is the lever" on an altitude contract, which flies vertical —
+  naming the levers, never the setting.
 - **Tree** shows nodes with `tier <= state.tier`, grouped by branch; a tier 2
   node lists its tier 1 prerequisites by name when locked.
 - **Win, tier 1** → Continue → `advanceTier`, contracts regenerate, a short

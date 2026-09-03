@@ -614,18 +614,20 @@ export function mountScreens(ctx) {
       // hint says so without predicting which loadout the vehicle wants.
       // Turn is a lever on every flight but a sounding one (an altitude
       // contract flies vertical whatever the slider says — see doLaunch).
+      // When the guidance hint fired it stands alone: no delta-v and no
+      // loadout orbits a vehicle that cannot turn, so nothing else is true
+      // to say until guidance is owned.
       const propLeft = !branchExhausted(tree, state, 'propulsion');
       const structLeft = !branchExhausted(tree, state, 'structure');
-      if (propLeft && structLeft) {
+      if (needsGuidance) {
+        // Guidance hint only.
+      } else if (propLeft && structLeft) {
         points.push(`<p class="hint points" data-points-at="propulsion">More delta-v: propulsion raises thrust and isp…</p>`);
         points.push(`<p class="hint points" data-points-at="structure">…or structure adds propellant and, later, another stage.</p>`);
       } else if (propLeft) {
         points.push(`<p class="hint points" data-points-at="propulsion">More delta-v: propulsion raises thrust and isp.</p>`);
       } else if (structLeft) {
         points.push(`<p class="hint points" data-points-at="structure">More delta-v: structure adds propellant and, later, another stage.</p>`);
-      } else if (needsGuidance) {
-        // The guidance hint above already names the lever; "the shortfall is
-        // the flight's" would be false here — no loadout orbits without it.
       } else if (kind !== 'altitude') {
         points.push(`<p class="hint points" data-points-at="loadout">Nothing left to buy in propulsion or structure. The shortfall is the flight's: fuel load and turn are the levers.</p>`);
       } else {
