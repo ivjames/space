@@ -842,11 +842,14 @@ export function playOutcome(canvas, outcome, opts = {}) {
   // Everything below draws in the sprite's local frame: x across the body, y
   // down it, the ATTACHED body (nose excluded) centred on the origin. `segs`
   // is bottom first, as stackGeometry returns it. Colours: the body is the
-  // night palette's foreground, bands and fins its muted grey, nozzles an ink
-  // that is dark over daylight and muted grey at night, the nose the accent.
+  // night palette's foreground; bands, fins, panel line and nozzles an ink
+  // that is dark over daylight and the muted grey at night (the grey alone
+  // would vanish against a pale sky, and reads under 2:1 against the near-
+  // white tubes); the nose the accent.
 
-  /** Nozzle/ink colour for the current sky. */
-  const inkColor = () => rgba(mix(DAY_INK, rgbMuted, sky.dark), 1);
+  /** Ink colour for the current sky: dark by day, muted grey by night. */
+  const inkRgb = () => mix(DAY_INK, rgbMuted, sky.dark);
+  const inkColor = () => rgba(inkRgb(), 1);
 
   /** One stage's tube, with a darker panel line down one side so it reads as a cylinder. */
   function drawSegment(seg, top) {
@@ -854,7 +857,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.fillStyle = colors.fg;
     ctx.fillRect(-sw / 2, top, sw, sh);
     const panel = Math.max(1, Math.round(sw * 0.22));
-    ctx.fillStyle = rgba(rgbMuted, 0.45);
+    ctx.fillStyle = rgba(inkRgb(), 0.45);
     ctx.fillRect(sw / 2 - panel, top, panel, sh);
     // A near-white sprite disappears against a pale sky, so on a bright one
     // it gets a dark outline. It fades out entirely as the sky goes black.
@@ -882,7 +885,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
   /** Fins either side of the bottom stage. */
   function drawFins(seg, bottom) {
     const hw = seg.width / 2;
-    ctx.fillStyle = colors.muted;
+    ctx.fillStyle = inkColor();
     for (const side of [-1, 1]) {
       ctx.beginPath();
       ctx.moveTo(side * hw, bottom - 6);
@@ -956,7 +959,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     segs.forEach((seg, j) => {
       if (j > 0) {
         const lower = segs[j - 1];
-        ctx.fillStyle = colors.muted;
+        ctx.fillStyle = inkColor();
         ctx.fillRect(-lower.width / 2, bottoms[j], lower.width, BAND_H);
       }
       drawNozzle(seg, bottoms[j]);
@@ -1124,7 +1127,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
         ctx.fill();
       }
       ctx.rotate(p.a + p.spin * age);
-      ctx.fillStyle = p.tint < 0.55 ? colors.fg : p.tint < 0.85 ? colors.muted : colors.accent;
+      ctx.fillStyle = p.tint < 0.55 ? colors.fg : p.tint < 0.85 ? inkColor() : colors.accent;
       ctx.fillRect(-p.len / 2, -p.w / 2, p.len, p.w);
       ctx.restore();
     }
