@@ -11,6 +11,23 @@ overwritten by it; **this** file is the site's own, and everything below is
 about this site rather than about the platform. For the box itself, read the
 `ivjames/lab980.com` repo's `CLAUDE.md`.
 
+## Review timing
+
+`.claude/rules/lab980-conventions.md` says to watch a PR on a five-minute
+poll and that Codex reviews when a PR opens, when a draft is marked ready,
+and when asked. This repo adds the missing case, and it is the owner's
+standing instruction, not a suggestion:
+
+- **Five quiet minutes is the answer.** After opening a PR or pushing to
+  it, if five minutes pass with no Codex review, no reaction and no
+  comment, treat that as "no findings" and merge. Do not re-arm another
+  quiet check-in, and do not ask for a review first — a stalled bot is
+  not a reason to leave a PR sitting.
+- When Codex does respond, the conventions file's loop applies as written:
+  verify each finding before fixing it, push, resolve, re-request with
+  `@codex review` after a substantial push, then merge once it comes back
+  clean. Merging is still not deploying.
+
 ## Shape
 
 Fully **static**: the site is files served straight by nginx. No build step,
