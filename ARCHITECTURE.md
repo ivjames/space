@@ -324,8 +324,14 @@ Stable selectors so an end-to-end smoke test does not depend on copy:
 - loadout: `input[type=range][data-loadout="fuelFraction"]`
 - launch: `canvas#ascent`; tapping it skips playback
 - result: `.readout[data-readout]`, and `[data-points-at="propulsion"|"structure"|"reliability"|"guidance"|"loadout"]` when applicable
-- tree: `.row[data-node="<id>"]` with classes owned / buyable / locked
-- primary button: `#actions .btn-primary[data-action="select"|"launch"|"continue"|"back"]`
+- tree: `.row[data-node="<id>"]` with classes owned / buyable / locked.
+  Owned rows are hidden by default; `[data-toggle-owned]` (a button in the
+  `.shop-bar` above the branches, `aria-pressed` reflecting the state) shows
+  and hides them. The setting lives for the page, not in the save.
+- primary button: `#actions .btn-primary[data-action="select"|"launch"|"continue"|"back"]`.
+  On the launch screen there is none while the flight plays — `#actions` is
+  `hidden` and the ticker takes the room — and `continue` appears when
+  playback finishes. Tap the canvas to skip to that point.
 - `window.__space` exposes `{ state, tree, missions }` getters for tests only
 
 ## Testing

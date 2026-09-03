@@ -80,6 +80,8 @@ html, body {
   border-top: 1px solid var(--border);
   background-color: rgba(0, 0, 0, 0.2);
 }
+/* A screen with no action (the launch screen mid-flight) has no bar. */
+#actions[hidden] { display: none; }
 
 /* Screen padding utility */
 .screen {
@@ -545,9 +547,28 @@ input[type="range"]::-moz-range-thumb {
   cursor: pointer;
 }
 
+/* The launch screen is a column that fills #screen: the flight on top at
+   its clamped height, and the log takes every pixel left under it, whether
+   the actions bar is there (after the flight) or not (during it, when it is
+   hidden so the log has the room). The log scrolls inside its own box. */
+.screen[data-screen="launch"] {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.screen[data-screen="launch"] .ascent-wrap { flex: 0 0 auto; }
+.screen[data-screen="launch"] .pad {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.screen[data-screen="launch"] .pad > .hint { flex-shrink: 0; }
+
 ul.ticker {
   list-style: none;
-  max-height: 128px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   margin-bottom: 8px;
@@ -667,6 +688,27 @@ ul.ticker {
   border-bottom: 1px solid var(--border);
 }
 
+/* ---- Tree: owned nodes hidden by default, one toggle for the whole tree -- */
+
+.shop-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0 12px;
+}
+
+.btn-small {
+  padding: 6px 10px;
+  font-size: 0.857rem;
+}
+
+.branch-empty {
+  list-style: none;
+  padding: 10px 12px;
+  font-style: italic;
+}
+
 /* ---- Ticker: the phase 1 event kinds ------------------------------------ */
 
 .tick.orbit { color: var(--accent); font-weight: bold; }
@@ -728,11 +770,6 @@ ul.ticker {
 .tick.approach { color: var(--accent); }
 .tick.dock { color: var(--accent); font-weight: bold; }
 .tick.restart-failure, .tick.dock-failure { color: var(--fail); }
-
-/* The orbital phase adds a dozen lines to a flight that already filled the
-   box; on a 360x740 screen that is the difference between reading the last
-   line and scrolling for it. */
-ul.ticker { max-height: 150px; }
 
 /* ---- Loadout: a launch that could not be attempted ---------------------- */
 

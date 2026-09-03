@@ -132,6 +132,12 @@ function lockReason(tree, state, node) {
 
 const nodeTier = (node) => node.tier ?? 1;
 
+// Whether owned nodes are listed. Off by default: an owned node is a
+// receipt, not a choice, and on a phone the receipts push the choices below
+// the fold. Module-level so the setting survives leaving and re-entering the
+// tree screen (mountShop runs again each time) without being saved state.
+let showOwned = false;
+
 /**
  * Mount the shop into `el`.
  *
@@ -148,11 +154,18 @@ export function mountShop(el, ctx) {
   function render() {
     const state = getState();
     const maxTier = state.tier ?? 1;
-    const html = branches(tree, maxTier).map((branch) => {
+    let hiddenCount = 0;
+    const sections = branches(tree, maxTier).map((branch) => {
       const owned = branch.nodes.filter((n) => state.owned.includes(n.id)).length;
-      const multiTier = new Set(branch.nodes.map(nodeTier)).size > 1;
+      const listed = showOwned
+        ? branch.nodes
+        : branch.nodes.filter((n) => !state.owned.includes(n.id));
+      hiddenCount += branch.nodes.length - listed.length;
+      // Dividers follow the listed nodes, so hiding a whole tier hides its
+      // label too rather than leaving a heading over nothing.
+      const multiTier = new Set(listed.map(nodeTier)).size > 1;
       let shownTier = null;
-      const rows = branch.nodes.map((node) => {
+      const rows = listed.map((node) => {
         const cls = nodeState(tree, state, node);
         // The lock reason lives in the main column, not the side one: it is a
         // sentence, and a sentence in a right-aligned side column squeezes the
@@ -180,7 +193,7 @@ export function mountShop(el, ctx) {
               <div class="hint row-note">${escapeHtml(cls === 'owned' ? 'owned' : cls === 'locked' ? 'locked' : 'buy')}</div>
             </div>
           </li>`;
-      }).join('');
+      }).join('') || `<li class="hint branch-empty">All ${branch.nodes.length} owned.</li>`;
       return `
         <section class="branch">
           <h2 class="branch-head">
@@ -191,10 +204,27 @@ export function mountShop(el, ctx) {
         </section>`;
     }).join('');
 
-    el.innerHTML = html;
+    // The toggle is a real button, so Enter and Space reach it natively; only
+    // click is handled below, or a keyboard press would toggle twice.
+    const ownedTotal = state.owned.length;
+    const bar = ownedTotal === 0 ? '' : `
+      <div class="shop-bar">
+        <span class="hint">${showOwned
+          ? `${ownedTotal} owned shown`
+          : `${hiddenCount} owned hidden`}</span>
+        <button type="button" class="btn-secondary btn-small" data-toggle-owned
+          aria-pressed="${showOwned}">${showOwned ? 'Hide owned' : 'Show owned'}</button>
+      </div>`;
+
+    el.innerHTML = bar + sections;
   }
 
   function onActivate(ev) {
+    if (ev.type === 'click' && ev.target.closest?.('[data-toggle-owned]')) {
+      showOwned = !showOwned;
+      render();
+      return;
+    }
     const row = ev.target.closest?.('[data-node]');
     if (!row || !el.contains(row)) return;
     const id = row.getAttribute('data-node');
