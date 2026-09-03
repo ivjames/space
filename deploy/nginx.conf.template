@@ -31,8 +31,9 @@ server {
     }
 
     # The service worker must revalidate too, or an update waits on the
-    # browser's own 24h cap. It uses stale-while-revalidate internally, so
-    # a fresh sw.js is all a deploy needs to propagate.
+    # browser's own 24h cap. Its cache name carries the deployed commit
+    # (stamped by `space deploy`), so a fresh sw.js is all a deploy needs to
+    # propagate: the worker is cache-first and never revalidates the rest.
     location = /sw.js {
         include snippets/lab980-security-headers.conf;
         add_header Cache-Control "no-cache" always;

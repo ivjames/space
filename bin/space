@@ -182,6 +182,15 @@ cmd_deploy() {
     sed -i "s/^  const BUILD = '[^']*';/  const BUILD = '$after';/" index.html
     log "stamped build $after into index.html"
   fi
+  # Same stamp into the service worker's cache name. This one is load-bearing,
+  # not cosmetic: the worker is cache-first, and a byte-different sw.js is
+  # what makes an installed PWA fetch the new build (see sw.js's own header).
+  # Without it a deploy is invisible to anyone who has the app installed.
+  # Anchored to the declaration line for the same reason as above.
+  if grep -q "^const CACHE_NAME = 'space-" sw.js 2>/dev/null; then
+    sed -i "s/^const CACHE_NAME = 'space-[^']*';/const CACHE_NAME = 'space-$after';/" sw.js
+    log "stamped build $after into sw.js"
+  fi
   log "Done. (Static files serve straight from disk — no reload needed.)"
 }
 
@@ -203,6 +212,11 @@ cmd_status() {
   build="$(printf '%s' "$page" | grep -o "const BUILD = '[^']*'" | cut -d"'" -f2 | head -1 || true)"
   printf 'live:      https://%s/  ->  HTTP %s  (build %s)\n' \
     "$FQDN" "${code:-unreachable}" "${build:-n/a}"
+  # The worker's stamp is the one an installed app actually updates on, so
+  # report it next to the page's: the two should agree after every deploy.
+  local worker
+  worker="$(curl -s --max-time 10 "https://$FQDN/sw.js" | grep -o "^const CACHE_NAME = 'space-[^']*'" | cut -d"'" -f2 | head -1 || true)"
+  printf 'worker:    cache %s\n' "${worker:-n/a}"
   local pem="/etc/letsencrypt/live/$FQDN/cert.pem"
   if [ -r "$pem" ]; then
     local end days

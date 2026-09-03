@@ -78,11 +78,22 @@ adds its own).
 
 ## Things worth knowing
 
-- The service worker is stale-while-revalidate, so a deploy reaches an
-  installed PWA on the visit *after* the next one, with no cache-name bump.
-  `sw.js` and `index.html` are served `no-cache` by the vhost for that reason.
+- The service worker is cache-first on a cache named for the deployed
+  commit. `space deploy` stamps the commit into `sw.js`'s `CACHE_NAME` as
+  well as the page's `BUILD`; the browser re-fetches `sw.js` on every load
+  (the vhost serves it and `index.html` `no-cache`), a changed worker
+  precaches the whole app once with the HTTP cache bypassed, and the page
+  shows "Update ready — tap to reload". So a deploy reaches an installed PWA
+  on the first load after it, one tap away, and costs one request per load
+  otherwise. Unstamped (`space-dev`) the worker is network-first, so a local
+  checkout never serves stale files. The JS/CSS files carry no
+  `Cache-Control` at all; that is fine only because the worker never
+  revalidates through the HTTP cache — keep it that way.
 - `index.html` carries `const BUILD = 'dev'`; `space deploy` stamps the commit
-  into it and `space status` reads it back. `window.__BUILD` exposes it.
+  into it and `space status` reads it back, next to the worker's stamp.
+  `window.__BUILD` exposes it. `test/sw.test.js` pins both stamp lines to
+  the exact shape the deploy `sed` matches, and the precache list to the
+  module tree.
 - `test/`, `tools/`, `package.json` and `ARCHITECTURE.md` are all in the web
   root. `*.md` and dotfiles are denied by the vhost; the rest is public and
   harmless.

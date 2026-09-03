@@ -42,8 +42,12 @@ space deploy
 ```
 
 That is `git fetch` + `git reset --hard origin/main` of the checkout, plus a
-`sed` that stamps the deployed commit into the page's `BUILD` constant if it
-has one. No build, no restart, no reload.
+`sed` that stamps the deployed commit into the page's `BUILD` constant and
+into the service worker's `CACHE_NAME`. No build, no restart, no reload on
+the box. The worker stamp is what propagates the deploy: a browser that has
+the app installed re-fetches `sw.js` on its next load, sees a new cache
+name, precaches the new build, and shows "Update ready — tap to reload".
+`space status` prints both stamps; they should agree.
 
 ## Check it
 
