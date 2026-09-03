@@ -36,16 +36,15 @@
         // first install there was no controller before, and this page
         // already came from the network, so there is nothing to offer.
         const hadController = !!navigator.serviceWorker.controller;
+        const el = document.getElementById('update');
+        const reload = () => location.reload();
+        el.addEventListener('click', reload);
+        el.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') reload();
+        });
         navigator.serviceWorker.addEventListener('controllerchange', () => {
           if (!hadController) return;
-          const el = document.getElementById('update');
-          if (!el) return;
           el.hidden = false;
-          const reload = () => location.reload();
-          el.addEventListener('click', reload);
-          el.addEventListener('keydown', (ev) => {
-            if (ev.key === 'Enter' || ev.key === ' ') reload();
-          });
         });
         navigator.serviceWorker.register('sw.js').catch(err => {
           console.error('Service worker registration failed:', err);
