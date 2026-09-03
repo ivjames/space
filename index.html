@@ -15,6 +15,7 @@
 </head>
 <body>
   <div id="app">
+    <div id="update" hidden role="button" tabindex="0">Update ready — tap to reload</div>
     <header id="hud"></header>
     <main id="screen"></main>
     <footer id="actions"></footer>
@@ -27,6 +28,25 @@
     // Register service worker over http(s), not file://
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       window.addEventListener('load', () => {
+        // A deploy ships a new sw.js (its cache name carries the commit);
+        // once that worker has precached the new build and claimed this
+        // page, `controllerchange` fires. Offer the reload rather than
+        // forcing it: a launch may be playing, and the save is already on
+        // disk, so the tap costs nothing but the animation. On the very
+        // first install there was no controller before, and this page
+        // already came from the network, so there is nothing to offer.
+        const hadController = !!navigator.serviceWorker.controller;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (!hadController) return;
+          const el = document.getElementById('update');
+          if (!el) return;
+          el.hidden = false;
+          const reload = () => location.reload();
+          el.addEventListener('click', reload);
+          el.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') reload();
+          });
+        });
         navigator.serviceWorker.register('sw.js').catch(err => {
           console.error('Service worker registration failed:', err);
         });

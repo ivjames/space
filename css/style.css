@@ -788,3 +788,18 @@ ul.ticker {
   letter-spacing: 0;
   margin: 0 0 10px;
 }
+
+/* ---- Update prompt (index.html): shown when a deployed build has been
+   precached by a new service worker and is one reload away. ------------- */
+#update {
+  flex-shrink: 0;
+  padding: 10px 12px;
+  text-align: center;
+  font-size: 0.857rem;
+  letter-spacing: 0.5px;
+  color: var(--bg);
+  background: var(--accent);
+  cursor: pointer;
+  user-select: none;
+}
+#update[hidden] { display: none; }

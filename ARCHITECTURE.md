@@ -24,7 +24,8 @@ below is a change to this file first.
 ```
 index.html                 app shell, portrait, loads js/main.js as a module
 manifest.webmanifest       PWA manifest
-sw.js                      service worker: cache-first for the app shell
+sw.js                      service worker: cache-first on a per-deploy cache;
+                           its CACHE_NAME stamp is the update signal
 css/style.css
 js/main.js                 boot: load save -> build state -> mount UI
 js/core/rng.js             seeded PRNG
