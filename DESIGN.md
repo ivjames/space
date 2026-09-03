@@ -109,6 +109,10 @@ Two sources, both pre-launch. A third is available but weak.
 2. **Reliability rolls.** Each component has a reliability stat. Failures
    happen visibly at a stage of the flight ("second stage cut out at T+142s").
    Reliability improves with tech and with flight count on that component.
+   Not every failed roll ends the flight: an engine can run below spec, and
+   guidance can fail and drift the vehicle off its program. Both leave the
+   rocket flying and put it off target ("short by 400 m/s" with the reason
+   appended) rather than on the ground, and each points at its own branch.
 3. **Environmental variance** (weather, solar event). Cheap, but pure
    randomness feels unfair if the player had no lever against it. Use
    sparingly, and only where a tech node gives a lever (weather forecasting,
@@ -119,10 +123,14 @@ ended where it did, and the readout must point at a specific tree branch:
 "short by 400 m/s" points at engines or staging, "stage 2 ignition failure"
 points at reliability. That link is the reason the tree exists.
 
-A reliability failure need not end the run at all: abort systems, bought
-from the reliability branch like everything else (Decision 5 — funds, not a
-timer), let the stack above a failed stage separate clear and fly on under
-its own power. The player still sees the bang and the failed stage falling
+Even a failure that *does* put an engine out need not end the run — a
+different lever from the milder rolls above, and a purchase rather than a
+softer outcome: abort systems, bought from the reliability branch like
+everything else (Decision 5 — funds, not a timer), let the stack above a
+failed stage separate clear and fly on under its own power. An anomaly is
+not escapable, because there is nothing to escape: the engines are still
+running and dropping a healthy stage would not put the vehicle back on its
+program. The player still sees the bang and the failed stage falling
 away, but the rocket keeps climbing, and the readout names both things —
 the failure and, if the flight still comes up short, the shortfall — so the
 tree purchase reads as "the failure didn't cost me the run" rather than as

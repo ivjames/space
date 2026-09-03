@@ -202,6 +202,58 @@ export const TURN_END_LAZY = 160000;
 /** Altitude (m) at which a `turn: 1` program reaches horizontal. */
 export const TURN_END_HARD = 60000;
 
+// --- Anomalies: guidance failure, engine underperformance -------------------
+// Two more things that can go wrong, neither of which ends the burn. A
+// component failure (ignition, burn, restart) cuts thrust and the run reads
+// as that failure; an ANOMALY leaves the engines running and puts the vehicle
+// somewhere other than where it was aiming. The run then reads as the usual
+// miss ("Short by 410 m/s", "Apoapsis 240 km, periapsis -1800 km") with the
+// anomaly's own sentence appended, so the result screen can point at the
+// branch that makes it rarer (DESIGN.md §5: readable failure is the point).
+//
+// GUIDANCE FAILURE. One roll per GUIDED flight (vehicle.guidance >= 1 and the
+// loadout is not `vertical`; an unguided or sounding flight has no guidance to
+// lose) against `vehicle.guidanceReliability`. When it fails, the flight
+// computer drops off its program at a random moment of the nominal powered
+// flight and the thrust vector drifts away from the program from then on, in
+// a random direction, at GUIDANCE_DRIFT_RATE up to GUIDANCE_DRIFT_MAX. Early
+// in the ascent that lobs the vehicle or lays it over into drag; late, it
+// pulls periapsis down or apoapsis up — either way off target, not on the
+// ground.
+//
+// ENGINE UNDERPERFORMANCE. One roll per IGNITION against the stage's own
+// reliability, after the ignition roll. When it fails the stage runs below
+// spec for its whole burn: thrust scaled by (1 - deficit), isp by
+// (1 - deficit / 2), with the deficit drawn uniformly from
+// [ENGINE_DEFICIT_MIN, ENGINE_DEFICIT_MAX]. Lower thrust lengthens the burn
+// (more gravity loss); lower isp is delta-v gone outright. The same stage can
+// then still fail its mid-burn roll — the rolls are independent.
+//
+// Both are reported in `outcome.anomalies` and as `'anomaly'` timeline events;
+// `outcome.failure` is untouched, because nothing here ends the flight.
+//
+// NEITHER IS ESCAPABLE. An abort (STAGE ABORTS above) exists to throw the
+// stack clear of a stage that has physically failed, and neither anomaly is
+// that: an underperforming engine is still burning, and a guidance failure
+// leaves every engine healthy — dropping a working stage would not give the
+// vehicle its program back, it would only cost it the rest of the burn. This
+// needs no guard: an anomaly never calls cutThrust, which is the only place
+// an abort is decided, so only the 'ignition' and 'burn' failure kinds can
+// ever be escaped.
+
+/**
+ * Angular rate, rad/s, at which a failed guidance drifts off the program:
+ * 0.3 degrees per second, so a failure a minute before the end of the burn
+ * has the vehicle 18 degrees off by cutoff.
+ */
+export const GUIDANCE_DRIFT_RATE = (0.3 * Math.PI) / 180;
+/** Largest drift a guidance failure reaches, rad (30 degrees). */
+export const GUIDANCE_DRIFT_MAX = Math.PI / 6;
+/** Smallest thrust deficit an underperforming engine shows (3%). */
+export const ENGINE_DEFICIT_MIN = 0.03;
+/** Largest thrust deficit an underperforming engine shows (12%). */
+export const ENGINE_DEFICIT_MAX = 0.12;
+
 const EPS = 1e-9;
 const HALF_PI = Math.PI / 2;
 
@@ -438,6 +490,19 @@ function escapeSentence(failure) {
 }
 
 /**
+ * "Guidance failure at T+84s." / "Stage 2 engine underperforming: 91% thrust."
+ * A guidance failure names no stage: the flight computer is the vehicle's,
+ * not a stage's, and `anomaly.stage` records which stage was flying at the
+ * time for the renderer rather than for the sentence.
+ */
+function anomalySentence(anomaly) {
+  if (anomaly.kind === 'guidance') {
+    return `Guidance failure at T+${Math.round(anomaly.t)}s.`;
+  }
+  return `Stage ${anomaly.stage} engine underperforming: ${Math.round(anomaly.factor * 100)}% thrust.`;
+}
+
+/**
  * "500 m" / "3.2 km" / "14 km" — a separation between two spacecraft, which
  * spans four orders of magnitude across the tier (50 km down to 25 m), so it
  * keeps a decimal where one carries information and drops it where it does not.
@@ -546,11 +611,22 @@ function raisePeriapsisDeltaV(apo, fromPeri, toPeri) {
  *
  * RNG DRAW ORDER. The ascent's draw order is untouched (ARCHITECTURE.md: it is
  * the save's replay contract), and the orbital phase draws only after every
- * ascent draw has been made. Within it: one draw per RESTART CONSUMED, in burn
- * order — match burn 1, match burn 2, the phasing pair (one draw for both), the
- * approach (none when the vehicle has `rcs`) — followed, on a dock mission that
- * reaches step 5, by exactly one draw for the docking roll. A step that is
- * never reached, is free, or cannot be afforded draws nothing.
+ * ascent draw has been made. Within it, per RESTART CONSUMED, in burn order —
+ * match burn 1, match burn 2, the phasing pair (one relight for both), the
+ * approach (none when the vehicle has `rcs`): the restart roll; then, only if
+ * it passed, the performance roll; then, only if THAT failed, the deficit —
+ * followed, on a dock mission that reaches step 5, by exactly one draw for the
+ * docking roll. A step that is never reached, is free, or cannot be afforded
+ * draws nothing.
+ *
+ * UNDERPERFORMING RELIGHTS. A relight is an ignition, so it rolls for
+ * performance like one (see the anomalies block above). An impulsive burn does
+ * not care about thrust, but a lower isp burns more propellant for the same
+ * delta-v: an underperforming relight delivers the burn it was asked for and
+ * charges the budget dv / (1 - deficit / 2) for it, so a later burn can turn
+ * out to be unaffordable — the sequence then stops there, for want of
+ * delta-v, exactly as it would have with a smaller reserve. Every burn under
+ * the same relight (the phasing pair) is charged the same way.
  *
  * @param {object} vehicle
  * @param {object} target    { id, name, periapsis, apoapsis, phase }
@@ -560,7 +636,7 @@ function raisePeriapsisDeltaV(apo, fromPeri, toPeri) {
  * @param {object} rng
  * @param {boolean} wantsDock
  * @returns {{ orbital: object, events: object[], failure: object|null,
- *             readout: string, shortBy: number }}
+ *             anomalies: object[], readout: string, shortBy: number }}
  */
 function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseErrorDeg, rng, wantsDock) {
   const stages = vehicle?.stages ?? [];
@@ -616,30 +692,61 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
   let shortBy = 0;
   const burns = [];
   const events = [];
+  const anomalies = [];
+  // Budget charged per m/s of the burns the latest relight covers: 1 to spec,
+  // more when the relight underperforms (see UNDERPERFORMING RELIGHTS above).
+  let relightCost = 1;
 
-  /** Consume one restart, rolling against the final stage's reliability. */
+  /**
+   * Consume one restart: the restart roll against the final stage's
+   * reliability, then — a relight is an ignition — the performance roll.
+   */
   const restartOk = (time) => {
     restartsLeft -= 1;
-    if (rng.next() < reliability) return true;
-    failure = { t: time, stage: stageNo, kind: 'restart' };
-    stoppedAt = 'restart-failure';
-    events.push({
-      t: time, kind: 'restart-failure', text: failureSentence(failure), stage: stageNo,
-    });
-    return false;
-  };
-
-  const spend = (time, kindName, dv, elements, text) => {
-    dvLeft -= dv;
-    dvUsed += dv;
-    burns.push({ t: time, kind: kindName, dv, ok: true, elements });
-    events.push({ t: time, kind: 'burn', text });
+    if (!(rng.next() < reliability)) {
+      failure = { t: time, stage: stageNo, kind: 'restart' };
+      stoppedAt = 'restart-failure';
+      events.push({
+        t: time, kind: 'restart-failure', text: failureSentence(failure), stage: stageNo,
+      });
+      return false;
+    }
+    relightCost = 1;
+    if (!(rng.next() < reliability)) {
+      const deficit = lerp(ENGINE_DEFICIT_MIN, ENGINE_DEFICIT_MAX, rng.next());
+      relightCost = 1 / (1 - deficit / 2);
+      const anomaly = { t: time, stage: stageNo, kind: 'underperform', factor: 1 - deficit };
+      anomalies.push(anomaly);
+      events.push({ t: time, kind: 'anomaly', text: anomalySentence(anomaly), stage: stageNo });
+    }
+    return true;
   };
 
   const cannotAfford = (step, needed) => {
     stoppedAt = 'deltaV';
     stoppedStep = step;
     shortBy = Math.max(0, needed - dvLeft);
+  };
+
+  /**
+   * Make a burn of `dv` under the latest relight, charging the budget at
+   * `relightCost`. False, and the sequence stops for want of delta-v, when
+   * the charge is more than is left — only ever the case after an
+   * underperforming relight, since each step is priced to spec up front;
+   * `restAfter` is what the steps after this burn would still need, so
+   * `shortBy` reads the same way it does for an up-front stop.
+   */
+  const spend = (time, kindName, dv, elements, text, step, restAfter) => {
+    const cost = dv * relightCost;
+    if (dvLeft < cost - EPS) {
+      cannotAfford(step, cost + restAfter);
+      return false;
+    }
+    dvLeft -= cost;
+    dvUsed += cost;
+    burns.push({ t: time, kind: kindName, dv, ok: true, elements });
+    events.push({ t: time, kind: 'burn', text });
+    return true;
   };
 
   // --- 2. Match ------------------------------------------------------------
@@ -658,14 +765,16 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
     const dv1 = Math.min(legs.dv1, dvMatch);
     const dv2 = dvMatch - dv1;
     if (restartOk(tMatch1)) {
-      spend(tMatch1, 'match', dv1, transferElements,
-        `Orbit match burn 1: ${Math.round(dv1)} m/s.`);
-      if (restartOk(tMatch2)) {
-        spend(tMatch2, 'match', dv2, targetElements,
-          `Orbit match burn 2: ${Math.round(dv2)} m/s.`);
-        matched = true;
-      } else {
-        burns.push({ t: tMatch2, kind: 'match', dv: 0, ok: false, elements: transferElements });
+      if (spend(tMatch1, 'match', dv1, transferElements,
+        `Orbit match burn 1: ${Math.round(dv1)} m/s.`, 'orbit match', dv2 + dvPhase + APPROACH_DV)) {
+        if (restartOk(tMatch2)) {
+          if (spend(tMatch2, 'match', dv2, targetElements,
+            `Orbit match burn 2: ${Math.round(dv2)} m/s.`, 'orbit match', dvPhase + APPROACH_DV)) {
+            matched = true;
+          }
+        } else {
+          burns.push({ t: tMatch2, kind: 'match', dv: 0, ok: false, elements: transferElements });
+        }
       }
     } else {
       burns.push({ t: tMatch1, kind: 'match', dv: 0, ok: false, elements: insertionElements });
@@ -698,13 +807,14 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
         periapsis: target.periapsis,
         apoapsis: target.apoapsis + sign * 2 * da,
       };
-      spend(tPhase1, 'phase', half, phasingElements,
-        `Phasing burn 1: ${Math.round(half)} m/s.`);
       // One restart covers the pair: the second burn is the same relight
       // window, so it costs no further restart and no further roll.
-      spend(tPhase2, 'phase', half, targetElements,
-        `Phasing burn 2: ${Math.round(half)} m/s.`);
-      phased = true;
+      if (spend(tPhase1, 'phase', half, phasingElements,
+        `Phasing burn 1: ${Math.round(half)} m/s.`, 'phasing', half + APPROACH_DV)
+        && spend(tPhase2, 'phase', half, targetElements,
+          `Phasing burn 2: ${Math.round(half)} m/s.`, 'phasing', APPROACH_DV)) {
+        phased = true;
+      }
     }
   }
 
@@ -718,13 +828,17 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
     } else if (dvLeft < APPROACH_DV) {
       cannotAfford('approach', APPROACH_DV);
     } else if (rcs || restartOk(tApproach)) {
-      closestApproach = (NAV_APPROACH[nav] * (1 + absErr / 30)) / (rcs ? 2 : 1);
-      spend(tApproach, 'approach', APPROACH_DV, targetElements,
-        `Approach burn: ${Math.round(APPROACH_DV)} m/s.`);
-      events.push({
-        t: tApproach, kind: 'approach', text: `Closest approach ${formatRange(closestApproach)}.`,
-      });
-      approached = true;
+      // Fine thrusters are not the engine: with rcs there is no relight, and
+      // nothing to underperform.
+      if (rcs) relightCost = 1;
+      if (spend(tApproach, 'approach', APPROACH_DV, targetElements,
+        `Approach burn: ${Math.round(APPROACH_DV)} m/s.`, 'approach', 0)) {
+        closestApproach = (NAV_APPROACH[nav] * (1 + absErr / 30)) / (rcs ? 2 : 1);
+        events.push({
+          t: tApproach, kind: 'approach', text: `Closest approach ${formatRange(closestApproach)}.`,
+        });
+        approached = true;
+      }
     } else {
       burns.push({ t: tApproach, kind: 'approach', dv: 0, ok: false, elements: targetElements });
     }
@@ -787,6 +901,7 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
     },
     events,
     failure,
+    anomalies,
     readout,
     shortBy,
   };
@@ -904,6 +1019,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       shortBy: Math.max(0, deltaVRequired),
       failure: null,
       escapes: 0,
+      anomalies: [],
       readout,
       timeline,
       samples,
@@ -927,6 +1043,8 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   let thrustDone = false;      // no further burn is coming (last burnout, cutoff, or a TERMINAL failure)
   let propRemaining = 0;
   let mdot = 0;
+  let stageThrust = 0;         // this burn's thrust, N — below spec if underperforming
+  let stageIsp = 0;            // this burn's isp, s — likewise
   let burnRollAt = Infinity;   // t of this stage's mid-burn reliability roll
   let burnRollPending = false;
   // Stage aborts. `escape` is how many stages, from the bottom, an abort system
@@ -938,6 +1056,18 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   const escape = vehicle?.escape ?? 0;
   let ignitionAt = Infinity;
   const escapes = [];
+
+  // Anomalies (see the constants block): things that went wrong without
+  // ending the burn. `guidanceFailAt` is the drawn moment a failed guidance
+  // drops off its program and `guidanceDir` which way it drifts, both drawn
+  // at liftoff; `guidanceDriftFrom` is the integrator boundary the drop was
+  // announced at, which is where `deriv` starts the drift from.
+  const anomalies = [];
+  let guidanceFailAt = Infinity;
+  let guidanceDir = 0;
+  let guidanceDriftFrom = Infinity;
+  let guidanceEmitted = false;
+  let poweredEndT = Infinity;  // t at which no further burn was coming
 
   let maxAltitude = 0;
   let maxSpeed = 0;
@@ -1018,6 +1148,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       failure = { t, stage: stageNo(), kind: failureKind };
       thrusting = false;
       thrustDone = true;
+      poweredEndT = t;
       burnRollPending = false;
       burnRollAt = Infinity;
       event(t, 'failure', failureSentence(failure), { stage: stageNo(), alt });
@@ -1042,19 +1173,26 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     thrusting = false;
     burnRollPending = false;
     burnRollAt = Infinity;
-    ignitionAt = t + ESCAPE_DELAY;   // thrustDone stays false: a burn is still coming
+    // thrustDone stays false and `poweredEndT` is NOT set: a burn is still
+    // coming, so powered flight has not ended and a guidance moment drawn
+    // inside the coast still has a program left to drop off.
+    ignitionAt = t + ESCAPE_DELAY;
   };
 
   /**
-   * Ignite the current stage: reliability roll, then (on success) pick the
-   * moment of this stage's single mid-burn roll.
+   * Ignite the current stage: reliability roll, performance roll, then pick
+   * the moment of this stage's single mid-burn roll.
    *
-   * rng draw order per ignition: (1) the ignition roll, (2) — only if it
-   * passed — the fraction of the burn at which the burn roll happens, and
-   * later (3) the burn roll itself. An ignition failure therefore consumes
-   * exactly one draw. UNCHANGED from phase 0: the draw order is the save's
-   * replay contract. A post-abort ignition (see cutThrust) is this same
-   * routine at t + ESCAPE_DELAY, so it rolls exactly as one after a burnout.
+   * rng draw order per ignition: (1) the ignition roll; then, only if it
+   * passed, (2) the performance roll, (3) — only if THAT failed — the thrust
+   * deficit, (4) the fraction of the burn at which the burn roll happens, and
+   * later (5) the burn roll itself. An ignition failure therefore consumes
+   * exactly one draw, as in phase 0. The performance roll is new and sits
+   * before the burn-roll fraction; the draw order is the save's replay
+   * contract and this is its documented shape (ARCHITECTURE.md, anomalies).
+   * A post-abort ignition (see cutThrust) is this same routine at
+   * t + ESCAPE_DELAY, so it rolls exactly as one after a burnout — an
+   * ignition is an ignition, and it can underperform like any other.
    */
   const ignite = () => {
     const stage = stages[stageIndex];
@@ -1065,8 +1203,22 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       return;
     }
 
+    // Does it run to spec? A stage that does not is still a stage that burns;
+    // it just burns weaker and dirtier for the whole of its burn.
+    stageThrust = stage.thrust;
+    stageIsp = stage.isp;
+    if (!(rng.next() < stage.reliability)) {
+      const deficit = lerp(ENGINE_DEFICIT_MIN, ENGINE_DEFICIT_MAX, rng.next());
+      const factor = 1 - deficit;
+      stageThrust = stage.thrust * factor;
+      stageIsp = stage.isp * (1 - deficit / 2);
+      const anomaly = { t, stage: stageNo(), kind: 'underperform', factor };
+      anomalies.push(anomaly);
+      event(t, 'anomaly', anomalySentence(anomaly), { stage: stageNo(), alt: altOf(x, y) });
+    }
+
     propRemaining = stage.propMass * fuelFraction;
-    mdot = stage.isp > 0 ? stage.thrust / (stage.isp * G0) : 0;
+    mdot = stageIsp > 0 ? stageThrust / (stageIsp * G0) : 0;
     if (mdot <= 0 || propRemaining <= 0) {
       // No usable burn: treat as an immediate burnout, not a hang.
       thrusting = true;
@@ -1096,11 +1248,12 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     const stage = stages[stageIndex];
     const above = stackMassAbove(vehicle, stageIndex, fuelFraction);
     const mStart = above + stage.dryMass + stage.propMass * fuelFraction;
-    deltaVAchieved += stage.isp * G0 * Math.log(mStart / mass);
+    deltaVAchieved += stageIsp * G0 * Math.log(mStart / mass);
     reserveProp = propRemaining;
     reserveMass = mass;
     thrusting = false;
     thrustDone = true;
+    poweredEndT = t;
     burnRollPending = false;
     burnRollAt = Infinity;
     event(t, 'burnout', `Stage ${stageNo()} cutoff.`, { stage: stageNo(), alt: altOf(x, y) });
@@ -1112,7 +1265,10 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     thrusting = false;
     burnRollPending = false;
     burnRollAt = Infinity;
-    deltaVAchieved += stageDeltaV(vehicle, stageIndex, fuelFraction);
+    // The ideal stage delta-v, scaled to the isp the burn actually ran at —
+    // identical to stageDeltaV when the engine ran to spec.
+    deltaVAchieved += stageDeltaV(vehicle, stageIndex, fuelFraction)
+      * (stage.isp > 0 ? stageIsp / stage.isp : 1);
     event(t, 'burnout', `Stage ${stageNo()} burnout.`, { stage: stageNo(), alt: altOf(x, y) });
 
     if (stageIndex + 1 < stages.length) {
@@ -1124,6 +1280,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       ignite();
     } else {
       thrustDone = true;
+      poweredEndT = t;
     }
   };
 
@@ -1144,7 +1301,12 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     let ay = -gmag * uy;
 
     if (thrustN > 0 && m > 0) {
-      const theta = pitch(tt, alt) || 0;
+      // The program, plus whatever a failed guidance has drifted off it by.
+      let theta = pitch(tt, alt) || 0;
+      if (tt >= guidanceDriftFrom) {
+        theta += guidanceDir
+          * Math.min(GUIDANCE_DRIFT_RATE * (tt - guidanceDriftFrom), GUIDANCE_DRIFT_MAX);
+      }
       const c = Math.cos(theta);
       const s = Math.sin(theta);
       // cos(theta) * up + sin(theta) * horizontal, with horizontal = (uy, -ux).
@@ -1165,6 +1327,27 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   ignite();
   if (!failure) {
     event(0, 'liftoff', 'Liftoff.', { stage: 1, alt: 0 });
+
+    // The guidance roll, once per guided flight, drawn right after the first
+    // stage's ignition draws: (1) the roll against guidanceReliability; only
+    // if it failed, (2) when in the nominal powered flight it fails, (3) which
+    // way it drifts. An unguided or sounding flight draws nothing here, so
+    // tier 1 flights keep their phase 0 draw order exactly. The failure
+    // itself is announced from the integrator loop when its moment arrives.
+    const guided = (vehicle?.guidance ?? 0) >= 1 && !loadout?.vertical;
+    if (guided) {
+      const guidanceReliability = Number.isFinite(vehicle?.guidanceReliability)
+        ? vehicle.guidanceReliability
+        : 1;
+      if (!(rng.next() < guidanceReliability)) {
+        const poweredDuration = stages.reduce((sum, s) => {
+          const rate = s.isp > 0 ? s.thrust / (s.isp * G0) : 0;
+          return sum + (rate > 0 ? (s.propMass * fuelFraction) / rate : 0);
+        }, 0);
+        guidanceFailAt = rng.next() * poweredDuration;
+        guidanceDir = rng.next() < 0.5 ? -1 : 1;
+      }
+    }
   }
   pushSample();
   nextSampleAt = sampleEvery;
@@ -1186,7 +1369,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
         // Partial burn: credit the delta-v actually produced so far.
         const above = stackMassAbove(vehicle, stageIndex, fuelFraction);
         const mStart = above + stage.dryMass + stage.propMass * fuelFraction;
-        deltaVAchieved += stage.isp * G0 * Math.log(mStart / mass);
+        deltaVAchieved += stageIsp * G0 * Math.log(mStart / mass);
         cutThrust('burn');
       }
       continue;
@@ -1194,6 +1377,26 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     if (thrusting && propRemaining <= EPS) {
       burnout();
       continue;
+    }
+    // Guidance drops off its program: announced at the first boundary at or
+    // after its drawn moment, the same rule as the mid-burn roll, and the
+    // drift starts from that boundary, so the trajectory up to it is
+    // independent of the rng.
+    if (!guidanceEmitted && t >= guidanceFailAt - EPS) {
+      guidanceEmitted = true;
+      // Unless its moment came after the last burn ended (a shortened burn,
+      // or an earlier failure): then there was no program left to drop off,
+      // and it never happened. A moment inside the final step of powered
+      // flight is still powered flight — the burn ended at this boundary,
+      // before this check ran — so it is announced at the instant the burn
+      // ended, where the drift has no thrust left to act on.
+      if (!thrustDone || guidanceFailAt <= poweredEndT + EPS) {
+        const at = thrustDone ? poweredEndT : t;
+        guidanceDriftFrom = at;
+        const anomaly = { t: at, stage: stageNo(), kind: 'guidance', direction: guidanceDir };
+        anomalies.push(anomaly);
+        event(at, 'anomaly', anomalySentence(anomaly), { stage: stageNo(), alt: altOf(x, y) });
+      }
     }
 
     const altBefore = altOf(x, y);
@@ -1217,7 +1420,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     step = Math.min(step, maxTime - t);
     if (step <= EPS) break;
 
-    const thrustN = thrusting ? stages[stageIndex].thrust : 0;
+    const thrustN = thrusting ? stageThrust : 0;
 
     // RK2 midpoint. Mass at the midpoint accounts for propellant already burnt.
     const k1 = deriv(x, y, vx, vy, mass, t, thrustN);
@@ -1436,6 +1639,9 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     if ((failure === null || failure.escaped) && orbitalResult.failure) {
       failure = orbitalResult.failure;
     }
+    // Anomalies are all carried, in time order: the relights come after
+    // every ascent event.
+    anomalies.push(...orbitalResult.anomalies);
   }
 
   // ---- Outcome ------------------------------------------------------------
@@ -1549,8 +1755,13 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     readout = `Reached ${formatAltitude(maxAltitude)}. Short by ${Math.round(shortBy)} m/s.`;
   }
   // Every abort flown, in order, as its own clause: "Stage 1 engine failure at
-  // T+40s; stage 2 escaped clear."
+  // T+40s; stage 2 escaped clear." Failures first, then anomalies: what the
+  // flight survived, then what merely went wrong on it.
   for (const f of escapes) readout += ` ${escapeSentence(f)}`;
+  // Whatever the verdict, an anomaly is worth saying: on a miss it is the
+  // reason, and on a success it still points the result screen at the branch
+  // that makes it rarer, the same way a survived failure does.
+  for (const anomaly of anomalies) readout += ` ${anomalySentence(anomaly)}`;
 
   // The end lands after the last orbital event, so the ticker's final line is
   // still its final line once the timeline is sorted.
@@ -1569,6 +1780,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     shortBy,
     failure,
     escapes: escapes.length,
+    anomalies,
     readout,
     timeline,
     samples,

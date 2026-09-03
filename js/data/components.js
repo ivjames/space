@@ -66,6 +66,14 @@ export const baseVehicle = {
   // buildVehicle (js/core/vehicle.js) must accept unknown top-level numeric
   // stats from baseComponents for that effect to resolve.
   guidance: 0,
+  // Probability, per guided flight, that the flight computer stays on its
+  // program (ARCHITECTURE.md, "Anomalies"). Only rolled once `guidance` is
+  // 1 or more and the loadout is not vertical, so it is inert on the starter
+  // and on every sounding flight; the tier 2 guidance branch's second node
+  // (guide-2, js/data/tree.js) raises it. The resolver treats a vehicle that
+  // does not declare it as 1 (never fails), so hand-written fixtures are
+  // unaffected.
+  guidanceReliability: 0.9,
   // Phase 2 (ARCHITECTURE.md, "Phase 2 -- tier 3, orbital maneuvering"):
   // five more integer stats, all 0 on the starter, all set/raised by tier 3
   // tree nodes (js/data/tree.js) and read by the resolver's orbital phase

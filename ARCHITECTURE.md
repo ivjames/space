@@ -138,7 +138,8 @@ Outcome:
 //   kinds: 'liftoff' | 'burnout' | 'separation' | 'ignition' | 'failure'
 //          | 'apogee' | 'goal' | 'end'
 //   a 'failure' event can carry `escaped: true` and a 'separation' event
-//   `{ abort: true }` — see "Stage abort systems" below
+//   `{ abort: true }` — see "Stage abort systems" below; later phases add
+//   'turn', 'orbit', 'insertion' and 'anomaly' (see "Anomalies", last)
 ```
 
 Physics, phase 0: 2D point mass from day one (position, velocity vectors),
@@ -215,7 +216,18 @@ export function generateContracts(state, missions, rng, count = 3)
 export function floorContract(missions)
 export function lockReasons(state, m)   // -> [{ kind, ... }], [] = offerable
 export function isEligible(state, m)    // !m.floor && lockReasons(...) is empty
+export function boardStale(state, missions, count = 3) // redraw state.contracts?
 ```
+
+`boardStale` says when a board drawn earlier no longer matches the state:
+it holds an offer that is not eligible any more, or it fell short of the
+current tier (a slot empty or reached back to an earlier tier) and a
+current-tier template it does not hold has become eligible since — the
+"bought guidance, board still has no orbit contract" case. A board whose
+drawn slots are all eligible current-tier offers is never stale, so a
+purchase is not a re-roll. `main.js` applies it at boot and `screens.js`
+every time the contracts screen is shown; both redraw through the same
+rng stream a launch does.
 
 The floor contract is always affordable and always offered. It exists so the
 player can never be stuck (DESIGN.md §7). The other slots draw from the
@@ -355,7 +367,7 @@ Stable selectors so an end-to-end smoke test does not depend on copy:
 - `#hud [data-hud="funds"|"reputation"|"launches"]`
 - `#screen [data-screen="contracts"|"loadout"|"launch"|"result"|"tree"|"win"]`
   — exactly one present at a time
-- `.tabs [data-tab="contracts"|"tree"]` in the hud or top of screen
+- `.tabs [data-tab="contracts"|"missions"|"tree"]` in the hud or top of screen
 - contracts: `.row[data-contract="<missionId>"]`, tapping selects it
 - loadout: `input[type=range][data-loadout="fuelFraction"]`
 - launch: `canvas#ascent`; tapping it skips playback
@@ -601,7 +613,14 @@ up (the gate is for the impossible, not the merely hard).
 ## Stage abort systems (tier 2 addition)
 
 Reliability failures can be escaped instead of ending the flight, once the
-tree has bought coverage for them.
+tree has bought coverage for them. Only the failures that put an engine out
+— the `'ignition'` and `'burn'` kinds — are escapable, because an abort
+exists to throw the stack clear of a stage that has physically failed. An
+anomaly ("Anomalies", last) is not one: an underperforming engine is still
+burning and a guidance failure leaves every engine healthy, so dropping a
+working stage would cost the rest of its burn and give nothing back. This
+needs no guard in the code — an anomaly never calls `cutThrust`, which is
+the only place an abort is decided.
 
 **Vehicle gains a stat.** `vehicle.escape` (integer, default 0), added to
 `CAPABILITY_STATS` alongside `guidance`, `restarts`, `nav`, `docking`, `rcs`,
@@ -652,7 +671,9 @@ uncovered one).
 **Readout.** A terminal failure reads as before. Each escaped failure
 appends a clause: "Stage 1 engine failure at T+40s; stage 2 escaped clear.",
 e.g. "Reached 61 km. Short by 400 m/s. Stage 1 engine failure at T+40s;
-stage 2 escaped clear."
+stage 2 escaped clear." The escape clauses come before the anomaly sentences
+("Anomalies", last), which stay last of all: what the flight ended with or
+survived, then what merely went wrong on the way.
 
 **Tree** (`js/data/tree.js`, tier 2, reliability branch): two new nodes,
 `rel-escape-1` "Booster abort system" (level 6, 11000 funds, requires
@@ -887,8 +908,13 @@ docking (`dockObject`). History entries gain `closestApproach` and `docked`.
 
 ## js/data/missions.js — tier 3 ladder
 
-All `tier: 3`. `satellite` (orbit ≥ 150 km, `deploys: { kind: 'satellite' }`,
-repeatable, the tier's income filler), `core` (orbit ≥ 200 km, `deploys:
+All `tier: 3`. `satellite` (orbit ≥ 100 km, `deploys: { kind: 'satellite' }`,
+repeatable, the tier's income filler — its periapsis is `tierGoals[2]`'s,
+never above it, because a tier 3 board on arrival holds `satellite`, `core`
+(from 40 reputation; below that the slot falls back to an earlier tier) and
+the floor, and nothing else until a core is in orbit, so a player who has
+just reached orbit at 100 km must be able to fly satellite; `data.test.js`
+pins this), `core` (orbit ≥ 200 km, `deploys:
 { kind: 'core', name: 'Station core' }`, `unique: true`), `rdv-1`
 (rendezvous within 5 km, `requiresObject: 'core'`), `rdv-2` (within 500 m),
 `dock` (the goal: `{ dock: { target: 'core' } }`, `deploys: { kind:
@@ -971,8 +997,9 @@ resolver's constants.
 - **Contracts screen**: an "In orbit" block listing `state.objects` with
   their orbit and docked state; the tier 3 goal hint reads best closest
   approach / docked.
-- **Contracts screen, missions block**: below the board and above "In
-  orbit", `[data-missions]` lists every template of the current tier in
+- **Missions screen** (`[data-screen="missions"]`, the MISSIONS tab
+  between CONTRACTS and TECH TREE, Back returns to contracts):
+  `[data-missions]` lists every template of the current tier in
   `js/data/missions.js` order, one non-tappable row each, with its
   requirement, payout, and a reason line: "On the board now." / "Always
   offered." (floor) / "Available — not on this board." / one sentence per
@@ -980,7 +1007,13 @@ resolver's constants.
   (have M)", "Needs a <kind> in orbit", "A <kind> is already in orbit").
   Locked rows carry `.locked` and `[data-locked]`; the head counts
   "k of n available". The board hides what cannot be done yet; this is
-  where the ladder and what unlocks each rung are seen.
+  where the ladder and what unlocks each rung are seen. It is its own
+  screen, not a block on the contracts page: a list of rows that cannot
+  be tapped next to a list that can reads as a broken board.
+- **Board redraw**: `show('contracts')` redraws the board when
+  `boardStale` (contracts.js) says so, so a purchase on the tree tab that
+  makes a current-tier contract eligible reaches the board on the way back
+  to it, without waiting for the next launch.
 - **Tier flow**: tier 2 win → Continue → `[data-screen="tier"]` "Tier 3:
   Orbital maneuvering" → contracts. Tier 3 win → "Assembled a station in N
   launches" and phase 2 stops there.
@@ -990,9 +1023,9 @@ resolver's constants.
 
 - `[data-loadout="window"]`
 - `[data-screen="contracts"] [data-objects]` the in-orbit block
-- `[data-screen="contracts"] [data-missions]` the tier's mission ladder;
-  `.row[data-mission="<id>"]` per template, `.locked` / `[data-locked]`
-  when `lockReasons` is non-empty
+- `[data-screen="missions"]`, reached by `.tabs [data-tab="missions"]`;
+  its `[data-missions]` ladder has `.row[data-mission="<id>"]` per
+  template, `.locked` / `[data-locked]` when `lockReasons` is non-empty
 - the launch canvas stays `canvas#ascent` through both views; tap skips both
 - `[data-result="closest-approach"]`, `[data-result="docked"]`
 
@@ -1006,3 +1039,119 @@ the top stage after insertion for the cheapest set (must cover match +
 phase(≤ 30°) + approach with margin), and the TWR sweep extended to tier 3
 sets. `data.test.js` asserts reachability of every tier 3 rung and greedy
 ≤ 80.
+
+# Anomalies — guidance failure, engine underperformance
+
+Two more ways a launch goes wrong, added after phase 2. A component failure
+(ignition, burn, restart) cuts thrust and the run reads as that failure; an
+**anomaly** leaves the engines running and puts the vehicle somewhere other
+than where it was aiming. Tiers 1 to 3 keep working; every existing test
+keeps passing, with the scripted-rng tests updated for the draw order below.
+An anomaly is therefore never escapable by an abort system ("Stage abort
+systems", above): there is no failed stage to throw clear of.
+
+## js/core/resolver.js
+
+**Guidance failure.** One roll per *guided* flight — `vehicle.guidance >= 1`
+and the loadout is not `vertical`; an unguided or sounding flight has no
+guidance to lose, so tier 1 is untouched — against
+`vehicle.guidanceReliability` (0..1; a vehicle that does not declare it never
+fails, so hand-written fixtures are unaffected). On a failed roll the flight
+computer drops off its program at a moment drawn uniformly over the nominal
+powered flight (the sum of every stage's burn time at the loadout's fuel
+fraction), and from then on the thrust vector drifts away from the program
+in a drawn direction at `GUIDANCE_DRIFT_RATE` (0.3°/s) up to
+`GUIDANCE_DRIFT_MAX` (30°), applied on top of whatever pitch function is in
+use (`opts.pitch` included). A moment that falls after the last burn ended
+never happens; one inside the final integrator step of powered flight is
+announced at the instant the burn ended, where it can no longer steer. The
+trajectory up to the drawn moment is independent of the rng (announced at
+the first integrator boundary at or after it, as the mid-burn roll is).
+
+**Engine underperformance.** One roll per ignition against the stage's own
+reliability, after the ignition roll. On a failed roll the stage runs below
+spec for its whole burn: thrust × (1 − deficit), isp × (1 − deficit/2), with
+the deficit uniform in [`ENGINE_DEFICIT_MIN`, `ENGINE_DEFICIT_MAX`] (3% to
+12%). Lower thrust lengthens the burn (more gravity loss); lower isp is
+delta-v gone outright, and `deltaVAchieved` credits the isp the burn actually
+ran at. The mid-burn roll is independent of it.
+
+A relight in the orbital phase is an ignition too, so each restart consumed
+rolls for performance after its restart roll. An impulsive burn does not
+care about thrust, but a lower isp burns more propellant for the same
+delta-v: an underperforming relight delivers the burn it was asked for
+(`orbital.burns[].dv` is unchanged) and charges the budget
+dv / (1 − deficit/2) for it (`dvUsed` counts the charge), every burn under
+that relight alike (the phasing pair). A later burn the budget can then no
+longer carry stops the sequence there for want of delta-v, as a smaller
+reserve would have. An rcs approach is thrusters, not a relight, and never
+underperforms.
+
+**Draw order.** Per ignition: ignition roll; then, only if it passed, the
+performance roll; then, only if *that* failed, the deficit; then the
+burn-roll fraction; later the burn roll. An ignition failure still costs
+exactly one draw. Per flight, right after the first stage's ignition draws
+and only on a guided flight: the guidance roll; then, only if it failed, the
+moment and the direction. The orbital phase draws after every ascent draw,
+as before, and per restart consumed: the restart roll; then, only if it
+passed, the performance roll; then, only if that failed, the deficit. The
+docking roll is unchanged. A post-abort ignition is an ignition and draws
+exactly as one, and an abort itself draws nothing, so a vehicle with
+`escape: 0` has bit-for-bit the draw order above. This is the replay
+contract from here on.
+
+**Outcome** gains one field, alongside the abort systems' `escapes`;
+`failure` keeps its meaning (nothing here ends the flight, so it is never
+set by an anomaly, and an anomaly never makes a failure escaped or
+terminal):
+
+```js
+{
+  ...phase 0, 1 and 2 fields, and `escapes`,
+  anomalies: [                        // in time order, [] when clean
+    { t, stage, kind: 'guidance', direction: -1 | 1 },
+    { t, stage, kind: 'underperform', factor: 0..1 },   // thrust fraction
+  ],
+}
+```
+
+**Events**: `'anomaly'`, text "Guidance failure at T+84s." (no stage: the
+flight computer is the vehicle's, `stage` records which was flying) or
+"Stage 2 engine underperforming: 91% thrust.", at the moment it happens.
+
+**Readouts**: unchanged, with each anomaly's sentence appended last of all,
+whatever the verdict — "Reached 62 km. Short by 410 m/s. Stage 1 engine
+underperforming: 91% thrust." — so the result screen can point at the branch
+on a success as well, the way a survived failure already does. On a flight
+that also flew an abort, the escape clauses come first: "Reached 61 km.
+Short by 400 m/s. Stage 1 engine failure at T+40s; stage 2 escaped clear.
+Stage 1 engine underperforming: 93% thrust."
+
+## js/core/vehicle.js, js/data/components.js, js/data/tree.js
+
+`guidanceReliability` is an ordinary extra top-level stat (carried through
+by `buildVehicle`, targetable by effects), not a capability stat: its
+absence means 1, not 0. The starter declares 0.9. `guide-2` ("Guidance
+refinements") sets it to 0.98 — the honest effect the tier 3 section above
+asked for — and keeps its `guidance` add. Engine underperformance has no
+stat of its own: it rolls against stage reliability, so the reliability
+branch is its lever and propulsion/structure margin is the other.
+
+## Balance
+
+`forceReliability` in `tools/balance.mjs` and `test/data.test.js` also sets
+`guidanceReliability` to 1, so the balance numbers stay deterministic and no
+anomaly appears in a cheapest-reaching set.
+
+## js/ui
+
+- `ascent.js` marks an `'anomaly'` event with a brief amber pulse where it
+  happened and a small ring that stays; the rocket keeps flying. Same
+  no-leak contract: events at or before sim time only. `--warn` is the
+  colour.
+- Ticker: `.tick.anomaly` in `--warn`.
+- Result points-at: a guidance anomaly → `guidance`; an underperformance →
+  `reliability`. Shown whatever the verdict, before the existing hints
+  (including the escaped-failure hint), one per kind. An anomaly never
+  changes `readoutKind`, which is still `'failure'` only for a terminal
+  failure.

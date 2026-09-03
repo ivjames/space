@@ -105,6 +105,42 @@ export function isEligible(state, m) {
   return !m.floor && lockReasons(state, m).length === 0;
 }
 
+// boardStale(state, missions, count = 3) -> boolean
+// Whether the board in `state.contracts` no longer says what
+// generateContracts would say for this state, so the caller should redraw
+// it (folding the draws into the save as it does after a launch). Two ways
+// a board goes stale between launches:
+//   - it holds an offer the state no longer qualifies for (a gate was
+//     added or tightened under a save, or an object it needs is gone) —
+//     the player could accept a contract they cannot fly;
+//   - it fell short of the current tier — a slot empty, or filled by
+//     reaching back to an earlier tier — and a purchase since has made a
+//     current-tier template eligible that the board does not hold. This is
+//     the "bought guidance, still no orbit contract until the next launch"
+//     case: DESIGN.md §9 says contracts follow unlocked capabilities, and
+//     a board drawn before the purchase does not.
+// A board whose non-floor slots are all current-tier, eligible offers is
+// never stale, however many other templates have become eligible since —
+// those wait for the next launch's draw, so a purchase is not a re-roll.
+export function boardStale(state, missions, count = 3) {
+  const board = state.contracts ?? [];
+  if (board.length === 0) return true;
+  const byId = new Map(missions.map((m) => [m.id, m]));
+  for (const id of board) {
+    const m = byId.get(id);
+    if (!m) return true;
+    if (!m.floor && !isEligible(state, m)) return true;
+  }
+  const tier = state.tier ?? 1;
+  const drawn = board.filter((id) => {
+    const m = byId.get(id);
+    return !m.floor && (m.tier ?? 1) === tier;
+  }).length;
+  if (drawn >= Math.max(0, count - 1)) return false;
+  const onBoard = new Set(board);
+  return missions.some((m) => (m.tier ?? 1) === tier && !onBoard.has(m.id) && isEligible(state, m));
+}
+
 // generateContracts(state, missions, rng, count = 3) -> mission ids
 // Index 0 is always the floor contract. The remaining (count - 1) slots
 // are drawn without replacement, via rng.int(n), from templates that pass

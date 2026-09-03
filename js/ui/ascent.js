@@ -8,9 +8,10 @@
 // two things out of the outcome: the samples whose t <= the current sim time
 // (the point the rocket is at now, and the path it has already flown — that
 // path is the trail), and the timeline events whose t <= the current sim
-// time (to emit onEvent, to know which stages have ignited or burnt out, and
-// to know that a stage has blown up, where, and whether the flight survived
-// it). It never reads outcome.failure, outcome.escapes, outcome.maxAltitude,
+// time (to emit onEvent, to know which stages have ignited or burnt out, to
+// know that a stage has blown up, where, and whether the flight survived it,
+// and to mark an anomaly where it happened). It never reads outcome.failure,
+// outcome.escapes, outcome.anomalies, outcome.maxAltitude,
 // outcome.maxDownrange, outcome.periapsis, outcome.apoapsis, outcome.orbit,
 // outcome.success, outcome.shortBy, outcome.readout, samples.length, the
 // last sample's t, or any timeline event still in the future.
@@ -474,6 +475,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     border: '#3a4350',
     accent: cssVar(canvas, '--accent', '#00d4ff'),
     fail: cssVar(canvas, '--fail', '#ff6b6b'),
+    warn: cssVar(canvas, '--warn', '#ffb347'),
   };
   const rgbFg = parseHex(colors.fg, [232, 232, 232]);
   const rgbMuted = parseHex(colors.muted, [164, 173, 185]);
@@ -1095,6 +1097,42 @@ export function playOutcome(canvas, outcome, opts = {}) {
     }
   }
 
+  /**
+   * An anomaly (guidance failure, engine underperformance — the resolver's
+   * `'anomaly'` events) does not end the flight, so the rocket keeps flying;
+   * the moment is marked with a brief amber pulse where it happened and a
+   * small ring that stays, so a skipped playback still shows where the run
+   * went wrong. Reads only events at or before simT.
+   */
+  function drawAnomalies() {
+    for (const ev of timeline) {
+      if (ev.kind !== 'anomaly') continue;
+      if (simT < ev.t) break;
+      const at = sampleAt(samples, ev.t);
+      const x = drToX(at.downrange ?? 0);
+      const y = altToY(at.alt);
+      if (y < -40 || y > h + 40 || x < -40 || x > w + 40) continue;
+      const age = ageOf(stamps.get(ev));
+      ctx.save();
+      if (age < 0.8) {
+        const f = 1 - age / 0.8;
+        ctx.globalAlpha = f;
+        ctx.strokeStyle = colors.warn;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(x, y, 8 + 30 * (1 - f), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 0.8;
+      ctx.strokeStyle = colors.warn;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   // ---- failure -------------------------------------------------------------
   // A flight can have MORE THAN ONE failure. A vehicle carrying an abort
   // system (vehicle.escape) survives a failure in one of its bottom stages:
@@ -1478,9 +1516,11 @@ export function playOutcome(canvas, outcome, opts = {}) {
     drawGround();
     drawTrail(dr, alt);
     drawDebris();
+    drawAnomalies();
     // The rocket keeps being drawn through an escaped failure — the stack
     // above separates clear and relights, and the camera follows it — and
-    // stops only once the terminal failure has been passed.
+    // stops only once the terminal failure has been passed. An anomaly never
+    // stops it at all: the engines are still running.
     if (!terminalFailure()) {
       drawRocket(dr, alt, stageAt(s), burningAt(timeline, simT), headingAt(simT));
     }

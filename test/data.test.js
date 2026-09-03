@@ -224,6 +224,9 @@ const NO_CEILING = { requirement: { altitude: 1e9 } };
 function forceReliability(vehicle) {
   const copy = JSON.parse(JSON.stringify(vehicle));
   for (const stage of copy.stages) stage.reliability = 1;
+  // The guidance roll (ARCHITECTURE.md, "Anomalies") is the one roll that is
+  // not a stage's; forced for the same reason.
+  copy.guidanceReliability = 1;
   return copy;
 }
 
@@ -1056,6 +1059,26 @@ test('satellite deploys a satellite and is repeatable (no unique flag)', () => {
   const m = missions.find((mm) => mm.id === 'satellite');
   assert.deepEqual(m.deploys, { kind: 'satellite', name: m.deploys.name });
   assert.equal(m.unique, undefined);
+});
+
+// The board a player meets on arriving in tier 3 is the floor + satellite
+// + core, and nothing else: rdv-1/rdv-2/dock gate on a core in orbit, so
+// the tier's pool has exactly two eligible templates for the board's two
+// drawn slots, and generateContracts fills from the current tier first
+// (contracts.js), so no earlier-tier contract is ever drawn to vary it.
+// Whatever vehicle just won tier 2 therefore has to be able to fly
+// satellite, or the board's only income is the 400-fund floor (it was, at
+// 150 km: js/data/missions.js's satellite note has the numbers). The one
+// thing that vehicle is known to do is the tier 2 goal, so satellite's
+// periapsis may never exceed it.
+test('satellite is flyable by a tier 2 winner: its periapsis never exceeds the tier 2 goal\'s', () => {
+  const m = missions.find((mm) => mm.id === 'satellite');
+  const goal = tierGoals[2].requirement.orbit.periapsis;
+  assert.ok(
+    m.requirement.orbit.periapsis <= goal,
+    `satellite asks ${m.requirement.orbit.periapsis} m but a tier 3 arrival has only proven ${goal} m`,
+  );
+  assert.equal(m.minReputation, undefined, 'and no reputation gate can hide it on arrival');
 });
 
 test('core deploys a (unique) station core', () => {
