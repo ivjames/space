@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { makeRng } from '../js/core/rng.js';
 import assert from 'node:assert/strict';
-import { generateContracts, floorContract } from '../js/core/contracts.js';
+import { generateContracts, floorContract, lockReasons, isEligible } from '../js/core/contracts.js';
 import { missions as realMissions } from '../js/data/missions.js';
 
 // Deterministic fake rng: pulls from a fixed sequence of "random" indices.
@@ -109,13 +109,51 @@ test('real tier 2 mission templates are not offered at tier 1', () => {
   assert.ok(ids.every((id) => !tier2Ids.has(id)), 'no tier 2 template should be offered at tier 1');
 });
 
-test('real tier 2 mission templates are offered once state.tier is 2', () => {
-  const state = makeState({ tier: 2, reputation: 100 });
+test('real tier 2 mission templates are offered once state.tier is 2 and guide-1 is owned', () => {
+  const state = makeState({ tier: 2, reputation: 100, owned: ['guide-1'] });
   const rng = fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const ids = generateContracts(state, realMissions, rng, realMissions.length);
   const tier2Ids = realMissions.filter((m) => m.tier === 2).map((m) => m.id);
   for (const id of tier2Ids) {
-    assert.ok(ids.includes(id), `${id} should be offered at tier 2 with reputation 100`);
+    assert.ok(ids.includes(id), `${id} should be offered at tier 2 with reputation 100 and guide-1`);
+  }
+});
+
+// The bug this guards against: at tier 2, before buying guide-1, the board
+// offered orbit-down-1 (150 km downrange). Without guide-1 `vehicle.guidance`
+// is 0, pitchProgram (js/core/resolver.js) ignores the turn slider, the
+// flight goes straight up, and the contract cannot be completed. Every
+// tier 2 template with a downrange or orbit requirement needs a turn, so
+// none of them may be drawn until guide-1 is owned; the two altitude-shaped
+// templates (orbit-entry, the sounding filler, and orbit-apogee, which a
+// strong enough vehicle clears straight up) must still show up with
+// nothing owned -- the gate is for the impossible, not the merely hard.
+test('real data: orbit-down-1 is NOT offered at tier 2 with full reputation and nothing owned', () => {
+  const state = makeState({ tier: 2, reputation: 100, owned: [] });
+  const rng = fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const ids = generateContracts(state, realMissions, rng, realMissions.length);
+  assert.ok(!ids.includes('orbit-down-1'), 'orbit-down-1 needs guide-1 to be flyable at all');
+  assert.deepEqual(lockReasons(state, realMissions.find((m) => m.id === 'orbit-down-1')), [{ kind: 'node', id: 'guide-1' }]);
+});
+
+test('real data: no tier 2 downrange/orbit template is offered with nothing owned, and every one is once guide-1 is', () => {
+  const orbitIds = realMissions
+    .filter((m) => m.tier === 2 && m.requirement.altitude === undefined)
+    .map((m) => m.id);
+  assert.ok(orbitIds.length >= 4, 'the tier 2 ladder should have at least four turning rungs');
+
+  const bare = makeState({ tier: 2, reputation: 100, owned: [] });
+  const bareIds = generateContracts(bare, realMissions, fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), realMissions.length);
+  for (const id of orbitIds) {
+    assert.ok(!bareIds.includes(id), `${id} should not be offered without guide-1`);
+  }
+  assert.ok(bareIds.includes('orbit-entry'), 'the sounding filler stays offerable with nothing owned');
+  assert.ok(bareIds.includes('orbit-apogee'), 'an altitude requirement is flyable vertical, so it stays offerable');
+
+  const guided = makeState({ tier: 2, reputation: 100, owned: ['guide-1'] });
+  const guidedIds = generateContracts(guided, realMissions, fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), realMissions.length);
+  for (const id of orbitIds) {
+    assert.ok(guidedIds.includes(id), `${id} should be offered once guide-1 is owned`);
   }
 });
 
@@ -269,37 +307,121 @@ test('a repeatable template (no unique flag) can be offered any number of times'
 
 // Real tier 3 data (js/data/missions.js): `satellite` has no `unique`
 // flag and is offered at tier 3 with no objects deployed at all yet
-// (it has no requiresObject/requiresNode gate either) -- the tier's
-// income filler, reachable from the very first tier 3 contract screen.
+// (it has no requiresObject gate; its only requiresNode is guide-1, the
+// turn a tier 3 player owns by construction) -- the tier's income filler,
+// reachable from the very first tier 3 contract screen.
 test('real data: the satellite template is offered at tier 3 with no objects deployed', () => {
-  const state = makeState({ tier: 3, reputation: 100, objects: [], owned: [] });
+  const state = makeState({ tier: 3, reputation: 100, objects: [], owned: ['guide-1'] });
   const rng = fakeRng([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const ids = generateContracts(state, realMissions, rng, realMissions.length);
   assert.ok(ids.includes('satellite'));
 });
 
-test('real data: the dock template is offered only once a core object exists and struct-module is owned', () => {
+test('real data: the dock template is offered only once a core object exists and every listed node is owned', () => {
+  const core = { id: 'core-1', kind: 'core', name: 'Station core', periapsis: 1, apoapsis: 1, phase: 0, dockedTo: null, launchedAt: { tier: 3, launch: 1 } };
+  const dock = realMissions.find((m) => m.id === 'dock');
+  const dockNodes = [].concat(dock.requiresNode);
+  assert.ok(dockNodes.includes('struct-module'));
+
   const withoutEither = makeState({ tier: 3, reputation: 100, objects: [], owned: [] });
   const idsWithoutEither = generateContracts(withoutEither, realMissions, fakeRng([0, 1, 2, 3, 4]), realMissions.length);
   assert.ok(!idsWithoutEither.includes('dock'));
 
-  const withCoreOnly = makeState({
-    tier: 3,
-    reputation: 100,
-    objects: [{ id: 'core-1', kind: 'core', name: 'Station core', periapsis: 1, apoapsis: 1, phase: 0, dockedTo: null, launchedAt: { tier: 3, launch: 1 } }],
-    owned: [],
-  });
+  const withCoreOnly = makeState({ tier: 3, reputation: 100, objects: [core], owned: [] });
   const idsWithCoreOnly = generateContracts(withCoreOnly, realMissions, fakeRng([0, 1, 2, 3, 4]), realMissions.length);
   assert.ok(!idsWithCoreOnly.includes('dock'), 'requiresNode still unmet');
 
-  const withBoth = makeState({
-    tier: 3,
-    reputation: 100,
-    objects: [{ id: 'core-1', kind: 'core', name: 'Station core', periapsis: 1, apoapsis: 1, phase: 0, dockedTo: null, launchedAt: { tier: 3, launch: 1 } }],
-    owned: ['struct-module'],
-  });
+  // The module alone is not enough: the docking flight also needs the
+  // restarts and the sensors, and the array form means ALL of them.
+  const withModuleOnly = makeState({ tier: 3, reputation: 100, objects: [core], owned: ['struct-module'] });
+  const idsWithModuleOnly = generateContracts(withModuleOnly, realMissions, fakeRng([0, 1, 2, 3, 4]), realMissions.length);
+  assert.ok(!idsWithModuleOnly.includes('dock'), 'struct-module alone does not make a docking flight possible');
+  const reasons = lockReasons(withModuleOnly, dock);
+  assert.ok(reasons.every((r) => r.kind === 'node'), 'only node gates should remain');
+  assert.deepEqual(reasons.map((r) => r.id), dockNodes.filter((id) => id !== 'struct-module'));
+
+  const withBoth = makeState({ tier: 3, reputation: 100, objects: [core], owned: dockNodes });
   const idsWithBoth = generateContracts(withBoth, realMissions, fakeRng([0, 1, 2, 3, 4]), realMissions.length);
   assert.ok(idsWithBoth.includes('dock'));
+});
+
+// =========================================================================
+// lockReasons / isEligible: the shapes the UI reads to explain a locked
+// contract (ARCHITECTURE.md, "js/core/contracts.js").
+// =========================================================================
+
+const gatedTemplate = {
+  id: 'gated',
+  tier: 3,
+  minReputation: 50,
+  requiresNode: ['n-a', 'n-b', 'n-c'],
+  requiresObject: 'core',
+  payout: 1,
+  repGain: 0,
+  repLoss: 0,
+  requirement: { rendezvous: { target: 'core', within: 5000 } },
+};
+const coreObject = { id: 'core-1', kind: 'core', name: 'Station core', periapsis: 1, apoapsis: 1, phase: 0, dockedTo: null, launchedAt: { tier: 3, launch: 1 } };
+
+test('lockReasons is empty when every gate is met', () => {
+  const state = makeState({ tier: 3, reputation: 50, owned: ['n-a', 'n-b', 'n-c'], objects: [coreObject] });
+  assert.deepEqual(lockReasons(state, gatedTemplate), []);
+  assert.equal(isEligible(state, gatedTemplate), true);
+});
+
+test('lockReasons reports tier, reputation, every missing node in template order, and object, in that order', () => {
+  const state = makeState({ tier: 2, reputation: 20, owned: ['n-b'], objects: [] });
+  assert.deepEqual(lockReasons(state, gatedTemplate), [
+    { kind: 'tier', tier: 3 },
+    { kind: 'reputation', need: 50, have: 20 },
+    { kind: 'node', id: 'n-a' },
+    { kind: 'node', id: 'n-c' },
+    { kind: 'object', objectKind: 'core' },
+  ]);
+  assert.equal(isEligible(state, gatedTemplate), false);
+});
+
+test('lockReasons reports unique last, only while an undocked object of the deployed kind exists', () => {
+  const uniqueTemplate = {
+    id: 'u', tier: 1, unique: true, deploys: { kind: 'core', name: 'Station core' },
+    payout: 1, repGain: 0, repLoss: 0, requirement: { orbit: { periapsis: 1 } },
+  };
+  const undocked = makeState({ tier: 1, objects: [coreObject] });
+  assert.deepEqual(lockReasons(undocked, uniqueTemplate), [{ kind: 'unique', objectKind: 'core' }]);
+  const docked = makeState({ tier: 1, objects: [{ ...coreObject, dockedTo: 'somewhere' }] });
+  assert.deepEqual(lockReasons(docked, uniqueTemplate), []);
+  // Ordering: a unique reason follows a node reason for the same template.
+  const both = makeState({ tier: 1, objects: [coreObject] });
+  assert.deepEqual(lockReasons(both, { ...uniqueTemplate, requiresNode: 'x' }), [
+    { kind: 'node', id: 'x' },
+    { kind: 'unique', objectKind: 'core' },
+  ]);
+});
+
+test('lockReasons accepts the string form of requiresNode unchanged', () => {
+  const t = { id: 's', tier: 1, requiresNode: 'only', payout: 1, repGain: 0, repLoss: 0, requirement: { altitude: 1 } };
+  assert.deepEqual(lockReasons(makeState({ owned: [] }), t), [{ kind: 'node', id: 'only' }]);
+  assert.deepEqual(lockReasons(makeState({ owned: ['only'] }), t), []);
+});
+
+test('lockReasons ignores floor, but isEligible is false for the floor contract', () => {
+  const floor = missions.find((m) => m.floor);
+  const state = makeState();
+  assert.deepEqual(lockReasons(state, floor), []);
+  assert.equal(isEligible(state, floor), false);
+});
+
+test('the array form of requiresNode is offered only once every listed node is owned', () => {
+  const pool = [
+    missions[0],
+    { id: 'multi', tier: 1, requiresNode: ['n-a', 'n-b'], payout: 1, repGain: 0, repLoss: 0, requirement: { altitude: 1 } },
+  ];
+  const draw = (owned) => generateContracts(makeState({ owned }), pool, fakeRng([0, 0, 0]), 3);
+  assert.ok(!draw([]).includes('multi'));
+  assert.ok(!draw(['n-a']).includes('multi'), 'one of two is not enough');
+  assert.ok(!draw(['n-b']).includes('multi'), 'one of two is not enough');
+  assert.ok(draw(['n-a', 'n-b']).includes('multi'));
+  assert.ok(draw(['n-b', 'n-a', 'other']).includes('multi'), 'order and extra nodes do not matter');
 });
 
 test('the board draws from the current tier first and reaches back only to fill', () => {

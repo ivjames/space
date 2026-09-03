@@ -5,11 +5,13 @@
 }
 
 :root {
-  --bg: #0a0a0a;
-  --fg: #e8e8e8;
+  /* Lifted off pure black, and the secondary text well clear of the WCAG
+     floor: --muted reads at roughly 9:1 on --bg, not the 4.5:1 minimum. */
+  --bg: #141414;
+  --fg: #f2f2f2;
   --accent: #00d4ff;
-  --muted: #8d8d8d;
-  --border: #333;
+  --muted: #b8b8b8;
+  --border: #484848;
   --success: #00d4ff;
   --fail: #ff6b6b;
   --warn: #ffb347;
@@ -19,8 +21,8 @@
   :root {
     --bg: #f5f5f5;
     --fg: #1a1a1a;
-    --muted: #999;
-    --border: #ddd;
+    --muted: #5c5c5c;
+    --border: #c8c8c8;
   }
 }
 
@@ -79,6 +81,8 @@ html, body {
   border-top: 1px solid var(--border);
   background-color: rgba(0, 0, 0, 0.2);
 }
+/* A screen with no action (the launch screen mid-flight) has no bar. */
+#actions[hidden] { display: none; }
 
 /* Screen padding utility */
 .screen {
@@ -133,13 +137,10 @@ html, body {
   background-color: rgba(0, 212, 255, 0.1);
 }
 
-.row.owned {
-  opacity: 0.78;
-}
-
-.row.locked {
-  opacity: 0.7;
-}
+/* Owned and locked rows are told apart by their side column (a tick or a
+   muted price, and the note under it), not by dimming the whole row: a
+   title at 70% opacity on a dark ground is the least readable thing on the
+   screen, and a row you can't buy yet is still a row you want to read. */
 
 .row.buyable:active {
   background-color: rgba(0, 212, 255, 0.15);
@@ -398,9 +399,9 @@ canvas {
   color: var(--accent);
 }
 
-.row.owned .cost { color: var(--muted); }
+.row.owned .cost, .row.locked .cost { color: var(--muted); }
 .row-desc { margin-top: 2px; }
-.row-effects { margin-top: 2px; color: var(--accent); opacity: 0.8; }
+.row-effects { margin-top: 2px; color: var(--accent); }
 .row.locked .row-effects { color: var(--muted); opacity: 1; }
 
 .row.selected {
@@ -547,9 +548,28 @@ input[type="range"]::-moz-range-thumb {
   cursor: pointer;
 }
 
+/* The launch screen is a column that fills #screen: the flight on top at
+   its clamped height, and the log takes every pixel left under it, whether
+   the actions bar is there (after the flight) or not (during it, when it is
+   hidden so the log has the room). The log scrolls inside its own box. */
+.screen[data-screen="launch"] {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.screen[data-screen="launch"] .ascent-wrap { flex: 0 0 auto; }
+.screen[data-screen="launch"] .pad {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.screen[data-screen="launch"] .pad > .hint { flex-shrink: 0; }
+
 ul.ticker {
   list-style: none;
-  max-height: 128px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   margin-bottom: 8px;
@@ -670,6 +690,27 @@ ul.ticker {
   border-bottom: 1px solid var(--border);
 }
 
+/* ---- Tree: owned nodes hidden by default, one toggle for the whole tree -- */
+
+.shop-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0 12px;
+}
+
+.btn-small {
+  padding: 6px 10px;
+  font-size: 0.857rem;
+}
+
+.branch-empty {
+  list-style: none;
+  padding: 10px 12px;
+  font-style: italic;
+}
+
 /* ---- Ticker: the phase 1 event kinds ------------------------------------ */
 
 .tick.orbit { color: var(--accent); font-weight: bold; }
@@ -724,6 +765,14 @@ ul.ticker {
 .row.object .row-note { color: var(--muted); }
 .row.object:active { background-color: transparent; }
 
+/* ---- Contracts: the tier's mission ladder ------------------------------- */
+
+.missions { margin-top: 22px; }
+
+/* A ladder rung is a statement, not a control — same as an object row. */
+.row.mission { align-items: flex-start; cursor: default; }
+.row.mission:active { background-color: transparent; }
+
 /* ---- Ticker: the orbital phase's event kinds ---------------------------- */
 
 .tick.insertion { color: var(--accent); font-weight: bold; }
@@ -731,11 +780,6 @@ ul.ticker {
 .tick.approach { color: var(--accent); }
 .tick.dock { color: var(--accent); font-weight: bold; }
 .tick.restart-failure, .tick.dock-failure { color: var(--fail); }
-
-/* The orbital phase adds a dozen lines to a flight that already filled the
-   box; on a 360x740 screen that is the difference between reading the last
-   line and scrolling for it. */
-ul.ticker { max-height: 150px; }
 
 /* ---- Loadout: a launch that could not be attempted ---------------------- */
 
