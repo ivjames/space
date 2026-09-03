@@ -927,9 +927,12 @@ export function playOutcome(canvas, outcome, opts = {}) {
    */
   function drawStack(segs, burning) {
     if (segs.length === 0) return;
-    const bodyH = segs.reduce((sum, seg) => sum + seg.height, 0);
+    // The stack stands on the origin: the bottom nozzle's lip is at y = 0 and
+    // the body rises into negative y. The origin is the sample's (downrange,
+    // altitude), so a rocket at altitude 0 sits ON the pad; centring it there
+    // instead would bury half of it, and the taller the stack the deeper.
     const bottoms = [];
-    let y = bodyH / 2;
+    let y = -NOZZLE_H;
     for (const seg of segs) {
       bottoms.push(y);
       y -= seg.height;
@@ -960,7 +963,8 @@ export function playOutcome(canvas, outcome, opts = {}) {
     // as the gravity turn takes hold, nose-down again on the way back in.
     ctx.rotate(heading);
     // Which segments are attached comes from the vehicle and the stage flying
-    // now — never from a separation that has not happened yet.
+    // now — never from a separation that has not happened yet. The stack is
+    // drawn standing on (x, y), and pitches about that point, its engine.
     drawStack(attachedAt(stage), burning);
     ctx.restore();
   }
