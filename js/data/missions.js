@@ -272,12 +272,37 @@ export const missions = [
   // the same way tier 1 and tier 2 are balanced against their own resolver
   // phases — not a plausible-looking continuation of tier 2's numbers.
   //
-  //   satellite   orbit >= 150 km, deploys a satellite, REPEATABLE — the
+  //   satellite   orbit >= 100 km, deploys a satellite, REPEATABLE — the
   //               tier's income filler (tier 2 had none; tier 3 needs one
   //               because every other rung below gates on an object or a
   //               node that isn't there on day one of the tier). No
   //               minReputation: immediately offerable at tier 3, the same
   //               role sound-1/orbit-down-1 played entering their tiers.
+  //               Its periapsis is tierGoals[2]'s own 100 km, DELIBERATELY
+  //               not a step above it. On arrival the tier 3 pool holds
+  //               exactly two eligible templates (this one and core; the
+  //               rest gate on a core in orbit), the board draws two, and
+  //               js/core/contracts.js fills from the current tier first,
+  //               so every tier 3 board until a core flies is the floor +
+  //               satellite + core with no draw to reroll. This rung is
+  //               therefore the ONLY income on that board, and it has to
+  //               be flyable by whatever vehicle just won tier 2. Sized
+  //               against the real resolver, not the ideal: over every
+  //               prereq-valid tier 2 node set that reaches the tier 2
+  //               goal at all, the weakest tops out at 125 978 m periapsis
+  //               (best turn, reliability forced to 1), and at 110 km the
+  //               turn band is ONE 0.05 notch of the loadout slider for
+  //               that set (two for the ladder's own goal set) -- a knife
+  //               edge, with the result screen pointing at hardware. At
+  //               100 km the weakest set clears it on two consecutive
+  //               notches (0.50 and 0.55) and the ladder set on three, and
+  //               the turn that won tier 2 wins this by definition.
+  //               It sat at 150 km before this: unreachable without the
+  //               struct-7/8/10 chain (52 000 funds), which is the SAME
+  //               chain core needs -- so it was core's rung with a lower
+  //               payout, and the board's only income was the 400-fund
+  //               floor for 130 launches. test/data.test.js pins the
+  //               "never above tierGoals[2]" rule.
   //   core        orbit >= 160 km, deploys the (unique) station core —
   //               the prerequisite EVERY other tier 3 rung below needs, via
   //               requiresObject: 'core'. DEVIATES from ARCHITECTURE.md's
@@ -375,7 +400,7 @@ export const missions = [
     tier: 3,
     name: 'Comsat deployment',
     profile: 'orbit',
-    requirement: { orbit: { periapsis: 150000 } },
+    requirement: { orbit: { periapsis: 100000 } },
     deploys: { kind: 'satellite', name: 'Comsat' },
     requiresNode: 'guide-1',
     payout: 20000,
