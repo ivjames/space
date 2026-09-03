@@ -284,9 +284,13 @@ export const missions = [
   //               rest gate on a core in orbit), the board draws two, and
   //               js/core/contracts.js fills from the current tier first,
   //               so every tier 3 board until a core flies is the floor +
-  //               satellite + core with no draw to reroll. This rung is
-  //               therefore the ONLY income on that board, and it has to
-  //               be flyable by whatever vehicle just won tier 2. Sized
+  //               satellite + core with no draw to reroll. (core's gate is
+  //               40 rep; below it the second slot falls back to a tier 2
+  //               or tier 1 template instead, which is more income, not
+  //               less -- a player who won tier 2 on orbit-goal's 75 gate
+  //               is well past it.) This rung is therefore the ONLY
+  //               income on that board, and it has to be flyable by
+  //               whatever vehicle just won tier 2. Sized
   //               against the real resolver, not the ideal: over every
   //               prereq-valid tier 2 node set that reaches the tier 2
   //               goal at all, the weakest tops out at 125 978 m periapsis
@@ -298,11 +302,20 @@ export const missions = [
   //               notches (0.50 and 0.55) and the ladder set on three, and
   //               the turn that won tier 2 wins this by definition.
   //               It sat at 150 km before this: unreachable without the
-  //               struct-7/8/10 chain (52 000 funds), which is the SAME
-  //               chain core needs -- so it was core's rung with a lower
-  //               payout, and the board's only income was the 400-fund
-  //               floor for 130 launches. test/data.test.js pins the
-  //               "never above tierGoals[2]" rule.
+  //               struct-7/8/10 chain (52 000 funds on top of the ladder's
+  //               goal set; the full tier 1 + 2 tree tops out at 145 684
+  //               m, so a tier 3 node was needed), which is the SAME chain
+  //               core needs -- so it was core's rung with a lower payout,
+  //               and the board's only income was the 400-fund floor for
+  //               on the order of a hundred launches (130 from the ladder
+  //               set with nothing banked; 94 from the greedy simulation's
+  //               own arrival state, which already owns struct-7). The
+  //               greedy tier 3 simulation in test/data.test.js could not
+  //               see any of this: it picks from every mission of tier <=
+  //               3 rather than from a drawn board, so it flew tier 2's
+  //               orbit-goal for income the real board never offers at
+  //               tier 3. test/data.test.js pins the "never above
+  //               tierGoals[2]" rule instead.
   //   core        orbit >= 160 km, deploys the (unique) station core —
   //               the prerequisite EVERY other tier 3 rung below needs, via
   //               requiresObject: 'core'. DEVIATES from ARCHITECTURE.md's

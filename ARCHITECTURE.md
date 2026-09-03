@@ -798,9 +798,11 @@ docking (`dockObject`). History entries gain `closestApproach` and `docked`.
 
 All `tier: 3`. `satellite` (orbit ≥ 100 km, `deploys: { kind: 'satellite' }`,
 repeatable, the tier's income filler — its periapsis is `tierGoals[2]`'s,
-never above it, because a tier 3 board on arrival holds exactly `satellite`,
-`core` and the floor, and a player who has just reached orbit at 100 km must
-be able to fly one of them; `data.test.js` pins this), `core` (orbit ≥ 200 km, `deploys:
+never above it, because a tier 3 board on arrival holds `satellite`, `core`
+(from 40 reputation; below that the slot falls back to an earlier tier) and
+the floor, and nothing else until a core is in orbit, so a player who has
+just reached orbit at 100 km must be able to fly satellite; `data.test.js`
+pins this), `core` (orbit ≥ 200 km, `deploys:
 { kind: 'core', name: 'Station core' }`, `unique: true`), `rdv-1`
 (rendezvous within 5 km, `requiresObject: 'core'`), `rdv-2` (within 500 m),
 `dock` (the goal: `{ dock: { target: 'core' } }`, `deploys: { kind:
