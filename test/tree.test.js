@@ -271,6 +271,11 @@ test('branchExhausted: true only when every node of the branch at or below the t
   assert.equal(branchExhausted(tree, maxed, 'structure'), true);
   assert.equal(branchExhausted(tree, maxed, 'guidance'), false);
 
+  // A branch with nothing at or below the tier is exhausted too: guidance
+  // has no tier 1 node, so at tier 1 there is nothing in it to point at.
+  assert.equal(ids('guidance', 1).length, 0);
+  assert.equal(branchExhausted(tree, makeState({ tier: 1 }), 'guidance'), true);
+
   // One node short is not exhausted.
   const short = makeState({ tier: 2, owned: tier2Prop.slice(1) });
   assert.equal(branchExhausted(tree, short, 'propulsion'), false);

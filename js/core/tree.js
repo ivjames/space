@@ -125,7 +125,9 @@ export function canBuy(tree, state, id) {
 // there is nothing left in that branch this tier could ever sell the player,
 // whatever their funds or prerequisites. The result screen uses it to stop
 // pointing a shortfall at a branch that has nothing left to buy, and to point
-// at the loadout instead (ARCHITECTURE.md, "Result" points-at).
+// at the loadout instead (ARCHITECTURE.md, "Result" points-at). A branch with
+// no nodes at or below the tier at all is exhausted too (vacuously): there is
+// nothing in it to point at either.
 export function branchExhausted(tree, state, branch) {
   const tier = state.tier ?? 1;
   return tree.nodes

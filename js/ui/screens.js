@@ -595,10 +595,16 @@ export function mountScreens(ctx) {
         points.push(`<p class="hint points" data-points-at="guidance">The approach was too wide. Navigation is what narrows it — and a smaller launch-window error widens nothing.</p>`);
       }
     } else if (o && !o.success) {
-      if (guidance === 0 && kind === 'orbit') {
+      // A vertical-only vehicle cannot fly an orbit, downrange, rendezvous
+      // or dock mission at all: the lever is guidance, whatever else is or
+      // is not left to buy (DESIGN.md §6: buy something DIFFERENT).
+      const needsGuidance = guidance === 0 && kind !== 'altitude';
+      if (needsGuidance && kind === 'orbit') {
         points.push(`<p class="hint points" data-points-at="guidance">No guidance: a vertical flight cannot orbit. Guidance is what turns the rocket over.</p>`);
-      } else if (guidance === 0 && kind === 'downrange') {
+      } else if (needsGuidance && kind === 'downrange') {
         points.push(`<p class="hint points" data-points-at="guidance">No guidance: a vertical flight cannot fly downrange. Guidance is what turns the rocket over.</p>`);
+      } else if (needsGuidance) {
+        points.push(`<p class="hint points" data-points-at="guidance">No guidance: a vertical flight cannot reach a target. Guidance is what turns the rocket over.</p>`);
       }
       // A shortfall points at what is left to buy. Once propulsion and
       // structure are both fully owned at this tier, "buy more delta-v" is a
@@ -606,6 +612,8 @@ export function mountScreens(ctx) {
       // narrow band of turn, and the same shift happens again with the
       // heavier tier 3 top stage — so the shortfall is the flight's, and the
       // hint says so without predicting which loadout the vehicle wants.
+      // Turn is a lever on every flight but a sounding one (an altitude
+      // contract flies vertical whatever the slider says — see doLaunch).
       const propLeft = !branchExhausted(tree, state, 'propulsion');
       const structLeft = !branchExhausted(tree, state, 'structure');
       if (propLeft && structLeft) {
@@ -615,7 +623,10 @@ export function mountScreens(ctx) {
         points.push(`<p class="hint points" data-points-at="propulsion">More delta-v: propulsion raises thrust and isp.</p>`);
       } else if (structLeft) {
         points.push(`<p class="hint points" data-points-at="structure">More delta-v: structure adds propellant and, later, another stage.</p>`);
-      } else if (guidance >= 1 && (kind === 'orbit' || kind === 'downrange')) {
+      } else if (needsGuidance) {
+        // The guidance hint above already names the lever; "the shortfall is
+        // the flight's" would be false here — no loadout orbits without it.
+      } else if (kind !== 'altitude') {
         points.push(`<p class="hint points" data-points-at="loadout">Nothing left to buy in propulsion or structure. The shortfall is the flight's: fuel load and turn are the levers.</p>`);
       } else {
         points.push(`<p class="hint points" data-points-at="loadout">Nothing left to buy in propulsion or structure at this tier. The shortfall is the flight's: fuel load is the lever.</p>`);
