@@ -929,9 +929,11 @@ export function mountScreens(ctx) {
       requirement: target
         ? { orbit: { periapsis: target.periapsis } }
         : mission.requirement,
-      // The sprite needs to know it is a stack before the first separation;
-      // that comes from the vehicle, never from the outcome (js/ui/ascent.js).
-      stages: vehicle?.stages?.length ?? 1,
+      // The sprite is drawn as the built vehicle's actual stack (one segment
+      // per stage, sized by mass) and drops the right segment at each
+      // separation; that comes from the vehicle, never from the outcome
+      // (js/ui/ascent.js).
+      vehicle,
       stopAtKind: target ? 'insertion' : undefined,
       onEvent: appendTicker,
       onDone: () => {
