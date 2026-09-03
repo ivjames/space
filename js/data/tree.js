@@ -301,14 +301,15 @@ export const nodes = [
   // therefore also includes both propulsion upgrades. Verified
   // exhaustively, not on faith: `node tools/balance.mjs`'s GOAL 4 report
   // (and test/data.test.js's bounded version) BFS-enumerates every
-  // prereq-valid owned combination across BOTH tiers together (786 of
-  // them -- prerequisites chain hard enough that this is tractable even
-  // though 2^25 is not) and checks liftoff TWR >= 1.05 and every upper
-  // stage's TWR at ignition >= 0.5 on each one. Worst case: liftoff TWR
-  // 1.194 (the tier 1 minimum, unchanged by tier 2 -- struct-6 always
-  // brings its own matching thrust) and upper-stage TWR 1.020 (stage 2,
-  // owned = prop-1..4 + struct-1..4, before any tier 2 node at all). No
-  // violation exists anywhere in the reachable set.
+  // prereq-valid owned combination across BOTH tiers together (1422 of
+  // them, up from 786 before the two abort-system nodes, rel-escape-1/2,
+  // joined the tree -- prerequisites chain hard enough that this is
+  // tractable even though 2^27 is not) and checks liftoff TWR >= 1.05 and
+  // every upper stage's TWR at ignition >= 0.5 on each one. Worst case:
+  // liftoff TWR 1.194 (the tier 1 minimum, unchanged by tier 2 -- struct-6
+  // always brings its own matching thrust) and upper-stage TWR 1.020
+  // (stage 2, owned = prop-1..4 + struct-1..4, before any tier 2 node at
+  // all). No violation exists anywhere in the reachable set.
   //
   // PROPULSION. prop-5 is a booster (stage 1 / index 0) thrust upgrade,
   // gated on prop-4 per the spec's own worked example ("the vacuum engine
@@ -372,6 +373,43 @@ export const nodes = [
   // branch), so they never appear in a cheapest-reaching set for any
   // requirement shape.
   //
+  // STAGE ABORT SYSTEMS (rel-escape-1/2, ARCHITECTURE.md's "Stage abort
+  // systems"). The branch's other lever: instead of making a failure rarer,
+  // these make one survivable. `escape` (js/core/vehicle.js) is the count
+  // of bottom stages whose in-flight failure lets the stack above separate
+  // clear, coast ESCAPE_DELAY seconds, and light its own engine still
+  // flying the pitch program -- so the flight ends in a "Reached N km.
+  // Short by M m/s." readout with a failure clause appended, not a bang.
+  // rel-escape-1 sets it to 1 (the booster is covered); rel-escape-2 sets
+  // it to 2 (the second stage too). A failure before the stack has cleared
+  // the pad (below the resolver's ESCAPE_MIN_ALT, 100 m -- an ignition
+  // failure at T+0 or a burn failure in the first seconds) and a failure of
+  // the top stage are never escaped, whatever the level -- there is nothing
+  // above the top stage to escape with, and the description says so.
+  //
+  // Gating. Both need rel-2 (avionics hardening): an abort is only as good
+  // as the failure detection that triggers it, and that is what rel-2 is,
+  // so the stat sits behind it rather than being a free-standing purchase.
+  // rel-escape-1 needs struct-4 and rel-escape-2 needs struct-6 because the
+  // stage that escapes must exist: covering the booster is meaningless
+  // with nothing on top of it, and covering the second stage is meaningless
+  // without a third. (rel-escape-2 also chains on rel-escape-1, so the
+  // branch's `level` order and its prerequisite order agree.)
+  //
+  // Cost. Pure funds, no mass and no roll: the abort is resolved by the
+  // resolver's failure handling, not by a stat on any stage, so the
+  // reliability branch's invariant -- it never touches a trajectory --
+  // still holds and tools/balance.mjs / test/data.test.js keep excluding
+  // the whole branch from their trajectory searches. What the player buys
+  // is not altitude but the difference between two outcomes of the same
+  // bad roll. Be honest about when it pays: a failure LATE in a stage's
+  // burn, where the stack above already has most of the margin it was
+  // going to get, can still make the contract; a failure early in the
+  // burn leaves the upper stage lighting far too low and slow, and it
+  // still falls short -- but it falls short by a readable number instead
+  // of ending in wreckage, which is the point of the "short by" contract
+  // (DESIGN.md §4: every miss reads as "short by").
+  //
   // LADDER (js/data/missions.js). The five tier 2 rungs step through a
   // CUMULATIVE node sequence (each rung's cheapest set is the previous
   // rung's plus 1-3 more nodes, never a smaller or disjoint set -- see
@@ -390,7 +428,8 @@ export const nodes = [
   // nodes rather than one.
   //
   // COSTS. Tier 1's full tree costs 30 700 funds; tier 2 escalates from
-  // there (212 000 funds for its 13 nodes). Node costs (not mission
+  // there (299 500 funds for its 15 nodes, 30 000 of that the two abort
+  // systems). Node costs (not mission
   // payouts) were raised from an earlier pass once `node tools/balance.mjs`
   // showed a greedy player reaching the tier goal in 20 tier 2 launches --
   // under the 30-60 target -- so the fix here is cost, matching
@@ -565,15 +604,37 @@ export const nodes = [
     effects: [{ stat: 'stages.1.reliability', op: 'mul', value: 1.01 }],
   },
   {
-    id: 'rel-6',
+    id: 'rel-escape-1',
     branch: 'reliability',
     level: 6,
+    tier: 2,
+    name: 'Booster abort system',
+    desc: 'If the booster fails in flight, the stack above separates clear and lights its own engine, still under guidance. Does nothing on the pad.',
+    cost: { funds: 11000 },
+    requires: ['rel-2', 'struct-4'],
+    effects: [{ stat: 'escape', op: 'set', value: 1 }],
+  },
+  {
+    id: 'rel-6',
+    branch: 'reliability',
+    level: 7,
     tier: 2,
     name: 'Stage 3 restart qualification',
     desc: 'Extra qualification testing for the third-stage engine, cutting its failure rate.',
     cost: { funds: 24000 },
     requires: ['rel-5', 'struct-6'],
     effects: [{ stat: 'stages.2.reliability', op: 'mul', value: 1.2 }],
+  },
+  {
+    id: 'rel-escape-2',
+    branch: 'reliability',
+    level: 8,
+    tier: 2,
+    name: 'Upper-stage abort system',
+    desc: 'Extends abort coverage to the second stage: a third stage escapes clear of a second stage that fails under it.',
+    cost: { funds: 19000 },
+    requires: ['rel-escape-1', 'struct-6'],
+    effects: [{ stat: 'escape', op: 'set', value: 2 }],
   },
 
   // ---------------------------------------------------------------------
@@ -773,7 +834,7 @@ export const nodes = [
   {
     id: 'rel-7',
     branch: 'reliability',
-    level: 7,
+    level: 9,
     tier: 3,
     name: 'Restart qualification',
     desc: 'Extra qualification testing that steadies the top stage\'s engine after repeated relights.',
@@ -784,7 +845,7 @@ export const nodes = [
   {
     id: 'rel-8',
     branch: 'reliability',
-    level: 8,
+    level: 10,
     tier: 3,
     name: 'Docking rehearsal',
     desc: 'Practice runs against a mock target, sharpening the crew\'s docking technique.',

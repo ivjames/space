@@ -85,4 +85,9 @@ export const baseVehicle = {
   dockBonus: 0, // added to the docking reliability roll threshold, capped
                 // at 0.99 by the resolver (js/data/tree.js's reliability
                 // branch: docking rehearsal)
+  // Stage abort coverage (js/data/tree.js's reliability branch, tier 2:
+  // the abort systems). 0 = a failed stage takes the whole stack with it.
+  // N = a failure of any of the bottom N stages, in flight, lets the stack
+  // above separate clear and light its own engine (js/core/resolver.js).
+  escape: 0,
 };

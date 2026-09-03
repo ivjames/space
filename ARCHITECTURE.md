@@ -125,6 +125,10 @@ Outcome:
   failure: null | { t, stage, kind: 'ignition' | 'burn' | 'separation' },
                             // stage is 1-BASED everywhere in an Outcome
                             //   (events, samples, failure), matching readouts
+                            // the failure that ENDED powered flight (terminal);
+                            //   see "Stage abort systems" (tier 2 addition,
+                            //   below) for what this means once a failure can
+                            //   be escaped instead
   readout: string,          // one line the result screen shows,
                             //   e.g. "Reached 62 km. Short by 410 m/s."
                             //   e.g. "Stage 2 ignition failure at T+142s."
@@ -134,6 +138,9 @@ Outcome:
 // Event: { t, kind, stage?, alt?, text }
 //   kinds: 'liftoff' | 'burnout' | 'separation' | 'ignition' | 'failure'
 //          | 'apogee' | 'goal' | 'end'
+//   a 'failure' event can carry `escaped: true` and a 'separation' event
+//   `{ abort: true }` — see "Stage abort systems" below; later phases add
+//   'turn', 'orbit', 'insertion' and 'anomaly' (see "Anomalies", last)
 ```
 
 Physics, phase 0: 2D point mass from day one (position, velocity vectors),
@@ -347,7 +354,9 @@ export const tierGoals = { 1: { requirement: { altitude: 100000 }, name: 'Reach 
 - `hud.js` is a persistent strip: funds, reputation, launches this tier.
 - Result screen shows `outcome.readout` and, when applicable, which branch
   the readout points at ("short by" → propulsion/structure; a failure kind →
-  reliability).
+  reliability). From the tier 2 abort systems on (below), the readout's own
+  `kind` is `'failure'` only for a terminal failure — an escaped one colours
+  as whatever the flight went on to do, with its own reliability hint.
 - Tier 1 win: `tierGoalMet` after a launch → win screen with the launch
   count. Phase 0 stops there; the button says "Continue" and returns to
   contracts.
@@ -513,7 +522,9 @@ Tier 2 branches, roughly: propulsion (vacuum-optimised upper-stage engines,
 higher Isp), structure (a third stage, lighter tanks: dry-mass reductions),
 guidance (the gravity turn itself, then refinements that widen the good
 `turn` window or reduce losses), reliability (upper-stage and restart
-reliability). Twelve to sixteen nodes. The balance tool proves the ladder.
+reliability, plus the two abort-system nodes — "Stage abort systems",
+below). Twelve to sixteen nodes (15, currently). The balance tool proves the
+ladder.
 
 ## js/core/state.js, js/core/save.js — tier progression, schema v2
 
@@ -599,6 +610,107 @@ up (the gate is for the impossible, not the merely hard).
 - `[data-screen="tier"]`, its continue is `[data-action="continue"]`
 - `#hud [data-hud="tier"]`
 - `window.__space.cheat({ funds, reputation })` credits funds and reputation, tests only
+
+## Stage abort systems (tier 2 addition)
+
+Reliability failures can be escaped instead of ending the flight, once the
+tree has bought coverage for them. Only the failures that put an engine out
+— the `'ignition'` and `'burn'` kinds — are escapable, because an abort
+exists to throw the stack clear of a stage that has physically failed. An
+anomaly ("Anomalies", last) is not one: an underperforming engine is still
+burning and a guidance failure leaves every engine healthy, so dropping a
+working stage would cost the rest of its burn and give nothing back. This
+needs no guard in the code — an anomaly never calls `cutThrust`, which is
+the only place an abort is decided.
+
+**Vehicle gains a stat.** `vehicle.escape` (integer, default 0), added to
+`CAPABILITY_STATS` alongside `guidance`, `restarts`, `nav`, `docking`, `rcs`,
+`dockBonus`; `components.js` declares `escape: 0` on the starter. Meaning:
+abort coverage — a failure, in flight, of any of the bottom `escape` stages
+lets the stack above separate clear and light its own engine, still flying
+its pitch program (control is retained). A failure below `ESCAPE_MIN_ALT`
+(the stack has not cleared the pad — an ignition failure at T+0, or a burn
+failure in the first seconds off it) and a failure of the top stage are never
+escaped, whatever `escape` is set to: below that altitude the stack would
+coast straight back into the ground before the relight, so the abort is not
+armed and the failure takes the stack down as before. The abort itself never
+rolls and adds no mass.
+
+`js/core/resolver.js` exports `ESCAPE_DELAY = 2` (s) and `ESCAPE_MIN_ALT =
+100` (m). On an escapable failure of 1-based stage `k` at time `t`:
+- the `'failure'` event carries `escaped: true` (same text as an unescaped
+  failure, e.g. "Stage 1 engine failure at T+40s.");
+- a `'separation'` event `{ stage: k, abort: true }` fires, text "Abort:
+  stage k+1 separates from stage k.";
+- the failed stage's dry mass and remaining propellant are dropped from the
+  stack;
+- stage `k+1` ignites at exactly `t + ESCAPE_DELAY`, with its normal
+  ignition roll — if that fails and is itself covered, another abort
+  follows.
+
+Apogee detection is suppressed during the coast (a burn is still coming),
+but a turnover of the altitude rate seen inside it is not lost: if the
+relight then fails terminally, the 'apogee' event is emitted on the first
+step after the coast (at `maxAltitude`) and the end-at-apogee rule for
+altitude missions applies, so such a flight ends at apogee rather than
+running to impact. If the relight lights, the turnover is discarded and the
+real apogee is found after the burn, as before.
+
+No rng draw is added for the abort itself, so a flight with no escaped
+failure has an unchanged draw order and the save-replay contract
+(js/core/rng.js) holds whether or not `escape` is set.
+
+**Outcome.** `failure` keeps its shape (`{ t, stage, kind }`) but its
+meaning narrows: it is the failure that ended powered flight (terminal), or,
+if none did, the first escaped failure, carrying `escaped: true`; null if
+nothing failed. An orbital-phase restart failure (phase 2) is terminal and
+so replaces an escaped ascent failure here — the field always names the
+failure that actually ends the flight. New field `escapes: number`, the
+count of aborts actually flown (0 on a flight with no failure, or with an
+uncovered one).
+
+**Readout.** A terminal failure reads as before. Each escaped failure
+appends a clause: "Stage 1 engine failure at T+40s; stage 2 escaped clear.",
+e.g. "Reached 61 km. Short by 400 m/s. Stage 1 engine failure at T+40s;
+stage 2 escaped clear." The escape clauses come before the anomaly sentences
+("Anomalies", last), which stay last of all: what the flight ended with or
+survived, then what merely went wrong on the way.
+
+**Tree** (`js/data/tree.js`, tier 2, reliability branch): two new nodes,
+`rel-escape-1` "Booster abort system" (level 6, 11000 funds, requires
+`rel-2` and `struct-4`, `{ stat: 'escape', op: 'set', value: 1 }`) and
+`rel-escape-2` "Upper-stage abort system" (level 8, 19000 funds, requires
+`rel-escape-1` and `struct-6`, `{ stat: 'escape', op: 'set', value: 2 }`).
+The existing tier 2 reliability levels shift to keep order: old `rel-6`
+(Stage 3 restart qualification) becomes level 7, old `rel-7` becomes level
+9, old `rel-8` becomes level 10 — ids unchanged, only `level` moves. Pure
+funds cost, no trajectory effect: the reliability branch keeps its
+invariant that it never touches delta-v (the balance tool forces
+reliability to 1, and `data.test.js` excludes the branch from trajectory
+searches). Tier 2 is now 15 nodes (still within "twelve to sixteen", above).
+
+**UI.**
+- Result: an escaped failure does not read as `readoutKind: 'failure'` (see
+  the phase 0 note above) but, when `outcome.escapes > 0`, adds a
+  reliability hint — "A stage failed and the abort system carried the rest
+  clear. Reliability upgrades make the failure itself rarer."
+  (`data-points-at="reliability"`) — alongside the ordinary shortfall hints
+  on a miss; an escape does not suppress them.
+- Loadout vehicle stats block (see tier 3's restarts/nav/docking/rcs line,
+  below): shows "Abort coverage: booster" when `escape === 1` and "Abort
+  coverage: stages 1–N" when `escape >= 2`.
+- Ascent view (`js/ui/ascent.js`): draws every failure event's bang at its
+  own position, not just the first. The rocket keeps flying its pitch
+  program after an escaped failure; only the terminal failure leaves the
+  tumbling wreck on screen. The escaped stage tumbles away through the same
+  separation handling as an ordinary stage drop. The wreck is keyed on
+  `'failure'` timeline events, so an orbital-phase `'restart-failure'` (an
+  `outcome.failure` of kind `'restart'`) never draws a wreck in the ascent
+  view — intended: on a target mission the ascent playback hands off to
+  `js/ui/map.js` at `'insertion'` (`js/ui/screens.js`, `stopAtKind`), and
+  every orbital failure happens after insertion, so the map view owns it.
+- Shop (`js/ui/shop.js`): the set-`escape` effects render as "booster abort
+  system" (value 1) and "abort coverage: stages 1–N" (value N).
 
 ## Balance, phase 1
 
@@ -839,7 +951,9 @@ resolver's constants.
 - **Loadout**: `window` slider `[data-loadout="window"]` 0..1 step 0.01,
   shown for rendezvous/dock missions, labelled as a launch window with the
   value shown in degrees of orbit (value × 360). Persisted in `view`. The
-  vehicle stats block shows restarts, nav, docking, rcs when non-zero.
+  vehicle stats block shows restarts, nav, docking, rcs when non-zero, and
+  abort coverage (from tier 2's `escape` stat, "Stage abort systems" above)
+  when `escape >= 1`.
   Its hint names the TARGET's own phase ("Station core is at 280°. Inserts
   288° round the orbit."): the target's phase is state — the map draws it
   from its first frame — so quoting it predicts nothing. The hint does NOT
@@ -933,7 +1047,9 @@ Two more ways a launch goes wrong, added after phase 2. A component failure
 (ignition, burn, restart) cuts thrust and the run reads as that failure; an
 **anomaly** leaves the engines running and puts the vehicle somewhere other
 than where it was aiming. Tiers 1 to 3 keep working; every existing test
-keeps passing, with one scripted-rng test updated for the draw order below.
+keeps passing, with the scripted-rng tests updated for the draw order below.
+An anomaly is therefore never escapable by an abort system ("Stage abort
+systems", above): there is no failed stage to throw clear of.
 
 ## js/core/resolver.js
 
@@ -980,14 +1096,19 @@ and only on a guided flight: the guidance roll; then, only if it failed, the
 moment and the direction. The orbital phase draws after every ascent draw,
 as before, and per restart consumed: the restart roll; then, only if it
 passed, the performance roll; then, only if that failed, the deficit. The
-docking roll is unchanged. This is the replay contract from here on.
+docking roll is unchanged. A post-abort ignition is an ignition and draws
+exactly as one, and an abort itself draws nothing, so a vehicle with
+`escape: 0` has bit-for-bit the draw order above. This is the replay
+contract from here on.
 
-**Outcome** gains one field; `failure` keeps its meaning (nothing here ends
-the flight, so it is never set by an anomaly):
+**Outcome** gains one field, alongside the abort systems' `escapes`;
+`failure` keeps its meaning (nothing here ends the flight, so it is never
+set by an anomaly, and an anomaly never makes a failure escaped or
+terminal):
 
 ```js
 {
-  ...phase 0, 1 and 2 fields,
+  ...phase 0, 1 and 2 fields, and `escapes`,
   anomalies: [                        // in time order, [] when clean
     { t, stage, kind: 'guidance', direction: -1 | 1 },
     { t, stage, kind: 'underperform', factor: 0..1 },   // thrust fraction
@@ -999,10 +1120,13 @@ the flight, so it is never set by an anomaly):
 flight computer is the vehicle's, `stage` records which was flying) or
 "Stage 2 engine underperforming: 91% thrust.", at the moment it happens.
 
-**Readouts**: unchanged, with each anomaly's sentence appended whatever the
-verdict — "Reached 62 km. Short by 410 m/s. Stage 1 engine underperforming:
-91% thrust." — so the result screen can point at the branch on a success as
-well, the way a survived failure already does.
+**Readouts**: unchanged, with each anomaly's sentence appended last of all,
+whatever the verdict — "Reached 62 km. Short by 410 m/s. Stage 1 engine
+underperforming: 91% thrust." — so the result screen can point at the branch
+on a success as well, the way a survived failure already does. On a flight
+that also flew an abort, the escape clauses come first: "Reached 61 km.
+Short by 400 m/s. Stage 1 engine failure at T+40s; stage 2 escaped clear.
+Stage 1 engine underperforming: 93% thrust."
 
 ## js/core/vehicle.js, js/data/components.js, js/data/tree.js
 
@@ -1028,5 +1152,7 @@ anomaly appears in a cheapest-reaching set.
   colour.
 - Ticker: `.tick.anomaly` in `--warn`.
 - Result points-at: a guidance anomaly → `guidance`; an underperformance →
-  `reliability`. Shown whatever the verdict, before the existing hints, one
-  per kind.
+  `reliability`. Shown whatever the verdict, before the existing hints
+  (including the escaped-failure hint), one per kind. An anomaly never
+  changes `readoutKind`, which is still `'failure'` only for a terminal
+  failure.
