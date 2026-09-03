@@ -1027,7 +1027,80 @@ test('dock is the goal mission: { dock: { target: \'core\' } }, deploys the modu
   assert.deepEqual(m.requirement, { dock: { target: 'core' } });
   assert.equal(m.deploys.kind, 'module');
   assert.equal(m.requiresObject, 'core');
-  assert.equal(m.requiresNode, 'struct-module');
+  assert.ok(Array.isArray(m.requiresNode), 'dock lists several hardware gates, so requiresNode is the array form');
+  assert.ok(m.requiresNode.includes('struct-module'), 'the station module itself is still one of them');
+});
+
+// Hardware gates (js/core/contracts.js, lockReasons): a mission the
+// resolver cannot fly without a node lists that node in `requiresNode`, so
+// the random draw never offers an uncompletable contract. The two tests
+// below pin the data side of that rule against the tree data itself.
+function requiredNodeIds(m) {
+  if (m.requiresNode === undefined) return [];
+  return Array.isArray(m.requiresNode) ? m.requiresNode : [m.requiresNode];
+}
+
+// Every node an owned set of `ids` necessarily includes: the ids plus the
+// transitive closure of their `requires`, walked over the real tree data
+// (canBuy enforces prerequisites, so owning guide-5 means owning guide-1).
+function prerequisiteClosure(ids) {
+  const seen = new Set();
+  const stack = [...ids];
+  while (stack.length > 0) {
+    const id = stack.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const node = fullTree.byId.get(id);
+    assert.ok(node, `requiresNode names ${id}, which is not a node in js/data/tree.js`);
+    for (const req of node.requires ?? []) stack.push(req);
+  }
+  return seen;
+}
+
+test('every requiresNode id, string or array form, names a node that exists in js/data/tree.js', () => {
+  for (const m of missions) {
+    for (const id of requiredNodeIds(m)) {
+      assert.ok(fullTree.byId.get(id), `${m.id} requires node ${id}, which does not exist`);
+    }
+  }
+});
+
+test('every tier 2/3 mission that needs a turn (downrange, orbit, rendezvous or dock) gates on guide-1, directly or through a listed node\'s prerequisite chain', () => {
+  // An altitude requirement is flown vertical whatever the profile
+  // (orbit-apogee included: js/data/missions.js's HARDWARE GATE note), so
+  // only the shapes that need sideways velocity are in this set.
+  const needsTurn = missions.filter((m) => m.tier >= 2 && m.requirement.altitude === undefined);
+  assert.ok(needsTurn.length >= 9, 'expected the tier 2 downrange/orbit rungs plus all of tier 3');
+  for (const m of needsTurn) {
+    const closure = prerequisiteClosure(requiredNodeIds(m));
+    assert.ok(closure.has('guide-1'), `${m.id} can be drawn without guide-1, but pitchProgram flies straight up without it`);
+  }
+  // And the one tier 2 template that does NOT need a turn stays ungated:
+  // it is the tier's income filler, offerable on arrival with nothing bought.
+  const entry = missions.find((m) => m.id === 'orbit-entry');
+  assert.equal(entry.profile, 'sounding');
+  assert.equal(entry.requiresNode, undefined);
+});
+
+test('rendezvous and dock templates gate on the restarts and nav level the orbital sequence actually checks', () => {
+  // resolveOrbitalSequence (js/core/resolver.js): the match step stops when
+  // restarts < 2, so prop-10's single restart is never enough and prop-11
+  // is the gate; closestApproach = NAV_APPROACH[nav] * (1 + |err|/30) /
+  // (rcs ? 2 : 1) against `<= within`, so within 5000 needs nav 1
+  // (guide-3), within 500 needs nav 2 (guide-4), and the dock step's
+  // DOCK_RANGE of 100 m needs nav 3 (guide-5; nav 2 + rcs is 250 m).
+  const expect = {
+    'rdv-1': ['prop-11', 'guide-3'],
+    'rdv-2': ['prop-11', 'guide-4'],
+    dock: ['prop-11', 'guide-5', 'struct-module', 'struct-9'],
+  };
+  for (const [id, needed] of Object.entries(expect)) {
+    const m = missions.find((mm) => mm.id === id);
+    const closure = prerequisiteClosure(requiredNodeIds(m));
+    for (const node of needed) {
+      assert.ok(closure.has(node), `${id} should not be drawable without ${node}`);
+    }
+  }
 });
 
 test('tier 3 mission payouts are well above tier 2\'s', () => {
@@ -1296,7 +1369,9 @@ test('a greedy player reaches the tier 3 goal (dock) in at most 80 tier 3 launch
       if (m.requiresObject && !target && !(m.requiresObject === 'core' && target)) {
         if (!state.objects.some((o) => o.kind === m.requiresObject)) continue;
       }
-      if (m.requiresNode && !state.owned.includes(m.requiresNode)) continue;
+      // `requiresNode` is a string or an array (contracts.js's requiredNodes
+      // normalises the same way): every listed node must be owned.
+      if (m.requiresNode && ![].concat(m.requiresNode).every((id) => state.owned.includes(id))) continue;
       // `unique`: offered only while no undocked object of that kind exists
       // (contracts.js applies the same rule in the game).
       if (m.unique && m.deploys && state.objects.some((o) => o.kind === m.deploys.kind && o.dockedTo == null)) continue;

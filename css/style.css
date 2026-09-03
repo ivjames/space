@@ -722,6 +722,14 @@ ul.ticker {
 .row.object .row-note { color: var(--muted); }
 .row.object:active { background-color: transparent; }
 
+/* ---- Contracts: the tier's mission ladder ------------------------------- */
+
+.missions { margin-top: 22px; }
+
+/* A ladder rung is a statement, not a control — same as an object row. */
+.row.mission { align-items: flex-start; cursor: default; }
+.row.mission:active { background-color: transparent; }
+
 /* ---- Ticker: the orbital phase's event kinds ---------------------------- */
 
 .tick.insertion { color: var(--accent); font-weight: bold; }
