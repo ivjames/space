@@ -20,6 +20,7 @@ import {
 } from '../core/state.js';
 import { applyOutcome } from '../core/economy.js';
 import { generateContracts } from '../core/contracts.js';
+import { branchExhausted } from '../core/tree.js';
 import { playOutcome } from './ascent.js';
 import { playOrbital } from './map.js';
 import { mountShop } from './shop.js';
@@ -594,13 +595,44 @@ export function mountScreens(ctx) {
         points.push(`<p class="hint points" data-points-at="guidance">The approach was too wide. Navigation is what narrows it — and a smaller launch-window error widens nothing.</p>`);
       }
     } else if (o && !o.success) {
-      if (guidance === 0 && kind === 'orbit') {
+      // A vertical-only vehicle cannot fly an orbit, downrange, rendezvous
+      // or dock mission at all: the lever is guidance, whatever else is or
+      // is not left to buy (DESIGN.md §6: buy something DIFFERENT).
+      const needsGuidance = guidance === 0 && kind !== 'altitude';
+      if (needsGuidance && kind === 'orbit') {
         points.push(`<p class="hint points" data-points-at="guidance">No guidance: a vertical flight cannot orbit. Guidance is what turns the rocket over.</p>`);
-      } else if (guidance === 0 && kind === 'downrange') {
+      } else if (needsGuidance && kind === 'downrange') {
         points.push(`<p class="hint points" data-points-at="guidance">No guidance: a vertical flight cannot fly downrange. Guidance is what turns the rocket over.</p>`);
+      } else if (needsGuidance) {
+        points.push(`<p class="hint points" data-points-at="guidance">No guidance: a vertical flight cannot reach a target. Guidance is what turns the rocket over.</p>`);
       }
-      points.push(`<p class="hint points" data-points-at="propulsion">More delta-v: propulsion raises thrust and isp…</p>`);
-      points.push(`<p class="hint points" data-points-at="structure">…or structure adds propellant and, later, another stage.</p>`);
+      // A shortfall points at what is left to buy. Once propulsion and
+      // structure are both fully owned at this tier, "buy more delta-v" is a
+      // dead end — the full tier 2 vehicle orbits only at full fuel and in a
+      // narrow band of turn, and the same shift happens again with the
+      // heavier tier 3 top stage — so the shortfall is the flight's, and the
+      // hint says so without predicting which loadout the vehicle wants.
+      // Turn is a lever on every flight but a sounding one (an altitude
+      // contract flies vertical whatever the slider says — see doLaunch).
+      // When the guidance hint fired it stands alone: no delta-v and no
+      // loadout orbits a vehicle that cannot turn, so nothing else is true
+      // to say until guidance is owned.
+      const propLeft = !branchExhausted(tree, state, 'propulsion');
+      const structLeft = !branchExhausted(tree, state, 'structure');
+      if (needsGuidance) {
+        // Guidance hint only.
+      } else if (propLeft && structLeft) {
+        points.push(`<p class="hint points" data-points-at="propulsion">More delta-v: propulsion raises thrust and isp…</p>`);
+        points.push(`<p class="hint points" data-points-at="structure">…or structure adds propellant and, later, another stage.</p>`);
+      } else if (propLeft) {
+        points.push(`<p class="hint points" data-points-at="propulsion">More delta-v: propulsion raises thrust and isp.</p>`);
+      } else if (structLeft) {
+        points.push(`<p class="hint points" data-points-at="structure">More delta-v: structure adds propellant and, later, another stage.</p>`);
+      } else if (kind !== 'altitude') {
+        points.push(`<p class="hint points" data-points-at="loadout">Nothing left to buy in propulsion or structure. The shortfall is the flight's: fuel load and turn are the levers.</p>`);
+      } else {
+        points.push(`<p class="hint points" data-points-at="loadout">Nothing left to buy in propulsion or structure at this tier. The shortfall is the flight's: fuel load is the lever.</p>`);
+      }
     }
 
     // Detail rows follow the requirement: an orbit mission is judged on the

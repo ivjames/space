@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadTree, branches, canBuy, buy, collectEffects } from '../js/core/tree.js';
+import { loadTree, branches, canBuy, buy, collectEffects, branchExhausted } from '../js/core/tree.js';
 import { nodes } from '../js/data/tree.js';
 
 function makeState(overrides = {}) {
@@ -252,4 +252,35 @@ test('collectEffects hoists every addStage effect before other effects', () => {
   assert.ok(addStageIndex !== -1, 'sanity: the addStage effect should be present');
   assert.ok(stage1IspIndex !== -1, 'sanity: the stages.1.isp effect should be present');
   assert.ok(addStageIndex < stage1IspIndex, 'addStage must come before the effect targeting it');
+});
+
+test('branchExhausted: true only when every node of the branch at or below the tier is owned', () => {
+  const tree = loadTree(nodes);
+  const ids = (branch, maxTier) => nodes.filter((n) => n.branch === branch && (n.tier ?? 1) <= maxTier).map((n) => n.id);
+  const tier2Prop = ids('propulsion', 2);
+  const tier2Struct = ids('structure', 2);
+  assert.ok(tier2Prop.length > 0 && tier2Struct.length > 0);
+
+  // Empty tree at tier 2: nothing owned, nothing exhausted.
+  assert.equal(branchExhausted(tree, makeState({ tier: 2 }), 'propulsion'), false);
+
+  // Every tier 1 + 2 propulsion node owned: exhausted at tier 2, but funds
+  // and prerequisites play no part (funds 0 here).
+  const maxed = makeState({ tier: 2, owned: [...tier2Prop, ...tier2Struct] });
+  assert.equal(branchExhausted(tree, maxed, 'propulsion'), true);
+  assert.equal(branchExhausted(tree, maxed, 'structure'), true);
+  assert.equal(branchExhausted(tree, maxed, 'guidance'), false);
+
+  // A branch with nothing at or below the tier is exhausted too: guidance
+  // has no tier 1 node, so at tier 1 there is nothing in it to point at.
+  assert.equal(ids('guidance', 1).length, 0);
+  assert.equal(branchExhausted(tree, makeState({ tier: 1 }), 'guidance'), true);
+
+  // One node short is not exhausted.
+  const short = makeState({ tier: 2, owned: tier2Prop.slice(1) });
+  assert.equal(branchExhausted(tree, short, 'propulsion'), false);
+
+  // The same owned set is NOT exhausted once tier 3 opens more of the branch.
+  const tier3 = makeState({ tier: 3, owned: [...tier2Prop, ...tier2Struct] });
+  assert.equal(branchExhausted(tree, tier3, 'propulsion'), ids('propulsion', 3).length === tier2Prop.length);
 });
