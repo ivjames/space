@@ -1017,6 +1017,24 @@ export function playOutcome(canvas, outcome, opts = {}) {
     return lift;
   }
 
+  /**
+   * The stage flying at simT. Normally the sample's; but a separation that
+   * falls between two samples leaves the interpolated sample on the old stage
+   * until the next one (sampleAt keeps the earlier sample's stage), during
+   * which the spent stage would be drawn still attached — and lifted by
+   * separationLift — while it also tumbles away as debris. So the count of
+   * separations already passed wins when it is ahead. Reads only events at
+   * or before simT.
+   */
+  function stageAt(sample) {
+    let passed = 0;
+    for (const ev of timeline) {
+      if (ev.t > simT) break;
+      if (ev.kind === 'separation') passed += 1;
+    }
+    return Math.max(sample.stage ?? 1, passed + 1);
+  }
+
   function drawDebris() {
     // A spent stage drops away and falls behind. Its world position is the
     // position at separation (a past event); the fall itself is a screen-space
@@ -1146,7 +1164,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     drawTrail(dr, alt);
     drawDebris();
     if (!failure || simT < failure.t) {
-      drawRocket(dr, alt, s.stage ?? 1, burningAt(timeline, simT), headingAt(simT));
+      drawRocket(dr, alt, stageAt(s), burningAt(timeline, simT), headingAt(simT));
     }
     drawFailure(dr, alt);
     drawReadout(alt, s.vel ?? 0, dr);
