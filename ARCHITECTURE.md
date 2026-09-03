@@ -794,15 +794,22 @@ of them) are offered only when every listed node is owned. The floor
 contract stays tier 1's. Under the hardware gating rule ("js/core/
 contracts.js"), the tier's gates follow the orbital sequence's own checks:
 `satellite` and `core` need `guide-1` (an orbit needs a turn); `rdv-1`
-needs `['prop-11', 'guide-3']` and `rdv-2` `['prop-11', 'guide-4']` — the
-match step stops at `restarts < 2`, which only prop-11 lifts (rcs waives
-the approach restart, never the match's), and `NAV_APPROACH[nav]` against
-`closestApproach <= within` makes nav 1 the floor for 5 km and nav 2 for
-500 m; `dock` needs `['struct-module', 'prop-11', 'guide-5']` — the dock
-step wants `closestApproach <= DOCK_RANGE` (100 m), which nav 3's 50 m
-meets and nav 2 + rcs's 250 m does not, and struct-module's prerequisite
-chain carries the docking adapter (struct-9). guide-1 and prop-10 arrive
-through those chains too, so each missing purchase is reported once.
+needs `['prop-11', 'guide-3', 'prop-12']` and `rdv-2` `['prop-11',
+'guide-4', 'prop-12']` — the match step stops at `restarts < 2`, which
+only prop-11 lifts (rcs waives the approach restart, never the match's);
+`NAV_APPROACH[nav]` against `closestApproach <= within` makes nav 1 the
+floor for 5 km and nav 2 for 500 m; and rcs (prop-12) is what gives those
+floors a margin, because nav 1 and nav 2 meet their rung only at zero
+phase error and the window slider steps by 0.01 of an orbit (3.6°), so
+the error is never zero — halved by rcs, both rungs hold at the slider's
+worst half-step of 1.8°. `dock` needs `['struct-module', 'prop-11',
+'guide-5']` — the dock step wants `closestApproach <= DOCK_RANGE` (100 m),
+which nav 3's 50 m meets with margin and nav 2 + rcs's 250 m does not, and
+struct-module's prerequisite chain carries the docking adapter (struct-9).
+guide-1 and prop-10 arrive through those chains too, so each missing
+purchase is reported once. A gate must hold at that worst-case slider
+error, not just at zero; `data.test.js` checks each one against the
+resolver's constants.
 
 ## js/ui — what tier 3 adds
 

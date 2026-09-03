@@ -291,11 +291,13 @@ export const missions = [
   //               the band the real resolver clears without that blowout —
   //               confirmed against resolveLaunch, not assumed.
   //   rdv-1       rendezvous within 5 km of the core — the first
-  //               navigation rung, needs nav >= 1 (guide-3, radar) and
-  //               enough restarts for the match burn (prop-11) to be
-  //               affordable at all.
+  //               navigation rung, needs nav >= 1 (guide-3, radar), the
+  //               thrusters (prop-12) that give the radar's approach its
+  //               margin, and enough restarts for the match burn (prop-11)
+  //               to be affordable at all.
   //   rdv-2       rendezvous within 500 m — an order of magnitude tighter,
-  //               needs the star tracker (guide-4) or better.
+  //               needs the star tracker (guide-4) or better, again with
+  //               thrusters.
   //   dock        the tier goal: dock to the core, deploying (and docking)
   //               the lab module. Gated on BOTH requiresObject: 'core' (a
   //               target to dock to) and requiresNode including
@@ -328,17 +330,33 @@ export const missions = [
   //               |err|/30) / (rcs ? 2 : 1), and success is
   //               `closestApproach <= within`. NAV_APPROACH = [50000, 5000,
   //               500, 50], so nav 0 can never close to 5 km (25 km even
-  //               with rcs) and nav 1 (guide-3) hits exactly 5000 m at zero
-  //               phase error. guide-3 requires guide-1, so the turn gate is
+  //               with rcs) and nav 1 (guide-3) is the first level that
+  //               can. guide-3 requires guide-1, so the turn gate is
   //               carried by the chain rather than listed twice.
-  //   guide-4     rdv-2: within 500 m needs nav 2 (500 m at zero error);
-  //               nav 1 with rcs is 2500 m, still five times too wide.
+  //   guide-4     rdv-2: within 500 m needs nav 2; nav 1 with rcs is
+  //               2500 m, still five times too wide.
+  //   prop-12     rdv-1, rdv-2. THE MARGIN. nav 1 reaches exactly 5000 m
+  //               and nav 2 exactly 500 m only at ZERO phase error, and
+  //               zero is not a value the player can set: the launch
+  //               window slider (js/ui/screens.js) steps by 0.01 of an
+  //               orbit, 3.6 degrees, while a target's phase (phaseFor,
+  //               js/core/orbit.js) is a hash of its id -- the first core
+  //               sits at 0.778, so the nearest notch is 0.588 degrees off
+  //               and the radar closes to 5 098 m, never 5 000. Halving
+  //               the approach with rcs turns both rungs from a knife edge
+  //               into a band: at the slider's worst half-notch error of
+  //               1.8 degrees, nav 1 + rcs is 2 650 m and nav 2 + rcs is
+  //               265 m, both inside their rung with room for a sloppier
+  //               window (up to 30 degrees for rdv-1 and 30 for rdv-2).
+  //               test/data.test.js pins this against the resolver's own
+  //               constants at that worst-case error.
   //   guide-5     dock: the dock step requires `closestApproach <=
   //               DOCK_RANGE` (100 m). nav 2 + rcs is 250 m, so the star
   //               tracker does not suffice even with thrusters; nav 3's
-  //               50 m does, with or without rcs (it stays under 100 m up
-  //               to a 30 degree phase error). rcs is therefore a docking
-  //               RELIABILITY buy (DOCK_RELIABILITY_RCS), not a gate.
+  //               50 m does, with or without rcs (53 m at the slider's
+  //               worst half-notch, under 100 m up to a 30 degree phase
+  //               error). rcs is therefore a docking RELIABILITY buy
+  //               (DOCK_RELIABILITY_RCS) on this rung, not a gate.
   //   struct-module   dock: the module itself, carried up and left docked.
   //               It requires struct-9 (the docking adapter, which sets
   //               `docking` -- the dock step's `hasDockingAdapter` check),
@@ -385,7 +403,7 @@ export const missions = [
     profile: 'orbit',
     requirement: { rendezvous: { target: 'core', within: 5000 } },
     requiresObject: 'core',
-    requiresNode: ['prop-11', 'guide-3'],
+    requiresNode: ['prop-11', 'guide-3', 'prop-12'],
     payout: 26000,
     repGain: 6,
     repLoss: 4,
@@ -398,7 +416,7 @@ export const missions = [
     profile: 'orbit',
     requirement: { rendezvous: { target: 'core', within: 500 } },
     requiresObject: 'core',
-    requiresNode: ['prop-11', 'guide-4'],
+    requiresNode: ['prop-11', 'guide-4', 'prop-12'],
     payout: 36000,
     repGain: 7,
     repLoss: 5,

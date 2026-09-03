@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTree, collectEffects, canBuy, buy } from '../js/core/tree.js';
 import { buildVehicle, totalDeltaV, stackMassAbove } from '../js/core/vehicle.js';
-import { resolveLaunch, ORBIT_MIN_ALT } from '../js/core/resolver.js';
+import { resolveLaunch, ORBIT_MIN_ALT, NAV_APPROACH, DOCK_RANGE } from '../js/core/resolver.js';
 import { makeRng } from '../js/core/rng.js';
 import { credit } from '../js/core/economy.js';
 import { phaseFor } from '../js/core/orbit.js';
@@ -1088,10 +1088,13 @@ test('rendezvous and dock templates gate on the restarts and nav level the orbit
   // is the gate; closestApproach = NAV_APPROACH[nav] * (1 + |err|/30) /
   // (rcs ? 2 : 1) against `<= within`, so within 5000 needs nav 1
   // (guide-3), within 500 needs nav 2 (guide-4), and the dock step's
-  // DOCK_RANGE of 100 m needs nav 3 (guide-5; nav 2 + rcs is 250 m).
+  // DOCK_RANGE of 100 m needs nav 3 (guide-5; nav 2 + rcs is 250 m). The
+  // two rendezvous rungs also need rcs (prop-12): nav 1 and nav 2 meet
+  // their rung only at zero phase error, which the window slider cannot
+  // set (see the worst-case test below).
   const expect = {
-    'rdv-1': ['prop-11', 'guide-3'],
-    'rdv-2': ['prop-11', 'guide-4'],
+    'rdv-1': ['prop-11', 'guide-3', 'prop-12'],
+    'rdv-2': ['prop-11', 'guide-4', 'prop-12'],
     dock: ['prop-11', 'guide-5', 'struct-module', 'struct-9'],
   };
   for (const [id, needed] of Object.entries(expect)) {
@@ -1100,6 +1103,35 @@ test('rendezvous and dock templates gate on the restarts and nav level the orbit
     for (const node of needed) {
       assert.ok(closure.has(node), `${id} should not be drawable without ${node}`);
     }
+  }
+});
+
+// A gate is only honest if the listed hardware can actually meet the rung
+// with the controls the player has. The launch window slider steps by 0.01
+// of an orbit (js/ui/screens.js, `step="0.01"`), so the phase error can be
+// as large as half a step, 1.8 degrees, and is never exactly zero (a
+// target's phase is phaseFor(id), a hash — the first core sits at 0.778).
+// resolveOrbitalSequence closes to NAV_APPROACH[nav] * (1 + |err|/30),
+// halved by rcs; at zero error nav 1 is exactly rdv-1's 5000 m and nav 2
+// exactly rdv-2's 500 m, so without rcs both rungs were drawable with
+// hardware that could never quite make them (Codex review, PR #5).
+test('every rendezvous/dock gate still meets its rung at the window slider\'s worst half-step phase error', () => {
+  const WINDOW_STEP = 0.01;
+  const worstErrDeg = (WINDOW_STEP / 2) * 360;
+  for (const m of tier3Missions) {
+    const rendezvous = m.requirement.rendezvous ?? m.requirement.dock;
+    if (!rendezvous) continue;
+    const within = m.requirement.dock !== undefined ? DOCK_RANGE : m.requirement.rendezvous.within;
+    const owned = [...prerequisiteClosure(requiredNodeIds(m))];
+    const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned }));
+    const nav = Math.min(Math.floor(vehicle.nav ?? 0), NAV_APPROACH.length - 1);
+    const rcs = (vehicle.rcs ?? 0) >= 1;
+    const closest = (NAV_APPROACH[nav] * (1 + worstErrDeg / 30)) / (rcs ? 2 : 1);
+    assert.ok(
+      closest <= within,
+      `${m.id}: with exactly its gated hardware (nav ${nav}${rcs ? ' + rcs' : ''}) the approach at a ${worstErrDeg} degree phase error is ${closest} m, over its ${within} m`,
+    );
+    assert.ok((vehicle.restarts ?? 0) >= 2, `${m.id}: gated hardware must carry the match burn's two restarts`);
   }
 });
 
