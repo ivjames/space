@@ -27,6 +27,16 @@
 // vertical (the r direction) rotating toward the prograde horizontal, which on
 // the launch axis is +x. Downrange is the surface arc from the pad,
 // R * atan2(x, y + R), not the straight-line x.
+//
+// STAGE ABORTS (ARCHITECTURE.md "Stage abort systems"). `vehicle.escape` is
+// how many stages, counted from the bottom, are covered by an abort system. A
+// reliability failure of a covered stage that is not the top stage and not on
+// the pad at T+0 is ESCAPED: the failed stage is dropped, the stack above
+// coasts ESCAPE_DELAY seconds and lights its own engine, still flying the pitch
+// program. An escaped failure is recorded in the outcome (`escapes`, and
+// `failure` when nothing terminal follows) and read out as a clause
+// ("...; stage 2 escaped clear."), but powered flight goes on. An abort never
+// rolls the rng, so a flight without one has an unchanged draw order.
 
 import { G0, stageDeltaV, stackMassAbove } from './vehicle.js';
 import {
@@ -105,6 +115,15 @@ export const ORBIT_MIN_ALT = 80000;
  * on the same frame.
  */
 export const ORBIT_CONFIRM_COAST = 30;
+
+/**
+ * Seconds between an abort separation and the next stage's ignition: the
+ * stack above a failed stage coasts this long to clear the debris and settle
+ * its attitude before it lights (ARCHITECTURE.md "Stage abort systems"). The
+ * coast is unpowered but still under control — the pitch program resumes with
+ * the thrust — and it never counts as the end of powered flight.
+ */
+export const ESCAPE_DELAY = 2;
 
 // --- Pitch program constants (ARCHITECTURE.md, phase 1) ---------------------
 // The program is vertical until `turnStart`, then pitches over linearly with
@@ -393,6 +412,15 @@ function failureSentence(failure) {
         ? 'restart failure'
         : 'engine failure';
   return `Stage ${failure.stage} ${noun} at T+${Math.round(failure.t)}s.`;
+}
+
+/**
+ * The clause an ESCAPED failure adds to a readout: the failure sentence with
+ * its full stop swapped for the stage that flew on —
+ * "Stage 1 engine failure at T+40s; stage 2 escaped clear."
+ */
+function escapeSentence(failure) {
+  return `${failureSentence(failure).slice(0, -1)}; stage ${failure.stage + 1} escaped clear.`;
 }
 
 /**
@@ -754,7 +782,7 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
  * Simulate a launch.
  *
  * @param {object} vehicle  { stages, payloadMass, dragArea, dragCoeff, guidance,
- *                            restarts, nav, docking, rcs, dockBonus }
+ *                            restarts, nav, docking, rcs, dockBonus, escape }
  * @param {object} mission  requirement is { altitude } | { downrange }
  *                          | { orbit: { periapsis } }
  *                          | { rendezvous: { target, within } } | { dock: { target } }
@@ -861,6 +889,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       deltaVRequired,
       shortBy: Math.max(0, deltaVRequired),
       failure: null,
+      escapes: 0,
       readout,
       timeline,
       samples,
@@ -881,17 +910,26 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
 
   let stageIndex = 0;          // 0-based index into vehicle.stages
   let thrusting = false;
-  let thrustDone = false;      // no further burn is coming (last burnout, or a failure)
+  let thrustDone = false;      // no further burn is coming (last burnout, cutoff, or a TERMINAL failure)
   let propRemaining = 0;
   let mdot = 0;
   let burnRollAt = Infinity;   // t of this stage's mid-burn reliability roll
   let burnRollPending = false;
+  // Stage aborts. `escape` is how many stages, from the bottom, an abort system
+  // covers; `ignitionAt` is the moment a post-abort ignition is due (Infinity
+  // when none is pending) and `escapes` the escaped failures, in order. While
+  // an ignition is pending the vehicle is coasting but a burn is still coming,
+  // so `thrustDone` stays false and the coast is treated as powered flight by
+  // the apogee rule below.
+  const escape = vehicle?.escape ?? 0;
+  let ignitionAt = Infinity;
+  const escapes = [];
 
   let maxAltitude = 0;
   let maxSpeed = 0;
   let maxDownrange = 0;
   let deltaVAchieved = 0;
-  let failure = null;
+  let failure = null;          // the TERMINAL failure; escaped ones live in `escapes`
   let goalEmitted = false;
   let apogeeEmitted = false;
   let turnEmitted = false;
@@ -934,13 +972,60 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   };
   let nextSampleAt = 0;
 
+  /**
+   * A reliability failure of the current stage, at ignition or mid-burn.
+   *
+   * TERMINAL by default: thrust is cut for good and the flight coasts out.
+   * ESCAPED when the stage is covered by an abort system (`stageIndex <
+   * vehicle.escape`), has a stage above it to escape with, and the failure is
+   * not on the pad at T+0 — there is nothing sensible to fire an upper stage
+   * into from the pad, and the top stage has nothing above it. An escape drops
+   * the failed stage (dry mass plus whatever propellant it still carried),
+   * announces the abort as a 'separation' event `{ abort: true }` naming the
+   * FAILED stage (the renderer tumbles the stage a separation names), advances
+   * to the next stage and schedules its ignition at t + ESCAPE_DELAY. Control is
+   * retained through the abort: the pitch program is a function of (t, alt) and
+   * is applied again the moment thrust resumes. No rng draw is made — the next
+   * stage's own ignition roll happens in ignite(), as it would after a burnout.
+   *
+   * A mid-burn failure's partial-burn delta-v is credited by the caller before
+   * this runs, escaped or not.
+   */
   const cutThrust = (failureKind) => {
-    failure = { t, stage: stageNo(), kind: failureKind };
+    const i = stageIndex;
+    const stage = stages[i];
+    const alt = altOf(x, y);
+    const escapable = i < escape && i + 1 < stages.length && t > 0;
+
+    if (!escapable) {
+      failure = { t, stage: stageNo(), kind: failureKind };
+      thrusting = false;
+      thrustDone = true;
+      burnRollPending = false;
+      burnRollAt = Infinity;
+      event(t, 'failure', failureSentence(failure), { stage: stageNo(), alt });
+      return;
+    }
+
+    const escaped = { t, stage: stageNo(), kind: failureKind, escaped: true };
+    escapes.push(escaped);
+    event(t, 'failure', failureSentence(escaped), { stage: stageNo(), alt, escaped: true });
+
+    // Drop the failed stage. A stage that failed to LIGHT still has its whole
+    // load aboard (propRemaining is only filled once the ignition roll passes),
+    // and it goes down with the stage; a stage that failed mid-burn takes what
+    // it had left.
+    const propAboard = failureKind === 'ignition' ? stage.propMass * fuelFraction : propRemaining;
+    mass -= stage.dryMass + propAboard;
+    propRemaining = 0;
+    event(t, 'separation', `Abort: stage ${i + 2} separates from stage ${i + 1}.`,
+      { stage: i + 1, abort: true, alt });
+
+    stageIndex += 1;
     thrusting = false;
-    thrustDone = true;
     burnRollPending = false;
     burnRollAt = Infinity;
-    event(t, 'failure', failureSentence(failure), { stage: stageNo(), alt: altOf(x, y) });
+    ignitionAt = t + ESCAPE_DELAY;   // thrustDone stays false: a burn is still coming
   };
 
   /**
@@ -951,7 +1036,8 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
    * passed — the fraction of the burn at which the burn roll happens, and
    * later (3) the burn roll itself. An ignition failure therefore consumes
    * exactly one draw. UNCHANGED from phase 0: the draw order is the save's
-   * replay contract.
+   * replay contract. A post-abort ignition (see cutThrust) is this same
+   * routine at t + ESCAPE_DELAY, so it rolls exactly as one after a burnout.
    */
   const ignite = () => {
     const stage = stages[stageIndex];
@@ -1069,6 +1155,13 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   // ---- Integrate ----------------------------------------------------------
   while (!ended && t < maxTime) {
     // Events that fire exactly at the current instant, before stepping.
+    // A post-abort ignition first: the step below is clipped so this lands on
+    // a boundary, exactly ESCAPE_DELAY after the abort.
+    if (ignitionAt !== Infinity && t >= ignitionAt - EPS) {
+      ignitionAt = Infinity;
+      ignite();
+      continue;
+    }
     if (thrusting && burnRollPending && t >= burnRollAt - EPS) {
       burnRollPending = false;
       const stage = stages[stageIndex];
@@ -1103,6 +1196,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     // perfectly reliable vehicle produce identical flights.
     let step = dt;
     if (thrusting && mdot > 0) step = Math.min(step, propRemaining / mdot);
+    if (ignitionAt !== Infinity) step = Math.min(step, ignitionAt - t);
     step = Math.min(step, maxTime - t);
     if (step <= EPS) break;
 
@@ -1195,7 +1289,12 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     }
 
     // Apogee: first time the altitude rate goes non-positive on the way up.
-    if (!apogeeEmitted && prevRadial > 0 && radialSpeed(x, y, vx, vy) <= 0) {
+    // Not during an abort coast: a burn is still coming, so the vehicle is not
+    // at its apogee however it is moving — the real one is found after the
+    // relight, and an altitude flight must not be ended (or told it peaked) by
+    // the two seconds between a stage failing and the next one lighting.
+    if (!apogeeEmitted && ignitionAt === Infinity
+      && prevRadial > 0 && radialSpeed(x, y, vx, vy) <= 0) {
       apogeeEmitted = true;
       event(t, 'apogee', `Apogee at ${formatAltitude(maxAltitude)}.`, { alt: maxAltitude });
       // An ALTITUDE requirement is settled at apogee — nothing after it can
@@ -1221,6 +1320,14 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   }
 
   pushSample();
+
+  // ---- Which failure the outcome names ------------------------------------
+  // `failure` is the failure that ENDED powered flight, when one did. When
+  // every failure was escaped it is the FIRST escaped one, carrying
+  // `escaped: true`, so a result screen can still say something failed; null
+  // when nothing did. (An orbital restart failure below is terminal and takes
+  // precedence over an escaped one.)
+  if (failure === null && escapes.length > 0) failure = escapes[0];
 
   // ---- The orbit the flight achieved --------------------------------------
   // `periapsis`/`apoapsis` are the BEST (highest-periapsis) elements seen at or
@@ -1280,10 +1387,15 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       event(et, ek, text, extra);
       if (et > endT) endT = et;
     }
-    // The outcome carries ONE failure, and it is the first one: an ascent
-    // failure that still made orbit is not overwritten by a later restart
-    // failure (the orbital phase's own stop is reported by `stoppedAt`).
-    if (failure === null && orbitalResult.failure) failure = orbitalResult.failure;
+    // The outcome carries ONE failure: the TERMINAL one. An ascent that made
+    // orbit at all had no terminal ascent failure — its `failure`, if any, is
+    // an escaped one — so a restart failure in the orbital phase is the failure
+    // that actually ends the flight and replaces it (the escape is still in
+    // `escapes` and the readout). The orbital phase's own stop is reported by
+    // `stoppedAt`.
+    if ((failure === null || failure.escaped) && orbitalResult.failure) {
+      failure = orbitalResult.failure;
+    }
   }
 
   // ---- Outcome ------------------------------------------------------------
@@ -1359,9 +1471,13 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     if (!(shortBy > 0)) shortBy = Math.max(1, deltaVRequired * 0.01);
   }
 
+  // Only a TERMINAL failure gets the failure sentence; an escaped one is the
+  // clause appended at the end, whatever else the readout says.
+  const terminal = failure && !failure.escaped ? failure : null;
+
   let readout;
-  if (failure && !success) {
-    readout = failureSentence(failure);
+  if (terminal && !success) {
+    readout = failureSentence(terminal);
   } else if (orbitalResult) {
     // The orbital phase writes its own line: docked, closest approach, or the
     // step it could not perform.
@@ -1371,7 +1487,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       // A failure that still made orbit is worth saying — it points the result
       // screen at the reliability branch even though the contract paid out.
       readout = orbitSentence({ periapsis, apoapsis });
-      if (failure) readout += ` ${failureSentence(failure)}`;
+      if (terminal) readout += ` ${failureSentence(terminal)}`;
     } else if (periapsis !== null) {
       readout = `Apoapsis ${formatElement(apoapsis)}, periapsis ${formatElement(periapsis)}.`
         + ` Short by ${Math.round(shortBy)} m/s.`;
@@ -1385,13 +1501,16 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       readout = `${impacted ? 'Impact' : 'Reached'} ${formatAltitude(maxDownrange)} downrange.`;
       if (!success) readout += ` Short by ${Math.round(shortBy)} m/s.`;
     }
-    if (failure && success) readout += ` ${failureSentence(failure)}`;
+    if (terminal && success) readout += ` ${failureSentence(terminal)}`;
   } else if (success) {
     readout = `Reached ${formatAltitude(maxAltitude)}.`;
-    if (failure) readout += ` ${failureSentence(failure)}`;
+    if (terminal) readout += ` ${failureSentence(terminal)}`;
   } else {
     readout = `Reached ${formatAltitude(maxAltitude)}. Short by ${Math.round(shortBy)} m/s.`;
   }
+  // Every abort flown, in order, as its own clause: "Stage 1 engine failure at
+  // T+40s; stage 2 escaped clear."
+  for (const f of escapes) readout += ` ${escapeSentence(f)}`;
 
   // The end lands after the last orbital event, so the ticker's final line is
   // still its final line once the timeline is sorted.
@@ -1409,6 +1528,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     deltaVRequired,
     shortBy,
     failure,
+    escapes: escapes.length,
     readout,
     timeline,
     samples,

@@ -370,6 +370,61 @@ test('tier 2 nodes exist: 12 to 16 of them, across all four branches', () => {
   assert.deepEqual([...branchesSeen].sort(), ['guidance', 'propulsion', 'reliability', 'structure']);
 });
 
+// Stage abort systems (ARCHITECTURE.md, "Stage abort systems"): two tier 2
+// reliability nodes that set the `escape` capability stat rather than a
+// stage's reliability. Structural checks only -- the resolver's abort
+// behaviour is test/resolver.test.js's business; what this file owns is
+// that the data says what the contract says it says, and that the stat
+// actually lands on a built vehicle.
+test('rel-escape-1 and rel-escape-2 exist as tier 2 reliability nodes with the documented effects and prerequisites', () => {
+  const one = fullTree.byId.get('rel-escape-1');
+  const two = fullTree.byId.get('rel-escape-2');
+  assert.ok(one, 'rel-escape-1 should exist');
+  assert.ok(two, 'rel-escape-2 should exist');
+  for (const node of [one, two]) {
+    assert.equal(node.tier, 2, `${node.id} should be tier 2`);
+    assert.equal(node.branch, 'reliability', `${node.id} should sit in the reliability branch`);
+    assert.ok(node.cost.funds > 0, `${node.id} should cost funds`);
+    assert.equal(Object.keys(node.cost).length, 1, `${node.id} should cost funds only`);
+  }
+  assert.deepEqual(one.effects, [{ stat: 'escape', op: 'set', value: 1 }]);
+  assert.deepEqual(two.effects, [{ stat: 'escape', op: 'set', value: 2 }]);
+  // rel-2 is the failure detection an abort needs; struct-4/struct-6 are
+  // the stage that does the escaping (js/data/tree.js, STAGE ABORT SYSTEMS).
+  assert.deepEqual([...one.requires].sort(), ['rel-2', 'struct-4']);
+  assert.deepEqual([...two.requires].sort(), ['rel-escape-1', 'struct-6']);
+});
+
+test('escape is 0 with neither abort node, 1 with rel-escape-1, 2 with rel-escape-2 (built vehicle)', () => {
+  // ownedWithPrereqs is the tier 3 section's helper (a hoisted function
+  // declaration, so it is callable from here): the full prerequisite
+  // closure plus the node itself, which is what makes struct-6's third
+  // stage exist before anything reads it.
+  const bare = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: [] }));
+  assert.equal(bare.escape, 0);
+  const everythingButAborts = nodes.map((n) => n.id).filter((id) => !id.startsWith('rel-escape-'));
+  const noAborts = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: everythingButAborts }));
+  assert.equal(noAborts.escape, 0, 'no node other than the two abort systems should touch escape');
+  const withOne = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: ownedWithPrereqs('rel-escape-1') }));
+  assert.equal(withOne.escape, 1);
+  const withTwo = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: ownedWithPrereqs('rel-escape-2') }));
+  assert.equal(withTwo.escape, 2);
+});
+
+test('the reliability branch\'s node levels are strictly increasing in data order', () => {
+  // branches() (js/core/tree.js) sorts a branch by `level`, so the shop's
+  // ladder is only as readable as this ordering: the abort nodes were
+  // slotted in by renumbering the nodes above them, and a duplicate or
+  // out-of-order level would silently shuffle the shelf.
+  const levels = nodes.filter((n) => n.branch === 'reliability').map((n) => n.level);
+  for (let i = 1; i < levels.length; i += 1) {
+    assert.ok(
+      levels[i] > levels[i - 1],
+      `reliability levels should strictly increase in data order, got ${levels.join(', ')}`,
+    );
+  }
+});
+
 test('every prerequisite sits at or below its own node\'s tier', () => {
   // loadTree(nodes) above already throws if this doesn't hold; this
   // restates the same invariant directly against the data so a violation

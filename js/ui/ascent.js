@@ -5,15 +5,15 @@
 //
 // NO-LEAK CONTRACT. Nothing on this screen may reveal how the flight ends
 // before the flight shows it. So during playback this module reads exactly
-// three things out of the outcome: the samples whose t <= the current sim
-// time (the point the rocket is at now, and the path it has already flown —
-// that path is the trail), the timeline events whose t <= the current sim
-// time (to emit onEvent, and to know which stages have ignited or burnt
-// out), and outcome.failure once simT has reached failure.t. It never reads
-// outcome.maxAltitude, outcome.maxDownrange, outcome.periapsis,
-// outcome.apoapsis, outcome.orbit, outcome.success, outcome.shortBy,
-// outcome.readout, samples.length, the last sample's t, or any timeline
-// event still in the future.
+// two things out of the outcome: the samples whose t <= the current sim time
+// (the point the rocket is at now, and the path it has already flown — that
+// path is the trail), and the timeline events whose t <= the current sim
+// time (to emit onEvent, to know which stages have ignited or burnt out, and
+// to know that a stage has blown up, where, and whether the flight survived
+// it). It never reads outcome.failure, outcome.escapes, outcome.maxAltitude,
+// outcome.maxDownrange, outcome.periapsis, outcome.apoapsis, outcome.orbit,
+// outcome.success, outcome.shortBy, outcome.readout, samples.length, the
+// last sample's t, or any timeline event still in the future.
 //
 // That closes the two ways this screen used to give the game away:
 //   - SCALE. Metres-per-pixel is ONE CONSTANT for the whole game
@@ -47,9 +47,10 @@
 // legible from the world itself (km ticks and a dashed target line, drawn in
 // world space so they scroll past), the ground carries marks that scroll
 // sideways so downrange is legible the same way, exhaust burns only while a
-// stage is actually producing thrust, a flash marks the failure instant, and
-// a spent stage drops away at separation. The sprite is stage-accurate: one
-// segment per stage of the BUILT vehicle (stackGeometry, sized by each stage's
+// stage is actually producing thrust, a flash marks each failure instant, and
+// a spent stage drops away at separation — including the one an abort throws
+// clear, which is a separation like any other. The sprite is stage-accurate:
+// one segment per stage of the BUILT vehicle (stackGeometry, sized by each stage's
 // mass), each with its own engine nozzle, an interstage band between every
 // pair, and at separation the segment that actually dropped is what falls.
 //
@@ -357,9 +358,12 @@ function sampleAt(samples, t) {
  *
  * Scans only events at or before `t` — an 'ignition' starts a burn, a
  * 'burnout' or 'failure' ends it — so the answer can never depend on
- * something the player has not been told yet. (Precomputing the intervals
- * would give the same answer, but this way the no-leak property is visible
- * in the code rather than argued about in a comment.)
+ * something the player has not been told yet. That handles an abort without
+ * knowing anything about one: the failure puts the engine out, and the
+ * escaped stage's ignition a couple of seconds later lights it again.
+ * (Precomputing the intervals would give the same answer, but this way the
+ * no-leak property is visible in the code rather than argued about in a
+ * comment.)
  */
 function burningAt(timeline, t) {
   let burning = false;
@@ -424,7 +428,6 @@ function normalizeRequirement(req) {
 export function playOutcome(canvas, outcome, opts = {}) {
   const samples = outcome?.samples ?? [];
   const timeline = [...(outcome?.timeline ?? [])].sort((a, b) => a.t - b.t);
-  const failure = outcome?.failure ?? null;
 
   // The only look-ahead in the module: when to stop. The resolver always ends
   // the timeline with an 'end' event at the final simulated instant; a caller
@@ -1088,22 +1091,75 @@ export function playOutcome(canvas, outcome, opts = {}) {
   }
 
   // ---- failure -------------------------------------------------------------
-  // Everything transient here runs on real seconds since the failure event
-  // was passed (ageOf), so it plays at one speed however fast the sim is
-  // running by then, and is already over on a skipped playback, which keeps
-  // only the scorch mark. The stage that failed sets the scale: a booster
-  // going up is a bigger bang than an upper stage's.
-  const failureEv = timeline.find((e) => e.kind === 'failure') ?? null;
-  const failureAge = () => (
-    failure && simT >= failure.t ? ageOf(stamps.get(failureEv)) : Infinity
-  );
+  // A flight can have MORE THAN ONE failure. A vehicle carrying an abort
+  // system (vehicle.escape) survives a failure in one of its bottom stages:
+  // the stack above separates clear and lights its own engine a couple of
+  // seconds later, and the flight carries on. Such an ESCAPED failure is a
+  // 'failure' event carrying `escaped: true`; the TERMINAL one — the one that
+  // ends powered flight, at most one per flight and not necessarily there at
+  // all — carries no such key.
+  //
+  // So every 'failure' event already passed draws its own bang, at its own
+  // place, at its own age, with its own shrapnel; and only the terminal one
+  // leaves a tumbling wreck behind it and stops the rocket being drawn. The
+  // stage each event names sets its scale: a booster going up is a bigger
+  // bang than an upper stage's. Which event is which is read off the events
+  // themselves, and only ever off ones already passed (simT >= ev.t) — never
+  // off outcome.failure, which would say that a failure is coming before the
+  // flight has shown one.
+  //
+  // Everything transient here runs on real seconds since the event was passed
+  // (ageOf), so it plays at one speed however fast the sim is running by then,
+  // and is already over on a skipped playback, which keeps only the scorch
+  // marks.
+
+  /** Every 'failure' event at or before simT, in time order. */
+  function passedFailures() {
+    const out = [];
+    for (const ev of timeline) {
+      if (ev.t > simT) break;
+      if (ev.kind === 'failure') out.push(ev);
+    }
+    return out;
+  }
 
   /**
-   * Fragments and sparks, rolled once per flight from the failure time so
-   * they fly the same way every frame. Angles in radians, speeds in px/s.
+   * The terminal failure once simT has reached it, else null. An escaped
+   * failure is never terminal: the flight goes on, so the rocket goes on
+   * being drawn.
    */
-  const shrapnel = (() => {
-    let sd = (0x51ed27 ^ Math.round((failure?.t ?? 0) * 1000)) >>> 0;
+  function terminalFailure() {
+    for (const ev of timeline) {
+      if (ev.t > simT) break;
+      if (ev.kind === 'failure' && !ev.escaped) return ev;
+    }
+    return null;
+  }
+
+  /**
+   * Age of the MOST RECENT failure the flight has passed, Infinity if it has
+   * passed none. The shake, the linger and the end-of-playback hold all run
+   * off this, so each bang plays out in full — including one on a flight that
+   * escapes it and carries on.
+   */
+  const failureAge = () => {
+    const passed = passedFailures();
+    return passed.length ? ageOf(stamps.get(passed[passed.length - 1])) : Infinity;
+  };
+
+  /**
+   * Fragments and sparks for one failure, rolled from that failure's own time
+   * so they fly the same way every frame. Angles in radians, speeds in px/s.
+   *
+   * Built the first time the event is DRAWN and kept against the event object:
+   * rolling them all up front would mean reading the times of failures that
+   * have not happened yet, which the no-leak contract forbids.
+   */
+  const shrapnelCache = new Map();
+  function shrapnelFor(ev) {
+    const cached = shrapnelCache.get(ev);
+    if (cached) return cached;
+    let sd = (0x51ed27 ^ Math.round((ev?.t ?? 0) * 1000)) >>> 0;
     const rand = () => {
       sd = (Math.imul(sd, 1664525) + 1013904223) >>> 0;
       return sd / 4294967296;
@@ -1121,8 +1177,10 @@ export function playOutcome(canvas, outcome, opts = {}) {
       v: 130 + rand() * 280,
       life: 0.4 + rand() * 0.6,
     }));
-    return { fragments, sparks };
-  })();
+    const rolled = { fragments, sparks };
+    shrapnelCache.set(ev, rolled);
+    return rolled;
+  }
 
   const onScreen = (x, y, pad) => x > -pad && x < w + pad && y > -pad && y < h + pad;
 
@@ -1182,7 +1240,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
   }
 
   /** Bits of the vehicle, thrown out and falling, in the sprite's own colours. */
-  function drawFragments(x, y, age, size) {
+  function drawFragments(x, y, age, size, shrapnel) {
     if (age >= FRAG_LIFE) return;
     const fade = 1 - (age / FRAG_LIFE) ** 2;
     for (const p of shrapnel.fragments) {
@@ -1208,7 +1266,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
   }
 
   /** Sparks: short bright streaks, fast, and gone within the second. */
-  function drawSparks(x, y, age, size) {
+  function drawSparks(x, y, age, size, shrapnel) {
     ctx.save();
     ctx.lineWidth = 1.5;
     ctx.lineCap = 'round';
@@ -1262,52 +1320,33 @@ export function playOutcome(canvas, outcome, opts = {}) {
     }
   }
 
-  function drawFailure(dr, alt) {
-    if (!failure || simT < failure.t) return;
-    const age = failureAge();
-    const at = sampleAt(samples, failure.t);
+  /**
+   * One failure's bang, at the point it happened and at its own age: smoke
+   * under fire under the shock front, shrapnel over all of it, and a scorch
+   * mark that outlasts them so a skipped playback still shows where it went
+   * wrong. Drawn for every failure the flight has passed, escaped or not.
+   */
+  function drawBang(ev) {
+    const age = ageOf(stamps.get(ev));
+    const at = sampleAt(samples, ev.t);
     const x = drToX(at.downrange ?? 0);
     const y = altToY(at.alt);
-    // The stage comes from the failure itself, not the sample at failure.t:
-    // an upper stage that fails at ignition does so at the same instant as
-    // the separation below it, before any sample carries the new stage
-    // number, so the sample would still say the booster was attached while
-    // drawDebris() shows it falling away.
-    const wreck = attachedAt(failure.stage ?? at.stage ?? 1);
-    const size = Math.max(6, wreck[0]?.width ?? 8) / 8;
+    // The stage comes from the event itself, not the sample at ev.t: an upper
+    // stage that fails at ignition does so at the same instant as the
+    // separation below it, before any sample carries the new stage number, so
+    // the sample would still say the booster was attached while drawDebris()
+    // shows it falling away. For an escaped booster failure that stack is the
+    // whole vehicle, which is right — it is the booster's bang.
+    const stack = attachedAt(ev.stage ?? at.stage ?? 1);
+    const size = Math.max(6, stack[0]?.width ?? 8) / 8;
+    const shrapnel = shrapnelFor(ev);
 
-    // The wreck keeps coasting, so the camera still has something to follow:
-    // whatever was attached when it failed, tumbling, engine out, on fire,
-    // trailing smoke.
-    const wx = drToX(dr);
-    const wy = altToY(alt);
-    if (onScreen(wx, wy, 60)) {
-      drawWreckSmoke(wx, wy, age, size);
-      ctx.save();
-      ctx.globalAlpha = 0.9;
-      ctx.translate(wx, wy);
-      // The wreck starts exactly where and how the rocket was drawn the frame
-      // before — same heading, same pivot along the body — and from there
-      // tumbles, with the pivot easing to its middle so that on the ground it
-      // is never more than half buried whichever way up it has landed.
-      const heading = headingAt(failure.t);
-      const flightPivot = (1 - Math.cos(heading)) / 2;
-      const pivot = flightPivot + (0.5 - flightPivot) * Math.min(age / SEPARATION_SETTLE_S, 1);
-      ctx.rotate(heading + age * 2.4);
-      ctx.translate(0, stackHeight(wreck) * pivot - separationLift(pivot));
-      drawStack(wreck, false);
-      ctx.restore();
-    }
-
-    // The bang, at the point it happened: smoke under fire under the shock
-    // front, shrapnel over all of it.
     if (age < SMOKE_LIFE) drawSmokeBall(x, y, age, size);
     if (age < FIREBALL_LIFE) drawFireball(x, y, age, size);
     if (age < SHOCK_LIFE) drawShockwave(x, y, age, size);
-    drawFragments(x, y, age, size);
-    drawSparks(x, y, age, size);
+    drawFragments(x, y, age, size, shrapnel);
+    drawSparks(x, y, age, size, shrapnel);
 
-    // A lingering scorch mark so a skipped playback still shows where it went wrong.
     if (!onScreen(x, y, 20)) return;
     ctx.save();
     ctx.globalAlpha = 0.9;
@@ -1320,6 +1359,48 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.lineTo(x - 7, y + 7);
     ctx.stroke();
     ctx.restore();
+  }
+
+  /**
+   * The stack that the TERMINAL failure left: it keeps coasting, so the
+   * camera still has something to follow — whatever was attached when it
+   * failed, tumbling, engine out, on fire, trailing smoke. Only the terminal
+   * failure gets one; an escaped stage flies on under its own engine and is
+   * drawn by drawRocket like any other flying stack.
+   */
+  function drawWreck(dr, alt, ev) {
+    const age = ageOf(stamps.get(ev));
+    const at = sampleAt(samples, ev.t);
+    const wreck = attachedAt(ev.stage ?? at.stage ?? 1);
+    const size = Math.max(6, wreck[0]?.width ?? 8) / 8;
+    const wx = drToX(dr);
+    const wy = altToY(alt);
+    if (!onScreen(wx, wy, 60)) return;
+    drawWreckSmoke(wx, wy, age, size);
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.translate(wx, wy);
+    // The wreck starts exactly where and how the rocket was drawn the frame
+    // before — same heading, same pivot along the body — and from there
+    // tumbles, with the pivot easing to its middle so that on the ground it
+    // is never more than half buried whichever way up it has landed.
+    const heading = headingAt(ev.t);
+    const flightPivot = (1 - Math.cos(heading)) / 2;
+    const pivot = flightPivot + (0.5 - flightPivot) * Math.min(age / SEPARATION_SETTLE_S, 1);
+    ctx.rotate(heading + age * 2.4);
+    ctx.translate(0, stackHeight(wreck) * pivot - separationLift(pivot));
+    drawStack(wreck, false);
+    ctx.restore();
+  }
+
+  /**
+   * Everything the failures already passed put on screen: the terminal one's
+   * wreck first, so the bangs sit over it, then a bang each.
+   */
+  function drawFailure(dr, alt) {
+    const terminal = terminalFailure();
+    if (terminal) drawWreck(dr, alt, terminal);
+    for (const ev of passedFailures()) drawBang(ev);
   }
 
   /** T+ clock, live altitude, speed and downrange in the top-left of the sky. */
@@ -1384,7 +1465,10 @@ export function playOutcome(canvas, outcome, opts = {}) {
     drawGround();
     drawTrail(dr, alt);
     drawDebris();
-    if (!failure || simT < failure.t) {
+    // The rocket keeps being drawn through an escaped failure — the stack
+    // above separates clear and relights, and the camera follows it — and
+    // stops only once the terminal failure has been passed.
+    if (!terminalFailure()) {
       drawRocket(dr, alt, stageAt(s), burningAt(timeline, simT), headingAt(simT));
     }
     drawFailure(dr, alt);

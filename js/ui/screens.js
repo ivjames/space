@@ -547,7 +547,12 @@ export function mountScreens(ctx) {
     const nav = Math.max(0, Math.floor(vehicle?.nav ?? 0));
     const docking = (vehicle?.docking ?? 0) >= 1;
     const rcs = (vehicle?.rcs ?? 0) >= 1;
+    // Abort coverage: how far up the stack a failure can be escaped. 1 is the
+    // booster alone, 2 and up are the bottom N stages.
+    const abortCover = Math.max(0, Math.floor(vehicle?.escape ?? 0));
+    const abortText = abortCover === 1 ? 'booster' : `stages 1–${abortCover}`;
     const orbitalStats = [
+      abortCover > 0 ? `<div><dt>Abort coverage</dt><dd>${escapeHtml(abortText)}</dd></div>` : '',
       restarts > 0 ? `<div><dt>Restarts</dt><dd>${restarts}</dd></div>` : '',
       nav > 0 ? `<div><dt>Navigation</dt><dd>${escapeHtml(NAV_NAMES[nav] ?? String(nav))}</dd></div>` : '',
       docking ? '<div><dt>Docking</dt><dd>adapter</dd></div>' : '',
@@ -636,17 +641,28 @@ export function mountScreens(ctx) {
     const kind = reqKind(mission?.requirement);
     const guidance = vehicle?.guidance ?? 0;
 
-    // What the result points the player at. A failure is always reliability's
-    // problem; a shortfall is propulsion/structure — except that a tier 2
+    // What the result points the player at. A failure that ended the flight
+    // is always reliability's problem (one the abort system escaped is
+    // reliability's too, but the flight carried on, so the advice does as
+    // well); a shortfall is propulsion/structure — except that a tier 2
     // mission asking for orbit or downrange cannot be flown AT ALL by a
     // vehicle that only knows how to go straight up, and saying "buy more
     // thrust" there would send the player the wrong way (DESIGN.md §6: the
     // player must buy something DIFFERENT).
     const points = [];
     const orb = o?.orbital ?? null;
-    if (o?.failure) {
+    // A failure the abort system carried the rest of the stack clear of is
+    // not the end of the flight, so it is not the end of the advice either:
+    // it earns its own reliability line and then falls through to whatever
+    // the flight actually fell short of.
+    const escaped = (o?.escapes ?? 0) > 0 || !!o?.failure?.escaped;
+    const lost = !!(o?.failure && !o.failure.escaped);
+    if (lost) {
       points.push(`<p class="hint points" data-points-at="reliability">Reliability upgrades reduce this.</p>`);
-    } else if (o && !o.success && orb) {
+    } else if (escaped) {
+      points.push(`<p class="hint points" data-points-at="reliability">A stage failed and the abort system carried the rest clear. Reliability upgrades make the failure itself rarer.</p>`);
+    }
+    if (!lost && o && !o.success && orb) {
       // A tier 3 miss is usually not a delta-v shortfall: the sequence names
       // the step it could not perform, and that step names a branch.
       if (orb.stoppedAt === 'restarts') {
@@ -661,7 +677,7 @@ export function mountScreens(ctx) {
       } else {
         points.push(`<p class="hint points" data-points-at="guidance">The approach was too wide. Navigation is what narrows it — and a smaller launch-window error widens nothing.</p>`);
       }
-    } else if (o && !o.success) {
+    } else if (!lost && o && !o.success) {
       // A vertical-only vehicle cannot fly an orbit, downrange, rendezvous
       // or dock mission at all: the lever is guidance, whatever else is or
       // is not left to buy (DESIGN.md §6: buy something DIFFERENT).
@@ -725,7 +741,11 @@ export function mountScreens(ctx) {
 
     const g = goal();
     const best = tierBest(state, g);
-    const readoutKind = o?.success ? 'success' : o?.failure ? 'failure' : 'short';
+    // An escaped failure is not a failed flight: the readout it colours is
+    // whatever the flight went on to do.
+    const readoutKind = o?.success
+      ? 'success'
+      : (o?.failure && !o.failure.escaped) ? 'failure' : 'short';
     return `
       <div class="screen" data-screen="result">
         <div class="pad">
