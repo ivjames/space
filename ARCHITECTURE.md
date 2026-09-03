@@ -924,9 +924,10 @@ fraction), and from then on the thrust vector drifts away from the program
 in a drawn direction at `GUIDANCE_DRIFT_RATE` (0.3°/s) up to
 `GUIDANCE_DRIFT_MAX` (30°), applied on top of whatever pitch function is in
 use (`opts.pitch` included). A moment that falls after the last burn ended
-never happens. The trajectory up to the drawn moment is independent of the
-rng (announced at the first integrator boundary at or after it, as the
-mid-burn roll is).
+never happens; one inside the final integrator step of powered flight is
+announced at the instant the burn ended, where it can no longer steer. The
+trajectory up to the drawn moment is independent of the rng (announced at
+the first integrator boundary at or after it, as the mid-burn roll is).
 
 **Engine underperformance.** One roll per ignition against the stage's own
 reliability, after the ignition roll. On a failed roll the stage runs below

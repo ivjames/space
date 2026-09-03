@@ -958,6 +958,33 @@ test('a guidance failure drawn after the last burnout never happens', () => {
   assert.ok(!o.timeline.some((e) => e.kind === 'anomaly'));
 });
 
+test('a guidance moment inside the last step of powered flight is still announced', () => {
+  // Codex finding on PR #6: the last burnout lands on the integrator boundary
+  // BEFORE the guidance check runs, so a moment drawn inside that final step
+  // used to be dropped as "after the burn". It is powered flight by the draw,
+  // so it is reported — at the burn's end, where it can no longer steer.
+  const v = { ...strongFixture(), guidanceReliability: 0.5 };
+  const load = { fuelFraction: 1, turn: 0.45 };
+  const o = resolveLaunch(v, MISSION_ORBIT, load, scriptedRng([
+    0.1, 0.1, 0.5,    // stage 1: ignition, performance, burn-roll fraction
+    0.9,              // guidance roll: fail
+    0.999999,         // moment: the very end of the nominal powered flight
+    0.8,              // direction: +1
+    0.1,              // stage 1 burn roll
+    0.1, 0.1, 0.5, 0.1, // stage 2: ignition, performance, fraction, burn roll
+  ]));
+  const lastBurnout = o.timeline.filter((e) => e.kind === 'burnout').at(-1);
+  assert.equal(o.anomalies.length, 1);
+  assert.equal(o.anomalies[0].kind, 'guidance');
+  assert.ok(Math.abs(o.anomalies[0].t - lastBurnout.t) < 1e-6,
+    `announced at the burn's end: ${o.anomalies[0].t} vs ${lastBurnout.t}`);
+  assert.match(o.readout, /Guidance failure at T\+\d+s\.$/);
+  // With no thrust left to steer, the flight itself is the clean one.
+  const clean = resolveLaunch(strongFixture(), MISSION_ORBIT, load, makeRng(1));
+  assert.deepEqual(o.samples, clean.samples);
+  assert.equal(o.periapsis, clean.periapsis);
+});
+
 test('an engine that fails its performance roll runs the whole burn below spec', () => {
   // Draws: ignition (pass), performance (fail at reliability 0.5), deficit
   // (u = 0.5 -> 7.5%), burn-roll fraction, burn roll (pass, 0.1) — then the

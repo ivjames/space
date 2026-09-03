@@ -956,6 +956,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   let guidanceDir = 0;
   let guidanceDriftFrom = Infinity;
   let guidanceEmitted = false;
+  let poweredEndT = Infinity;  // t at which no further burn was coming
 
   let maxAltitude = 0;
   let maxSpeed = 0;
@@ -1008,6 +1009,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     failure = { t, stage: stageNo(), kind: failureKind };
     thrusting = false;
     thrustDone = true;
+    poweredEndT = t;
     burnRollPending = false;
     burnRollAt = Infinity;
     event(t, 'failure', failureSentence(failure), { stage: stageNo(), alt: altOf(x, y) });
@@ -1084,6 +1086,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     reserveMass = mass;
     thrusting = false;
     thrustDone = true;
+    poweredEndT = t;
     burnRollPending = false;
     burnRollAt = Infinity;
     event(t, 'burnout', `Stage ${stageNo()} cutoff.`, { stage: stageNo(), alt: altOf(x, y) });
@@ -1110,6 +1113,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       ignite();
     } else {
       thrustDone = true;
+      poweredEndT = t;
     }
   };
 
@@ -1208,12 +1212,16 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       guidanceEmitted = true;
       // Unless its moment came after the last burn ended (a shortened burn,
       // or an earlier failure): then there was no program left to drop off,
-      // and it never happened.
-      if (!thrustDone) {
-        guidanceDriftFrom = t;
-        const anomaly = { t, stage: stageNo(), kind: 'guidance', direction: guidanceDir };
+      // and it never happened. A moment inside the final step of powered
+      // flight is still powered flight — the burn ended at this boundary,
+      // before this check ran — so it is announced at the instant the burn
+      // ended, where the drift has no thrust left to act on.
+      if (!thrustDone || guidanceFailAt <= poweredEndT + EPS) {
+        const at = thrustDone ? poweredEndT : t;
+        guidanceDriftFrom = at;
+        const anomaly = { t: at, stage: stageNo(), kind: 'guidance', direction: guidanceDir };
         anomalies.push(anomaly);
-        event(t, 'anomaly', anomalySentence(anomaly), { stage: stageNo(), alt: altOf(x, y) });
+        event(at, 'anomaly', anomalySentence(anomaly), { stage: stageNo(), alt: altOf(x, y) });
       }
     }
 
