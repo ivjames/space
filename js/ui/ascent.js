@@ -1421,7 +1421,11 @@ export function playOutcome(canvas, outcome, opts = {}) {
   }
 
   function linger(now) {
-    if (stopped) return;
+    // The caller has already been told the flight is done and may have let
+    // go of the handle, so this loop also ends itself the moment the canvas
+    // leaves the document: a screen change must not leave a detached canvas
+    // painting gradients on every frame.
+    if (stopped || !canvas.isConnected) return;
     realT += Math.min((now - lastNow) / 1000, 0.1);
     lastNow = now;
     frame();
