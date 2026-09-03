@@ -12,6 +12,7 @@
   --border: #333;
   --success: #00d4ff;
   --fail: #ff6b6b;
+  --warn: #ffb347;
 }
 
 @media (prefers-color-scheme: light) {
@@ -561,6 +562,7 @@ ul.ticker {
 }
 
 .tick.failure { color: var(--fail); }
+.tick.anomaly { color: var(--warn); }
 .tick.goal, .tick.liftoff { color: var(--accent); }
 
 /* ---- Result / win ------------------------------------------------------- */

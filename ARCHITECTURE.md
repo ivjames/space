@@ -824,3 +824,93 @@ the top stage after insertion for the cheapest set (must cover match +
 phase(≤ 30°) + approach with margin), and the TWR sweep extended to tier 3
 sets. `data.test.js` asserts reachability of every tier 3 rung and greedy
 ≤ 80.
+
+# Anomalies — guidance failure, engine underperformance
+
+Two more ways a launch goes wrong, added after phase 2. A component failure
+(ignition, burn, restart) cuts thrust and the run reads as that failure; an
+**anomaly** leaves the engines running and puts the vehicle somewhere other
+than where it was aiming. Tiers 1 to 3 keep working; every existing test
+keeps passing, with one scripted-rng test updated for the draw order below.
+
+## js/core/resolver.js
+
+**Guidance failure.** One roll per *guided* flight — `vehicle.guidance >= 1`
+and the loadout is not `vertical`; an unguided or sounding flight has no
+guidance to lose, so tier 1 is untouched — against
+`vehicle.guidanceReliability` (0..1; a vehicle that does not declare it never
+fails, so hand-written fixtures are unaffected). On a failed roll the flight
+computer drops off its program at a moment drawn uniformly over the nominal
+powered flight (the sum of every stage's burn time at the loadout's fuel
+fraction), and from then on the thrust vector drifts away from the program
+in a drawn direction at `GUIDANCE_DRIFT_RATE` (0.3°/s) up to
+`GUIDANCE_DRIFT_MAX` (30°), applied on top of whatever pitch function is in
+use (`opts.pitch` included). A moment that falls after the last burn ended
+never happens. The trajectory up to the drawn moment is independent of the
+rng (announced at the first integrator boundary at or after it, as the
+mid-burn roll is).
+
+**Engine underperformance.** One roll per ignition against the stage's own
+reliability, after the ignition roll. On a failed roll the stage runs below
+spec for its whole burn: thrust × (1 − deficit), isp × (1 − deficit/2), with
+the deficit uniform in [`ENGINE_DEFICIT_MIN`, `ENGINE_DEFICIT_MAX`] (3% to
+12%). Lower thrust lengthens the burn (more gravity loss); lower isp is
+delta-v gone outright, and `deltaVAchieved` credits the isp the burn actually
+ran at. The mid-burn roll is independent of it.
+
+**Draw order.** Per ignition: ignition roll; then, only if it passed, the
+performance roll; then, only if *that* failed, the deficit; then the
+burn-roll fraction; later the burn roll. An ignition failure still costs
+exactly one draw. Per flight, right after the first stage's ignition draws
+and only on a guided flight: the guidance roll; then, only if it failed, the
+moment and the direction. The orbital phase draws after every ascent draw,
+as before. This is the replay contract from here on.
+
+**Outcome** gains one field; `failure` keeps its meaning (nothing here ends
+the flight, so it is never set by an anomaly):
+
+```js
+{
+  ...phase 0, 1 and 2 fields,
+  anomalies: [                        // in time order, [] when clean
+    { t, stage, kind: 'guidance', direction: -1 | 1 },
+    { t, stage, kind: 'underperform', factor: 0..1 },   // thrust fraction
+  ],
+}
+```
+
+**Events**: `'anomaly'`, text "Guidance failure at T+84s." (no stage: the
+flight computer is the vehicle's, `stage` records which was flying) or
+"Stage 2 engine underperforming: 91% thrust.", at the moment it happens.
+
+**Readouts**: unchanged, with each anomaly's sentence appended whatever the
+verdict — "Reached 62 km. Short by 410 m/s. Stage 1 engine underperforming:
+91% thrust." — so the result screen can point at the branch on a success as
+well, the way a survived failure already does.
+
+## js/core/vehicle.js, js/data/components.js, js/data/tree.js
+
+`guidanceReliability` is an ordinary extra top-level stat (carried through
+by `buildVehicle`, targetable by effects), not a capability stat: its
+absence means 1, not 0. The starter declares 0.9. `guide-2` ("Guidance
+refinements") sets it to 0.98 — the honest effect the tier 3 section above
+asked for — and keeps its `guidance` add. Engine underperformance has no
+stat of its own: it rolls against stage reliability, so the reliability
+branch is its lever and propulsion/structure margin is the other.
+
+## Balance
+
+`forceReliability` in `tools/balance.mjs` and `test/data.test.js` also sets
+`guidanceReliability` to 1, so the balance numbers stay deterministic and no
+anomaly appears in a cheapest-reaching set.
+
+## js/ui
+
+- `ascent.js` marks an `'anomaly'` event with a brief amber pulse where it
+  happened and a small ring that stays; the rocket keeps flying. Same
+  no-leak contract: events at or before sim time only. `--warn` is the
+  colour.
+- Ticker: `.tick.anomaly` in `--warn`.
+- Result points-at: a guidance anomaly → `guidance`; an underperformance →
+  `reliability`. Shown whatever the verdict, before the existing hints, one
+  per kind.

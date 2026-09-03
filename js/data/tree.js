@@ -343,27 +343,25 @@ export const nodes = [
   // to 1, which is what turns the loadout's `turn` slider from ignored to
   // live (pitchProgram, resolver.js) -- and is a REQUIRED node for every
   // tier 2 mission (downrange, altitude, and orbit alike all need a turn
-  // to do anything but fly straight up). guide-2 raises guidance further
-  // (to 3, since it folds two integer steps into one node -- see next
-  // paragraph) but is HONESTLY DOCUMENTED as not changing how any flight
-  // flies: `pitchProgram` (resolver.js) only ever checks `guidance >= 1`,
-  // never a higher level, and nothing else in resolver.js or vehicle.js
-  // reads `vehicle.guidance` at all. Confirmed by grepping both files for
-  // every use of `guidance` before writing this -- there is no lever a
-  // higher level could plausibly be given via data without also changing
-  // resolver.js's pitch program itself, which is out of scope here (see
-  // the task's own instruction not to work around a resolver-physics
-  // problem in data). guide-2's description says so plainly rather than
-  // implying a benefit it can't deliver.
+  // to do anything but fly straight up). guide-2 is the branch's
+  // reliability node: it sets `guidanceReliability` (the per-flight roll
+  // the resolver makes on every guided flight, ARCHITECTURE.md
+  // "Anomalies") from the starter's 0.9 to 0.98. A failed roll drops the
+  // flight computer off its program mid-ascent and the vehicle drifts off
+  // target, so this is the one lever against that -- the trajectory
+  // itself is untouched, which is why guide-2 never appears in a
+  // cheapest-reaching set (the balance tool forces guidanceReliability to
+  // 1, as it does stage reliability). It also still adds 2 to `guidance`
+  // (to 3); `pitchProgram` only ever checks `guidance >= 1`, so that part
+  // remains inert and is kept only so the level reads as "refined" in the
+  // vehicle stats.
   //
   // guide-2 used to be two nodes (guide-2/guide-3, ARCHITECTURE.md's
   // "widens the good turn window... refinements the resolver reads" text)
-  // -- both equally inert against the current resolver. Rather than ship
-  // two placebo purchases, they are folded into one cheaper node here;
-  // "fold into a cheaper single node" is one of the two honest options the
-  // task allows when a described lever turns out not to exist in the
-  // resolver, and it is the more defensible one -- a single clearly-honest
-  // placeholder beats two.
+  // -- both inert against the resolver of the time, and folded into one
+  // cheaper node for that reason. The guidance roll is the honest effect
+  // ARCHITECTURE.md's tier 3 section asked for "if the resolver reads
+  // guidance for anything".
   //
   // RELIABILITY. rel-5 continues the stage 2 reliability climb rel-4 (tier
   // 1) started; rel-6 is the first node to touch stage 3 (the third
@@ -546,10 +544,13 @@ export const nodes = [
     level: 2,
     tier: 2,
     name: 'Guidance refinements',
-    desc: 'Refines the flight computer\'s steering logic for a smoother ascent.',
+    desc: 'Hardens the flight computer against a mid-flight guidance failure: 98% of guided flights stay on program, up from 90%.',
     cost: { funds: 17000 },
     requires: ['guide-1'],
-    effects: [{ stat: 'guidance', op: 'add', value: 2 }],
+    effects: [
+      { stat: 'guidance', op: 'add', value: 2 },
+      { stat: 'guidanceReliability', op: 'set', value: 0.98 },
+    ],
   },
 
   {

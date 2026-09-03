@@ -452,6 +452,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     border: '#242a33',
     accent: cssVar(canvas, '--accent', '#00d4ff'),
     fail: cssVar(canvas, '--fail', '#ff6b6b'),
+    warn: cssVar(canvas, '--warn', '#ffb347'),
   };
   const rgbFg = parseHex(colors.fg, [232, 232, 232]);
   const rgbMuted = parseHex(colors.muted, [107, 114, 128]);
@@ -1070,6 +1071,42 @@ export function playOutcome(canvas, outcome, opts = {}) {
     }
   }
 
+  /**
+   * An anomaly (guidance failure, engine underperformance — the resolver's
+   * `'anomaly'` events) does not end the flight, so the rocket keeps flying;
+   * the moment is marked with a brief amber pulse where it happened and a
+   * small ring that stays, so a skipped playback still shows where the run
+   * went wrong. Reads only events at or before simT.
+   */
+  function drawAnomalies() {
+    for (const ev of timeline) {
+      if (ev.kind !== 'anomaly') continue;
+      if (simT < ev.t) break;
+      const at = sampleAt(samples, ev.t);
+      const x = drToX(at.downrange ?? 0);
+      const y = altToY(at.alt);
+      if (y < -40 || y > h + 40 || x < -40 || x > w + 40) continue;
+      const age = ageOf(stamps.get(ev));
+      ctx.save();
+      if (age < 0.8) {
+        const f = 1 - age / 0.8;
+        ctx.globalAlpha = f;
+        ctx.strokeStyle = colors.warn;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(x, y, 8 + 30 * (1 - f), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 0.8;
+      ctx.strokeStyle = colors.warn;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   function drawFailure(dr, alt) {
     if (!failure || simT < failure.t) return;
     const at = sampleAt(samples, failure.t);
@@ -1189,6 +1226,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     drawGround();
     drawTrail(dr, alt);
     drawDebris();
+    drawAnomalies();
     if (!failure || simT < failure.t) {
       drawRocket(dr, alt, stageAt(s), burningAt(timeline, simT), headingAt(simT));
     }
