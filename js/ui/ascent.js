@@ -1090,11 +1090,16 @@ export function playOutcome(canvas, outcome, opts = {}) {
       ctx.save();
       ctx.globalAlpha = 0.9;
       ctx.translate(wx, wy);
-      ctx.rotate(age * 2.4);
-      // A tumbling wreck turns about its middle, so on the ground it is never
-      // more than half buried whichever way up it has landed.
+      // The wreck starts exactly where and how the rocket was drawn the frame
+      // before — same heading, same pivot along the body — and from there
+      // tumbles, with the pivot easing to its middle so that on the ground it
+      // is never more than half buried whichever way up it has landed.
+      const heading = headingAt(failure.t);
+      const flightPivot = (1 - Math.cos(heading)) / 2;
+      const pivot = flightPivot + (0.5 - flightPivot) * Math.min(age / SEPARATION_SETTLE_S, 1);
+      ctx.rotate(heading + age * 2.4);
       const segs = attachedAt(failure.stage ?? at.stage ?? 1);
-      ctx.translate(0, stackHeight(segs) / 2 - separationLift(0.5));
+      ctx.translate(0, stackHeight(segs) * pivot - separationLift(pivot));
       drawStack(segs, false);
       ctx.restore();
     }
