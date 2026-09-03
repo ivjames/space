@@ -751,7 +751,10 @@ export function mountScreens(ctx) {
             <button class="btn-primary" data-action="launch">LAUNCH</button>
           </div>`;
       case 'launch':
-        return `<button class="btn-primary" data-action="continue" ${view.playing ? 'disabled' : ''}>CONTINUE</button>`;
+        // Nothing while the flight plays: a disabled button is a bar of dead
+        // space under a log that wants the room, and the tap that skips is on
+        // the canvas. The button arrives with the result it leads to.
+        return view.playing ? '' : `<button class="btn-primary" data-action="continue">CONTINUE</button>`;
       case 'result':
         return `<button class="btn-primary" data-action="continue">CONTINUE</button>`;
       case 'tree':
@@ -765,6 +768,13 @@ export function mountScreens(ctx) {
   }
 
   // ---- rendering ---------------------------------------------------------
+
+  /** Repaint the actions bar, collapsing it when the screen has no action. */
+  function paintActions() {
+    const html = actionsHtml();
+    actionsEl.innerHTML = html;
+    actionsEl.hidden = html.trim() === '';
+  }
 
   let lastRendered = null;
 
@@ -796,11 +806,11 @@ export function mountScreens(ctx) {
    */
   function render() {
     if (view.name === 'launch' && screenEl.querySelector('#ascent')) {
-      actionsEl.innerHTML = actionsHtml();
+      paintActions();
       return;
     }
     renderScreen();
-    actionsEl.innerHTML = actionsHtml();
+    paintActions();
   }
 
   async function show(name) {
@@ -909,7 +919,7 @@ export function mountScreens(ctx) {
     view.playing = true;
     view.name = 'launch';
     renderScreen();
-    actionsEl.innerHTML = actionsHtml();
+    paintActions();
 
     const canvas = screenEl.querySelector('#ascent');
     const tickerEl = screenEl.querySelector('[data-ticker]');
@@ -934,7 +944,7 @@ export function mountScreens(ctx) {
         view.pending = null;
         update(committed);
       }
-      actionsEl.innerHTML = actionsHtml();
+      paintActions();
     };
 
     /**

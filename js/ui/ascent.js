@@ -161,6 +161,20 @@ const MIN_SEG_H = 9;
 const BOTTOM_W = 10;
 const TAPER = 0.85;
 const MIN_W = 5;
+
+// Failure effect, in real seconds of playback and screen pixels (scaled by
+// the failed stage's width / 8). Lives are how long each part is on screen.
+const FIREBALL_LIFE = 1.1;
+const SMOKE_LIFE = 2.8;
+const SHOCK_LIFE = 0.7;
+const SHAKE_LIFE = 0.45;
+const FRAG_LIFE = 1.9;
+const FRAG_COUNT = 14;
+const FRAG_GRAVITY = 150;   // px/s^2, screen-space like the debris fall
+const SPARK_COUNT = 26;
+const SPARK_GRAVITY = 220;
+const WRECK_PUFFS = 6;
+const WRECK_FIRE = 7;       // the wreck burns this long
 /** Nose cone height above the topmost attached segment, px. */
 const NOSE_H = 8;
 /** Engine nozzle poking out below each segment, px. */
@@ -448,14 +462,14 @@ export function playOutcome(canvas, outcome, opts = {}) {
   const colors = {
     bg: '#0a0f18',
     fg: '#e8e8e8',
-    muted: '#6b7280',
-    border: '#242a33',
+    muted: '#a4adb9',
+    border: '#3a4350',
     accent: cssVar(canvas, '--accent', '#00d4ff'),
     fail: cssVar(canvas, '--fail', '#ff6b6b'),
   };
   const rgbFg = parseHex(colors.fg, [232, 232, 232]);
-  const rgbMuted = parseHex(colors.muted, [107, 114, 128]);
-  const rgbBorder = parseHex(colors.border, [36, 42, 51]);
+  const rgbMuted = parseHex(colors.muted, [164, 173, 185]);
+  const rgbBorder = parseHex(colors.border, [58, 67, 80]);
   const rgbAccent = parseHex(colors.accent, [0, 212, 255]);
 
   // Per-frame sky state, recomputed by updateSky(alt) at the top of frame().
@@ -835,11 +849,14 @@ export function playOutcome(canvas, outcome, opts = {}) {
   // Everything below draws in the sprite's local frame: x across the body, y
   // down it, the ATTACHED body (nose excluded) centred on the origin. `segs`
   // is bottom first, as stackGeometry returns it. Colours: the body is the
-  // night palette's foreground, bands and fins its muted grey, nozzles an ink
-  // that is dark over daylight and muted grey at night, the nose the accent.
+  // night palette's foreground; bands, fins, panel line and nozzles an ink
+  // that is dark over daylight and the muted grey at night (the grey alone
+  // would vanish against a pale sky, and reads under 2:1 against the near-
+  // white tubes); the nose the accent.
 
-  /** Nozzle/ink colour for the current sky. */
-  const inkColor = () => rgba(mix(DAY_INK, rgbMuted, sky.dark), 1);
+  /** Ink colour for the current sky: dark by day, muted grey by night. */
+  const inkRgb = () => mix(DAY_INK, rgbMuted, sky.dark);
+  const inkColor = () => rgba(inkRgb(), 1);
 
   /** One stage's tube, with a darker panel line down one side so it reads as a cylinder. */
   function drawSegment(seg, top) {
@@ -847,7 +864,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.fillStyle = colors.fg;
     ctx.fillRect(-sw / 2, top, sw, sh);
     const panel = Math.max(1, Math.round(sw * 0.22));
-    ctx.fillStyle = rgba(rgbMuted, 0.45);
+    ctx.fillStyle = rgba(inkRgb(), 0.45);
     ctx.fillRect(sw / 2 - panel, top, panel, sh);
     // A near-white sprite disappears against a pale sky, so on a bright one
     // it gets a dark outline. It fades out entirely as the sky goes black.
@@ -875,7 +892,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
   /** Fins either side of the bottom stage. */
   function drawFins(seg, bottom) {
     const hw = seg.width / 2;
-    ctx.fillStyle = colors.muted;
+    ctx.fillStyle = inkColor();
     for (const side of [-1, 1]) {
       ctx.beginPath();
       ctx.moveTo(side * hw, bottom - 6);
@@ -952,7 +969,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     segs.forEach((seg, j) => {
       if (j > 0) {
         const lower = segs[j - 1];
-        ctx.fillStyle = colors.muted;
+        ctx.fillStyle = inkColor();
         ctx.fillRect(-lower.width / 2, bottoms[j], lower.width, BAND_H);
       }
       drawNozzle(seg, bottoms[j]);
@@ -1070,23 +1087,202 @@ export function playOutcome(canvas, outcome, opts = {}) {
     }
   }
 
+  // ---- failure -------------------------------------------------------------
+  // Everything transient here runs on real seconds since the failure event
+  // was passed (ageOf), so it plays at one speed however fast the sim is
+  // running by then, and is already over on a skipped playback, which keeps
+  // only the scorch mark. The stage that failed sets the scale: a booster
+  // going up is a bigger bang than an upper stage's.
+  const failureEv = timeline.find((e) => e.kind === 'failure') ?? null;
+  const failureAge = () => (
+    failure && simT >= failure.t ? ageOf(stamps.get(failureEv)) : Infinity
+  );
+
+  /**
+   * Fragments and sparks, rolled once per flight from the failure time so
+   * they fly the same way every frame. Angles in radians, speeds in px/s.
+   */
+  const shrapnel = (() => {
+    let sd = (0x51ed27 ^ Math.round((failure?.t ?? 0) * 1000)) >>> 0;
+    const rand = () => {
+      sd = (Math.imul(sd, 1664525) + 1013904223) >>> 0;
+      return sd / 4294967296;
+    };
+    const fragments = Array.from({ length: FRAG_COUNT }, () => ({
+      a: rand() * Math.PI * 2,
+      v: 60 + rand() * 170,
+      len: 3 + rand() * 5,
+      w: 1.5 + rand() * 1.5,
+      spin: (rand() - 0.5) * 16,
+      tint: rand(),
+    }));
+    const sparks = Array.from({ length: SPARK_COUNT }, () => ({
+      a: rand() * Math.PI * 2,
+      v: 130 + rand() * 280,
+      life: 0.4 + rand() * 0.6,
+    }));
+    return { fragments, sparks };
+  })();
+
+  const onScreen = (x, y, pad) => x > -pad && x < w + pad && y > -pad && y < h + pad;
+
+  /** Distance flown by something thrown at `v` and slowed by drag, after `t` seconds. */
+  const thrown = (v, t) => v * (1 - Math.exp(-t * 2.2)) / 2.2;
+
+  /** The fireball: white-hot core, orange body, red edge, out fast and gone. */
+  function drawFireball(x, y, age, size) {
+    const f = age / FIREBALL_LIFE;
+    const flick = 0.94 + 0.06 * Math.sin(performance.now() / 23);
+    const r = size * (10 + 46 * Math.sqrt(f)) * flick;
+    const a = 1 - f * f;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(255,250,225,${a})`);
+    g.addColorStop(0.35, `rgba(255,190,70,${a})`);
+    g.addColorStop(0.75, `rgba(255,90,40,${a * 0.7})`);
+    g.addColorStop(1, 'rgba(255,60,30,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** The smoke the fireball leaves: bigger, slower, rising, and ink-coloured for the sky it is on. */
+  function drawSmokeBall(x, y, age, size) {
+    const f = age / SMOKE_LIFE;
+    const r = size * (12 + 54 * Math.sqrt(f));
+    const cy = y - age * 9 * size;
+    const col = mix(DAY_INK, rgbMuted, sky.dark);
+    const g = ctx.createRadialGradient(x, cy, 0, x, cy, r);
+    g.addColorStop(0, rgba(col, 0.55 * (1 - f)));
+    g.addColorStop(0.6, rgba(col, 0.32 * (1 - f)));
+    g.addColorStop(1, rgba(col, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** Two rings racing outward: a pale pressure front and the fail colour behind it. */
+  function drawShockwave(x, y, age, size) {
+    const f = age / SHOCK_LIFE;
+    const r = size * (12 + 110 * f ** 0.6);
+    ctx.save();
+    ctx.globalAlpha = 1 - f;
+    ctx.strokeStyle = 'rgba(255,225,190,1)';
+    ctx.lineWidth = 0.5 + 3 * (1 - f);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = colors.fail;
+    ctx.lineWidth = 0.5 + 2 * (1 - f);
+    ctx.beginPath();
+    ctx.arc(x, y, r * 0.8, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Bits of the vehicle, thrown out and falling, in the sprite's own colours. */
+  function drawFragments(x, y, age, size) {
+    if (age >= FRAG_LIFE) return;
+    const fade = 1 - (age / FRAG_LIFE) ** 2;
+    for (const p of shrapnel.fragments) {
+      const d = thrown(p.v, age) * size;
+      const px = x + Math.cos(p.a) * d;
+      const py = y + Math.sin(p.a) * d + FRAG_GRAVITY * age * age;
+      if (!onScreen(px, py, 10)) continue;
+      ctx.save();
+      ctx.globalAlpha = fade;
+      ctx.translate(px, py);
+      // Hot pieces glow for the first moments.
+      if (p.tint > 0.7 && age < 0.6) {
+        ctx.fillStyle = colors.fail;
+        ctx.beginPath();
+        ctx.arc(0, 0, 2.5 * (1 - age / 0.6) + 1, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.rotate(p.a + p.spin * age);
+      ctx.fillStyle = p.tint < 0.55 ? colors.fg : p.tint < 0.85 ? inkColor() : colors.accent;
+      ctx.fillRect(-p.len / 2, -p.w / 2, p.len, p.w);
+      ctx.restore();
+    }
+  }
+
+  /** Sparks: short bright streaks, fast, and gone within the second. */
+  function drawSparks(x, y, age, size) {
+    ctx.save();
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    for (const p of shrapnel.sparks) {
+      if (age >= p.life) continue;
+      const d1 = thrown(p.v, age) * size;
+      const d0 = thrown(p.v, Math.max(0, age - 0.04)) * size;
+      const px = x + Math.cos(p.a) * d1;
+      const py = y + Math.sin(p.a) * d1 + SPARK_GRAVITY * age * age;
+      const qx = x + Math.cos(p.a) * d0;
+      const qy = y + Math.sin(p.a) * d0 + SPARK_GRAVITY * Math.max(0, age - 0.04) ** 2;
+      if (!onScreen(px, py, 10)) continue;
+      ctx.strokeStyle = `rgba(255,214,120,${1 - age / p.life})`;
+      ctx.beginPath();
+      ctx.moveTo(qx, qy);
+      ctx.lineTo(px, py);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Smoke streaming off the wreck, back along the way it is moving. */
+  function drawWreckSmoke(wx, wy, age, size) {
+    const hd = headingAt(simT);
+    const bx = -Math.sin(hd);
+    const by = Math.cos(hd);
+    const col = mix(DAY_INK, rgbMuted, sky.dark);
+    for (let k = 1; k <= WRECK_PUFFS; k += 1) {
+      const d = k * (7 + 3 * size);
+      const wob = Math.sin(realT * 9 + k * 2.1) * (1 + k * 0.4);
+      const px = wx + bx * d + by * wob;
+      const py = wy + by * d - bx * wob;
+      ctx.fillStyle = rgba(col, 0.4 * (1 - k / (WRECK_PUFFS + 1)));
+      ctx.beginPath();
+      ctx.arc(px, py, (2 + k * 1.3) * size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // The broken end still burns for a while.
+    if (age < WRECK_FIRE) {
+      const f = 1 - age / WRECK_FIRE;
+      const flick = 0.75 + 0.25 * Math.sin(performance.now() / 31);
+      const r = (5 + 4 * f) * size * flick;
+      const g = ctx.createRadialGradient(wx, wy, 0, wx, wy, r);
+      g.addColorStop(0, `rgba(255,235,180,${0.9 * f})`);
+      g.addColorStop(0.5, `rgba(255,140,50,${0.6 * f})`);
+      g.addColorStop(1, 'rgba(255,80,40,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(wx, wy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   function drawFailure(dr, alt) {
     if (!failure || simT < failure.t) return;
+    const age = failureAge();
     const at = sampleAt(samples, failure.t);
     const x = drToX(at.downrange ?? 0);
     const y = altToY(at.alt);
-    const age = ageOf(stamps.get(timeline.find((e) => e.kind === 'failure')));
+    // The stage comes from the failure itself, not the sample at failure.t:
+    // an upper stage that fails at ignition does so at the same instant as
+    // the separation below it, before any sample carries the new stage
+    // number, so the sample would still say the booster was attached while
+    // drawDebris() shows it falling away.
+    const wreck = attachedAt(failure.stage ?? at.stage ?? 1);
+    const size = Math.max(6, wreck[0]?.width ?? 8) / 8;
 
     // The wreck keeps coasting, so the camera still has something to follow:
-    // whatever was attached when it failed, tumbling, engine out. The stage
-    // comes from the failure itself, not the sample at failure.t: an upper
-    // stage that fails at ignition does so at the same instant as the
-    // separation below it, before any sample carries the new stage number,
-    // so the sample would still say the booster was attached while
-    // drawDebris() shows it falling away.
+    // whatever was attached when it failed, tumbling, engine out, on fire,
+    // trailing smoke.
     const wx = drToX(dr);
     const wy = altToY(alt);
-    if (wy < h + 40 && wy > -40 && wx > -40 && wx < w + 40) {
+    if (onScreen(wx, wy, 60)) {
+      drawWreckSmoke(wx, wy, age, size);
       ctx.save();
       ctx.globalAlpha = 0.9;
       ctx.translate(wx, wy);
@@ -1098,30 +1294,21 @@ export function playOutcome(canvas, outcome, opts = {}) {
       const flightPivot = (1 - Math.cos(heading)) / 2;
       const pivot = flightPivot + (0.5 - flightPivot) * Math.min(age / SEPARATION_SETTLE_S, 1);
       ctx.rotate(heading + age * 2.4);
-      const segs = attachedAt(failure.stage ?? at.stage ?? 1);
-      ctx.translate(0, stackHeight(segs) * pivot - separationLift(pivot));
-      drawStack(segs, false);
+      ctx.translate(0, stackHeight(wreck) * pivot - separationLift(pivot));
+      drawStack(wreck, false);
       ctx.restore();
     }
 
-    // A bright flash right at the moment, then a lingering scorch mark so a
-    // skipped playback still shows where it went wrong.
-    if (age < 0.6) {
-      const f = 1 - age / 0.6;
-      ctx.save();
-      ctx.globalAlpha = f;
-      ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      ctx.arc(x, y, 6 + 26 * (1 - f), 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = colors.fail;
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(x, y, 10 + 40 * (1 - f), 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-    }
-    if (y < -20 || y > h + 20 || x < -20 || x > w + 20) return;
+    // The bang, at the point it happened: smoke under fire under the shock
+    // front, shrapnel over all of it.
+    if (age < SMOKE_LIFE) drawSmokeBall(x, y, age, size);
+    if (age < FIREBALL_LIFE) drawFireball(x, y, age, size);
+    if (age < SHOCK_LIFE) drawShockwave(x, y, age, size);
+    drawFragments(x, y, age, size);
+    drawSparks(x, y, age, size);
+
+    // A lingering scorch mark so a skipped playback still shows where it went wrong.
+    if (!onScreen(x, y, 20)) return;
     ctx.save();
     ctx.globalAlpha = 0.9;
     ctx.strokeStyle = colors.fail;
@@ -1183,6 +1370,14 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.clearRect(0, 0, w, h);
     updateSky(alt);
     drawSky();
+    // The bang shakes the world for a moment: everything between the sky
+    // and the readout jolts, decaying to still. Presentation only.
+    const fa = failureAge();
+    const shake = fa < SHAKE_LIFE ? 1 - fa / SHAKE_LIFE : 0;
+    ctx.save();
+    if (shake > 0) {
+      ctx.translate(Math.sin(realT * 71) * 7 * shake, Math.cos(realT * 53) * 5 * shake);
+    }
     drawTicks();
     drawClouds();
     drawTargetLine();
@@ -1193,6 +1388,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
       drawRocket(dr, alt, stageAt(s), burningAt(timeline, simT), headingAt(simT));
     }
     drawFailure(dr, alt);
+    ctx.restore();
     drawReadout(alt, s.vel ?? 0, dr);
   }
 
@@ -1218,6 +1414,22 @@ export function playOutcome(canvas, outcome, opts = {}) {
     frame();
     detach();
     onDone();
+    // A flight that ends on the bang (an ignition failure ends at T+0, on
+    // the first frame) would otherwise freeze the fireball mid-burst. Sim
+    // time is over; the effect plays out on real time until it is spent.
+    if (!skipped && failureAge() < SMOKE_LIFE) raf = requestAnimationFrame(linger);
+  }
+
+  function linger(now) {
+    // The caller has already been told the flight is done and may have let
+    // go of the handle, so this loop also ends itself the moment the canvas
+    // leaves the document: a screen change must not leave a detached canvas
+    // painting gradients on every frame.
+    if (stopped || !canvas.isConnected) return;
+    realT += Math.min((now - lastNow) / 1000, 0.1);
+    lastNow = now;
+    frame();
+    if (failureAge() < SMOKE_LIFE) raf = requestAnimationFrame(linger);
   }
 
   function tick(now) {
@@ -1283,7 +1495,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
   if (finalT <= 0) {
     // Nothing to animate (e.g. "insufficient thrust to lift off"): show the
     // static frame, then hand control straight back.
-    requestAnimationFrame(() => finish());
+    requestAnimationFrame((now) => { lastNow = now; finish(); });
   } else {
     raf = requestAnimationFrame(tick);
   }
