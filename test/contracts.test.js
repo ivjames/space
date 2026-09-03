@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { makeRng } from '../js/core/rng.js';
 import assert from 'node:assert/strict';
-import { generateContracts, floorContract, lockReasons, isEligible } from '../js/core/contracts.js';
+import { generateContracts, floorContract, lockReasons, isEligible, boardStale } from '../js/core/contracts.js';
 import { missions as realMissions } from '../js/data/missions.js';
 
 // Deterministic fake rng: pulls from a fixed sequence of "random" indices.
@@ -444,4 +444,80 @@ test('the board draws from the current tier first and reaches back only to fill'
   const ids = generateContracts(at2, gated, makeRng(3), 3);
   assert.ok(ids.includes('b1'));
   assert.ok(ids.some((id) => id === 'a1' || id === 'a2'));
+});
+
+// =========================================================================
+// boardStale: when a board drawn earlier should be redrawn without a launch.
+// =========================================================================
+
+const staleMissions = [
+  { id: 'f', tier: 1, floor: true, requirement: { altitude: 1 }, payout: 1, repGain: 0, repLoss: 0 },
+  { id: 'a1', tier: 1, requirement: { altitude: 2 }, payout: 1, repGain: 0, repLoss: 0 },
+  { id: 'a2', tier: 1, requirement: { altitude: 3 }, payout: 1, repGain: 0, repLoss: 0 },
+  { id: 'b0', tier: 2, requirement: { altitude: 4 }, payout: 1, repGain: 0, repLoss: 0 },
+  { id: 'b1', tier: 2, requirement: { downrange: 5 }, payout: 1, repGain: 0, repLoss: 0, requiresNode: 'guide-1' },
+  { id: 'b2', tier: 2, requirement: { downrange: 6 }, payout: 1, repGain: 0, repLoss: 0, requiresNode: 'guide-1' },
+  { id: 'b3', tier: 2, requirement: { downrange: 7 }, payout: 1, repGain: 0, repLoss: 0, requiresNode: 'guide-1', minReputation: 50 },
+];
+
+test('boardStale: an empty board is stale', () => {
+  assert.equal(boardStale({ tier: 2, reputation: 0, owned: [], contracts: [] }, staleMissions), true);
+  assert.equal(boardStale({ tier: 2, reputation: 0, owned: [] }, staleMissions), true);
+});
+
+test('boardStale: a board holding an offer the state no longer qualifies for is stale', () => {
+  // Drawn under an older build with no guidance gate; the player owns nothing.
+  const state = { tier: 2, reputation: 0, owned: [], contracts: ['f', 'b1', 'b0'] };
+  assert.equal(boardStale(state, staleMissions), true);
+});
+
+test('boardStale: an offer whose template no longer exists makes the board stale', () => {
+  const state = { tier: 2, reputation: 0, owned: ['guide-1'], contracts: ['f', 'gone', 'b0'] };
+  assert.equal(boardStale(state, staleMissions), true);
+});
+
+test('boardStale: a board that reached back to an earlier tier goes stale once a purchase unlocks a current-tier contract', () => {
+  // Before guide-1: only b0 is eligible at tier 2, so the second slot fell
+  // back to tier 1. That board is not stale while nothing has changed...
+  const before = { tier: 2, reputation: 0, owned: [], contracts: ['f', 'b0', 'a1'] };
+  assert.equal(boardStale(before, staleMissions), false);
+  // ...and is the moment guide-1 makes b1/b2 eligible.
+  const after = { ...before, owned: ['guide-1'] };
+  assert.equal(boardStale(after, staleMissions), true);
+});
+
+test('boardStale: a board short of its slots goes stale the same way', () => {
+  const short = { tier: 2, reputation: 0, owned: [], contracts: ['f', 'b0'] };
+  assert.equal(boardStale(short, staleMissions), false);
+  assert.equal(boardStale({ ...short, owned: ['guide-1'] }, staleMissions), true);
+});
+
+test('boardStale: a full board of eligible current-tier offers is never stale, so a purchase is not a re-roll', () => {
+  const state = { tier: 2, reputation: 0, owned: ['guide-1'], contracts: ['f', 'b0', 'b1'] };
+  assert.equal(boardStale(state, staleMissions), false);
+  // b3 becoming eligible (reputation crosses its gate) changes nothing:
+  // both drawn slots are still filled from this tier.
+  assert.equal(boardStale({ ...state, reputation: 100 }, staleMissions), false);
+});
+
+test('boardStale: the floor contract never counts as a drawn slot and never makes a board stale', () => {
+  // Tier 1: slots are the two non-floor rows; a board of floor + two tier 1
+  // offers is full.
+  const full = { tier: 1, reputation: 0, owned: [], contracts: ['f', 'a1', 'a2'] };
+  assert.equal(boardStale(full, staleMissions), false);
+  // Tier 2 with only the floor drawn is short, and a2 (tier 1) is eligible
+  // but not current-tier, so nothing to redraw for yet.
+  const onlyFloor = { tier: 2, reputation: 0, owned: [], contracts: ['f'] };
+  const withoutB0 = staleMissions.filter((m) => m.id !== 'b0');
+  assert.equal(boardStale(onlyFloor, withoutB0), false);
+});
+
+test('boardStale agrees with generateContracts: a freshly drawn board is never stale', () => {
+  for (const owned of [[], ['guide-1']]) {
+    for (let seed = 1; seed < 20; seed += 1) {
+      const state = { tier: 2, reputation: 100, owned, objects: [] };
+      const contracts = generateContracts(state, staleMissions, makeRng(seed), 3);
+      assert.equal(boardStale({ ...state, contracts }, staleMissions), false, `seed ${seed} owned ${owned}`);
+    }
+  }
 });

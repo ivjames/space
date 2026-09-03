@@ -19,7 +19,7 @@ import {
   recordLaunch, tierGoalMet, deriveVehicle, advanceTier, findTarget,
 } from '../core/state.js';
 import { applyOutcome } from '../core/economy.js';
-import { generateContracts, lockReasons } from '../core/contracts.js';
+import { generateContracts, lockReasons, boardStale } from '../core/contracts.js';
 import { branchExhausted } from '../core/tree.js';
 import { playOutcome } from './ascent.js';
 import { playOrbital } from './map.js';
@@ -326,6 +326,7 @@ export function mountScreens(ctx) {
     return `
       <nav class="tabs">
         <div class="tab ${active === 'contracts' ? 'active' : ''}" data-tab="contracts" role="button" tabindex="0">CONTRACTS</div>
+        <div class="tab ${active === 'missions' ? 'active' : ''}" data-tab="missions" role="button" tabindex="0">MISSIONS</div>
         <div class="tab ${active === 'tree' ? 'active' : ''}" data-tab="tree" role="button" tabindex="0">TECH TREE</div>
       </nav>`;
   }
@@ -369,11 +370,12 @@ export function mountScreens(ctx) {
   }
 
   /**
-   * The tier's mission ladder: every template of the current tier, in
-   * js/data/missions.js order, whether or not the board drew it. The board
-   * hides what the player cannot do yet (js/core/contracts.js, lockReasons);
-   * this list is where they see the rungs and what unlocks each one. Rows
-   * are statements, not controls — nothing here selects a contract.
+   * The tier's mission ladder, on its own screen behind the MISSIONS tab:
+   * every template of the current tier, in js/data/missions.js order,
+   * whether or not the board drew it. The board hides what the player
+   * cannot do yet (js/core/contracts.js, lockReasons); this is where they
+   * see the rungs and what unlocks each one. Rows are statements, not
+   * controls — nothing here selects a contract; that stays the board's job.
    */
   function reasonText(r) {
     const deployName = (kind) => missions.find((m) => m.deploys?.kind === kind)?.deploys?.name ?? kind;
@@ -434,6 +436,20 @@ export function mountScreens(ctx) {
       </section>`;
   }
 
+  function missionsScreenHtml() {
+    const state = getState();
+    const g = goal();
+    return `
+      <div class="screen" data-screen="missions">
+        ${tabsHtml('missions')}
+        <div class="pad">
+          <p class="hint goal-line">Tier ${state.tier} goal: ${escapeHtml(g?.name ?? '—')}</p>
+          <p class="hint">Every mission in this tier, and what each one needs. The contract board offers only what you can fly.</p>
+          ${missionsHtml()}
+        </div>
+      </div>`;
+  }
+
   function contractsHtml() {
     const state = getState();
     const g = goal();
@@ -467,7 +483,6 @@ export function mountScreens(ctx) {
           </p>
           <ul class="list">${rows}</ul>
           <p class="hint foot">Tap a contract, then Select.</p>
-          ${missionsHtml()}
           ${objectsHtml()}
         </div>
       </div>`;
@@ -836,6 +851,7 @@ export function mountScreens(ctx) {
       case 'result':
         return `<button class="btn-primary" data-action="continue">CONTINUE</button>`;
       case 'tree':
+      case 'missions':
         return `<button class="btn-primary" data-action="back">BACK</button>`;
       case 'win':
       case 'tier':
@@ -862,6 +878,7 @@ export function mountScreens(ctx) {
     const keepScroll = lastRendered === view.name ? screenEl.scrollTop : 0;
     switch (view.name) {
       case 'contracts': screenEl.innerHTML = contractsHtml(); break;
+      case 'missions': screenEl.innerHTML = missionsScreenHtml(); break;
       case 'loadout': screenEl.innerHTML = loadoutHtml(); break;
       case 'launch': screenEl.innerHTML = launchHtml(); break;
       case 'result': screenEl.innerHTML = resultHtml(); break;
@@ -914,6 +931,14 @@ export function mountScreens(ctx) {
         render();
         return;
       }
+      // A purchase on the tree tab can make a contract eligible that the
+      // board, drawn before it, does not hold — or a gate change under a
+      // save can leave it holding one the player cannot fly. Redraw it
+      // here, the one place every route back to the board passes through,
+      // so the board always says what the state does (contracts.js,
+      // boardStale, for exactly when that is).
+      const s1 = getState();
+      if (boardStale(s1, missions)) update(withFreshContracts(s1));
       // Offers are regenerated after every launch, so a stale selection has
       // to fall back to something that is actually on the board.
       const offered = getState().contracts ?? [];
