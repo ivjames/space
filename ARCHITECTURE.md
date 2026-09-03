@@ -207,12 +207,40 @@ export function generateContracts(state, missions, rng, count = 3)
   // picks from missions.js templates the state qualifies for,
   // ALWAYS includes the floor contract as the first entry
 export function floorContract(missions)
+export function lockReasons(state, m)   // -> [{ kind, ... }], [] = offerable
+export function isEligible(state, m)    // !m.floor && lockReasons(...) is empty
 ```
 
 The floor contract is always affordable and always offered. It exists so the
 player can never be stuck (DESIGN.md §7). The other slots draw from the
 current tier's templates first and reach back to earlier tiers only when
 the current tier cannot fill them, so a tier 3 board is a tier 3 board.
+
+`isEligible` is the one predicate `generateContracts` filters on, and
+`lockReasons` is why a template fails it, so the pool and the explanation
+can never disagree. `lockReasons` ignores `m.floor` (the floor is slot 0 by
+construction, never drawn) and returns every unmet gate, in this order:
+
+| shape | when |
+| --- | --- |
+| `{ kind: 'tier', tier }` | `m.tier > state.tier` |
+| `{ kind: 'reputation', need, have }` | `state.reputation < m.minReputation` |
+| `{ kind: 'node', id }` | one per node in `m.requiresNode` not in `state.owned`, template order |
+| `{ kind: 'object', objectKind }` | `m.requiresObject`, and no object of that kind exists |
+| `{ kind: 'unique', objectKind }` | `m.unique`, and an undocked object of `m.deploys.kind` exists |
+
+**Hardware gating rule.** `requiresNode` is a node id or an array of them,
+and every listed node must be owned. It started as the station-module gate
+(`dock` needs `struct-module`, hardware the flight carries up) and is also
+the gate for hardware a mission is *unflyable* without: if the resolver
+cannot meet a template's requirement without a node — a downrange or orbit
+flight without `guide-1` flies straight up; a rendezvous without the
+restarts to burn twice stops at the match step — the template lists that
+node, so the random draw never offers a contract the player has no way to
+complete. Which node each template needs, and the resolver line that
+decides it, is documented per tier in `js/data/missions.js`. List the
+nodes the resolver checks; nodes those imply through their prerequisite
+chain need not be repeated.
 
 ## js/core/state.js
 
@@ -510,6 +538,17 @@ goal. `tierGoals[2] = { requirement: { orbit: { periapsis: 100000 } }, name:
 'Reach orbit' }`. Contracts already filter by `tier <= state.tier`; tier 1
 templates stay in the pool as cheap fillers.
 
+Every template with a `downrange` or `orbit` requirement carries
+`requiresNode: 'guide-1'`: `pitchProgram` flies straight up unless
+`vehicle.guidance >= 1`, and guide-1 is the only node that sets it, so those
+shapes are unflyable without it and must not be drawn until it is owned
+(the hardware gating rule under "js/core/contracts.js"). The two
+altitude-shaped templates are deliberately ungated — an altitude
+requirement is the one shape guidance does not gate: the sounding filler
+`orbit-entry` so a tier 2 board has something on it before the first
+purchase, and `orbit-apogee`, which a strong enough vehicle clears straight
+up (the gate is for the impossible, not the merely hard).
+
 ## js/ui — what tier 2 adds
 
 - **Loadout** gains a `turn` slider (`input[type=range][data-loadout="turn"]`,
@@ -751,12 +790,32 @@ repeatable, the tier's income filler), `core` (orbit ≥ 200 km, `deploys:
 { kind: 'core', name: 'Station core' }`, `unique: true`), `rdv-1`
 (rendezvous within 5 km, `requiresObject: 'core'`), `rdv-2` (within 500 m),
 `dock` (the goal: `{ dock: { target: 'core' } }`, `deploys: { kind:
-'module', name: 'Lab module' }` docked on success, `requiresNode:
-'struct-module'`). `tierGoals[3] = { requirement: { dock: { target:
-'core' } }, name: 'Assemble a station' }`. Reputation gates rise again.
+'module', name: 'Lab module' }` docked on success, `requiresNode`
+including `'struct-module'`). `tierGoals[3] = { requirement: { dock: {
+target: 'core' } }, name: 'Assemble a station' }`. Reputation gates rise
+again.
 
-`generateContracts`: templates with `requiresNode` are offered only when
-the node is owned. The floor contract stays tier 1's.
+`generateContracts`: templates with `requiresNode` (a node id or an array
+of them) are offered only when every listed node is owned. The floor
+contract stays tier 1's. Under the hardware gating rule ("js/core/
+contracts.js"), the tier's gates follow the orbital sequence's own checks:
+`satellite` and `core` need `guide-1` (an orbit needs a turn); `rdv-1`
+needs `['prop-11', 'guide-3', 'prop-12']` and `rdv-2` `['prop-11',
+'guide-4', 'prop-12']` — the match step stops at `restarts < 2`, which
+only prop-11 lifts (rcs waives the approach restart, never the match's);
+`NAV_APPROACH[nav]` against `closestApproach <= within` makes nav 1 the
+floor for 5 km and nav 2 for 500 m; and rcs (prop-12) is what gives those
+floors a margin, because nav 1 and nav 2 meet their rung only at zero
+phase error and the window slider steps by 0.01 of an orbit (3.6°), so
+the error is never zero — halved by rcs, both rungs hold at the slider's
+worst half-step of 1.8°. `dock` needs `['struct-module', 'prop-11',
+'guide-5']` — the dock step wants `closestApproach <= DOCK_RANGE` (100 m),
+which nav 3's 50 m meets with margin and nav 2 + rcs's 250 m does not, and
+struct-module's prerequisite chain carries the docking adapter (struct-9).
+guide-1 and prop-10 arrive through those chains too, so each missing
+purchase is reported once. A gate must hold at that worst-case slider
+error, not just at zero; `data.test.js` checks each one against the
+resolver's constants.
 
 ## js/ui — what tier 3 adds
 
@@ -808,6 +867,16 @@ the node is owned. The floor contract stays tier 1's.
 - **Contracts screen**: an "In orbit" block listing `state.objects` with
   their orbit and docked state; the tier 3 goal hint reads best closest
   approach / docked.
+- **Contracts screen, missions block**: below the board and above "In
+  orbit", `[data-missions]` lists every template of the current tier in
+  `js/data/missions.js` order, one non-tappable row each, with its
+  requirement, payout, and a reason line: "On the board now." / "Always
+  offered." (floor) / "Available — not on this board." / one sentence per
+  `lockReasons` entry joined by " · " ("Needs <node name>", "Needs N rep
+  (have M)", "Needs a <kind> in orbit", "A <kind> is already in orbit").
+  Locked rows carry `.locked` and `[data-locked]`; the head counts
+  "k of n available". The board hides what cannot be done yet; this is
+  where the ladder and what unlocks each rung are seen.
 - **Tier flow**: tier 2 win → Continue → `[data-screen="tier"]` "Tier 3:
   Orbital maneuvering" → contracts. Tier 3 win → "Assembled a station in N
   launches" and phase 2 stops there.
@@ -817,6 +886,9 @@ the node is owned. The floor contract stays tier 1's.
 
 - `[data-loadout="window"]`
 - `[data-screen="contracts"] [data-objects]` the in-orbit block
+- `[data-screen="contracts"] [data-missions]` the tier's mission ladder;
+  `.row[data-mission="<id>"]` per template, `.locked` / `[data-locked]`
+  when `lockReasons` is non-empty
 - the launch canvas stays `canvas#ascent` through both views; tap skips both
 - `[data-result="closest-approach"]`, `[data-result="docked"]`
 

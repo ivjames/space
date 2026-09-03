@@ -8,7 +8,7 @@
 import { makeStorage } from './core/save.js';
 import { newGame } from './core/state.js';
 import { loadTree } from './core/tree.js';
-import { generateContracts } from './core/contracts.js';
+import { generateContracts, isEligible } from './core/contracts.js';
 import { credit } from './core/economy.js';
 import { makeRng } from './core/rng.js';
 import { nodes } from './data/tree.js';
@@ -81,13 +81,27 @@ function update(next) {
   if (screens) screens.render();
 }
 
-/** Fill state.contracts if it is empty, advancing the saved draw count. */
+/**
+ * Fill state.contracts if it is empty, advancing the saved draw count. A
+ * board is also redrawn when it holds an offer the player can no longer
+ * take: the board is normally only redrawn after a launch, so a save made
+ * before a gate was added (or tightened) would otherwise keep showing a
+ * contract that cannot be flown until the player burns a launch on it.
+ */
 function ensureContracts(s) {
-  if (Array.isArray(s.contracts) && s.contracts.length > 0) return s;
+  if (Array.isArray(s.contracts) && s.contracts.length > 0 && boardStillValid(s)) return s;
   const rng = makeRng(s.seed, s.draws);
   const before = rng.draws;
   const contracts = generateContracts(s, missions, rng);
   return { ...s, contracts, draws: s.draws + (rng.draws - before) };
+}
+
+/** Every offer on the board is still a mission the state qualifies for. */
+function boardStillValid(s) {
+  return s.contracts.every((id) => {
+    const m = missions.find((t) => t.id === id);
+    return m && (m.floor || isEligible(s, m));
+  });
 }
 
 /**

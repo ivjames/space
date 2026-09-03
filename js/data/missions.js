@@ -140,6 +140,31 @@ export const missions = [
   // tier 2 NODE COSTS, not payouts, is what moved this up from an earlier
   // pass's 20; see js/data/tree.js's COSTS note).
   //
+  // HARDWARE GATE, `requiresNode: 'guide-1'`. Every rung whose requirement
+  // the resolver cannot meet without a turn carries it: `pitchProgram`
+  // (js/core/resolver.js) returns the identically-vertical program unless
+  // `vehicle.guidance >= 1`, and guide-1 (js/data/tree.js) is the only
+  // tier 2 node that sets `guidance` at all. A downrange requirement needs
+  // the vehicle to go sideways; a periapsis requirement needs a sideways
+  // velocity. Before this gate the random draw could put orbit-down-1 on a
+  // fresh tier 2 board, where a player with no guidance owned could accept
+  // it, fly straight up, and lose reputation on a contract that was never
+  // completable -- the rule (js/core/contracts.js, lockReasons) is that
+  // hardware a mission cannot be flown without is a gate on the draw, not
+  // a surprise after the launch.
+  //
+  // The gate is about what is IMPOSSIBLE, not what is hard, so the two
+  // altitude-shaped tier 2 templates do not carry it. `orbit-entry` is a
+  // `sounding` profile (see FILLER, next). `orbit-apogee` is a `profile:
+  // 'orbit'` contract, but its 300 km is an altitude shape and, probed
+  // against the real resolver, a vehicle with prop-5/6 and struct-4/5 and
+  // NO guidance tops out around 620 km straight up -- a player who bought
+  // thrust before the flight computer can fly it vertical and win it. Its
+  // balanced cheapest set happens to include guide-1 (tree.js's LADDER
+  // note walks the cumulative chain), but that is a cost story, the same
+  // way sound-5 sits on a tier 1 board before its tree is affordable; it
+  // is not a lock.
+  //
   // FILLER, `orbit-entry`. A tier 2 player's very first launches have
   // nothing to buy: `guide-1` (11 000) is what the CHEAPEST tier 2 rung
   // needs, and every other tier 2 requirement shape needs guidance too
@@ -186,6 +211,7 @@ export const missions = [
     name: 'Downrange telemetry hop',
     profile: 'orbit',
     requirement: { downrange: 150000 },
+    requiresNode: 'guide-1',
     payout: 6500,
     repGain: 3,
     repLoss: 2,
@@ -197,6 +223,7 @@ export const missions = [
     name: 'Extended downrange hop',
     profile: 'orbit',
     requirement: { downrange: 400000 },
+    requiresNode: 'guide-1',
     payout: 8500,
     repGain: 3,
     repLoss: 3,
@@ -219,6 +246,7 @@ export const missions = [
     name: 'Low-orbit insertion',
     profile: 'orbit',
     requirement: { orbit: { periapsis: 90000 } },
+    requiresNode: 'guide-1',
     payout: 13000,
     repGain: 5,
     repLoss: 4,
@@ -230,6 +258,7 @@ export const missions = [
     name: 'Reach orbit',
     profile: 'orbit',
     requirement: { orbit: { periapsis: 100000 } },
+    requiresNode: 'guide-1',
     payout: 16000,
     repGain: 6,
     repLoss: 4,
@@ -262,16 +291,80 @@ export const missions = [
   //               the band the real resolver clears without that blowout —
   //               confirmed against resolveLaunch, not assumed.
   //   rdv-1       rendezvous within 5 km of the core — the first
-  //               navigation rung, needs nav >= 1 (guide-3, radar) and
-  //               enough restarts for the match burn (prop-11) to be
-  //               affordable at all.
+  //               navigation rung, needs nav >= 1 (guide-3, radar), the
+  //               thrusters (prop-12) that give the radar's approach its
+  //               margin, and enough restarts for the match burn (prop-11)
+  //               to be affordable at all.
   //   rdv-2       rendezvous within 500 m — an order of magnitude tighter,
-  //               needs the star tracker (guide-4) or better.
+  //               needs the star tracker (guide-4) or better, again with
+  //               thrusters.
   //   dock        the tier goal: dock to the core, deploying (and docking)
   //               the lab module. Gated on BOTH requiresObject: 'core' (a
-  //               target to dock to) and requiresNode: 'struct-module'
-  //               (the module hardware itself) — the two-gate shape
-  //               ARCHITECTURE.md calls out by name for this exact rung.
+  //               target to dock to) and requiresNode including
+  //               'struct-module' (the module hardware itself) — the
+  //               two-gate shape ARCHITECTURE.md calls out by name for
+  //               this exact rung.
+  //
+  // HARDWARE GATES (`requiresNode`, string or array — js/core/contracts.js,
+  // lockReasons). Same rule as tier 2's: a node the resolver makes a
+  // mission unflyable without is a gate on the random draw, so the board
+  // never offers a contract the player cannot complete. Each gate below is
+  // read off js/core/resolver.js's actual checks, not the node blurbs:
+  //
+  //   guide-1     satellite, core, and (via the guidance chain) everything
+  //               else: an orbit requirement needs a turn, and pitchProgram
+  //               flies straight up unless `guidance >= 1`.
+  //   prop-11     rdv-1, rdv-2, dock. resolveOrbitalSequence's match step
+  //               stops for want of restarts when `restarts < 2`, before
+  //               spending any delta-v at all; prop-10 alone sets restarts
+  //               to 1, and prop-11 (+2, on top of prop-10) is the only
+  //               node that raises it past that. rcs (prop-12) does NOT
+  //               change this: it only waives the approach step's restart
+  //               (`!rcs && restartsLeft < 1`), never the match step's two,
+  //               so prop-10 + prop-12 still stops at the first burn.
+  //               prop-11's three restarts cover match (2) + approach (1)
+  //               exactly; the phasing pair costs a third restart only when
+  //               |phase error| > PHASE_TOLERANCE_DEG, which is a window-
+  //               slider matter, not a hardware one.
+  //   guide-3     rdv-1. closestApproach = NAV_APPROACH[nav] * (1 +
+  //               |err|/30) / (rcs ? 2 : 1), and success is
+  //               `closestApproach <= within`. NAV_APPROACH = [50000, 5000,
+  //               500, 50], so nav 0 can never close to 5 km (25 km even
+  //               with rcs) and nav 1 (guide-3) is the first level that
+  //               can. guide-3 requires guide-1, so the turn gate is
+  //               carried by the chain rather than listed twice.
+  //   guide-4     rdv-2: within 500 m needs nav 2; nav 1 with rcs is
+  //               2500 m, still five times too wide.
+  //   prop-12     rdv-1, rdv-2. THE MARGIN. nav 1 reaches exactly 5000 m
+  //               and nav 2 exactly 500 m only at ZERO phase error, and
+  //               zero is not a value the player can set: the launch
+  //               window slider (js/ui/screens.js) steps by 0.01 of an
+  //               orbit, 3.6 degrees, while a target's phase (phaseFor,
+  //               js/core/orbit.js) is a hash of its id -- the first core
+  //               sits at 0.778, so the nearest notch is 0.588 degrees off
+  //               and the radar closes to 5 098 m, never 5 000. Halving
+  //               the approach with rcs turns both rungs from a knife edge
+  //               into a band: at the slider's worst half-notch error of
+  //               1.8 degrees, nav 1 + rcs is 2 650 m and nav 2 + rcs is
+  //               265 m, both inside their rung with room for a sloppier
+  //               window (up to 30 degrees for rdv-1 and 30 for rdv-2).
+  //               test/data.test.js pins this against the resolver's own
+  //               constants at that worst-case error.
+  //   guide-5     dock: the dock step requires `closestApproach <=
+  //               DOCK_RANGE` (100 m). nav 2 + rcs is 250 m, so the star
+  //               tracker does not suffice even with thrusters; nav 3's
+  //               50 m does, with or without rcs (53 m at the slider's
+  //               worst half-notch, under 100 m up to a 30 degree phase
+  //               error). rcs is therefore a docking RELIABILITY buy
+  //               (DOCK_RELIABILITY_RCS) on this rung, not a gate.
+  //   struct-module   dock: the module itself, carried up and left docked.
+  //               It requires struct-9 (the docking adapter, which sets
+  //               `docking` -- the dock step's `hasDockingAdapter` check),
+  //               so the adapter is carried by the chain too.
+  //
+  // Nodes implied by a listed node's prerequisite chain (guide-1 under
+  // guide-3/4/5, prop-10 under prop-11, struct-9 under struct-module) are
+  // not repeated, so a locked contract reports each missing purchase once.
   //
   // Payouts continue above tier 2's ceiling (12 000); repGain/repLoss and
   // minReputation climb through the range reputation can actually reach by
@@ -284,6 +377,7 @@ export const missions = [
     profile: 'orbit',
     requirement: { orbit: { periapsis: 150000 } },
     deploys: { kind: 'satellite', name: 'Comsat' },
+    requiresNode: 'guide-1',
     payout: 20000,
     repGain: 5,
     repLoss: 3,
@@ -296,6 +390,7 @@ export const missions = [
     requirement: { orbit: { periapsis: 160000 } },
     deploys: { kind: 'core', name: 'Station core' },
     unique: true,
+    requiresNode: 'guide-1',
     payout: 30000,
     repGain: 7,
     repLoss: 4,
@@ -308,6 +403,7 @@ export const missions = [
     profile: 'orbit',
     requirement: { rendezvous: { target: 'core', within: 5000 } },
     requiresObject: 'core',
+    requiresNode: ['prop-11', 'guide-3', 'prop-12'],
     payout: 26000,
     repGain: 6,
     repLoss: 4,
@@ -320,6 +416,7 @@ export const missions = [
     profile: 'orbit',
     requirement: { rendezvous: { target: 'core', within: 500 } },
     requiresObject: 'core',
+    requiresNode: ['prop-11', 'guide-4', 'prop-12'],
     payout: 36000,
     repGain: 7,
     repLoss: 5,
@@ -333,7 +430,7 @@ export const missions = [
     requirement: { dock: { target: 'core' } },
     deploys: { kind: 'module', name: 'Lab module' },
     requiresObject: 'core',
-    requiresNode: 'struct-module',
+    requiresNode: ['struct-module', 'prop-11', 'guide-5'],
     payout: 55000,
     repGain: 10,
     repLoss: 6,

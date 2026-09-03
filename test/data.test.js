@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTree, collectEffects, canBuy, buy } from '../js/core/tree.js';
 import { buildVehicle, totalDeltaV, stackMassAbove } from '../js/core/vehicle.js';
-import { resolveLaunch, ORBIT_MIN_ALT } from '../js/core/resolver.js';
+import { resolveLaunch, ORBIT_MIN_ALT, NAV_APPROACH, DOCK_RANGE } from '../js/core/resolver.js';
 import { makeRng } from '../js/core/rng.js';
 import { credit } from '../js/core/economy.js';
 import { phaseFor } from '../js/core/orbit.js';
@@ -1027,7 +1027,112 @@ test('dock is the goal mission: { dock: { target: \'core\' } }, deploys the modu
   assert.deepEqual(m.requirement, { dock: { target: 'core' } });
   assert.equal(m.deploys.kind, 'module');
   assert.equal(m.requiresObject, 'core');
-  assert.equal(m.requiresNode, 'struct-module');
+  assert.ok(Array.isArray(m.requiresNode), 'dock lists several hardware gates, so requiresNode is the array form');
+  assert.ok(m.requiresNode.includes('struct-module'), 'the station module itself is still one of them');
+});
+
+// Hardware gates (js/core/contracts.js, lockReasons): a mission the
+// resolver cannot fly without a node lists that node in `requiresNode`, so
+// the random draw never offers an uncompletable contract. The two tests
+// below pin the data side of that rule against the tree data itself.
+function requiredNodeIds(m) {
+  if (m.requiresNode === undefined) return [];
+  return Array.isArray(m.requiresNode) ? m.requiresNode : [m.requiresNode];
+}
+
+// Every node an owned set of `ids` necessarily includes: the ids plus the
+// transitive closure of their `requires`, walked over the real tree data
+// (canBuy enforces prerequisites, so owning guide-5 means owning guide-1).
+function prerequisiteClosure(ids) {
+  const seen = new Set();
+  const stack = [...ids];
+  while (stack.length > 0) {
+    const id = stack.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const node = fullTree.byId.get(id);
+    assert.ok(node, `requiresNode names ${id}, which is not a node in js/data/tree.js`);
+    for (const req of node.requires ?? []) stack.push(req);
+  }
+  return seen;
+}
+
+test('every requiresNode id, string or array form, names a node that exists in js/data/tree.js', () => {
+  for (const m of missions) {
+    for (const id of requiredNodeIds(m)) {
+      assert.ok(fullTree.byId.get(id), `${m.id} requires node ${id}, which does not exist`);
+    }
+  }
+});
+
+test('every tier 2/3 mission that needs a turn (downrange, orbit, rendezvous or dock) gates on guide-1, directly or through a listed node\'s prerequisite chain', () => {
+  // An altitude requirement is flown vertical whatever the profile
+  // (orbit-apogee included: js/data/missions.js's HARDWARE GATE note), so
+  // only the shapes that need sideways velocity are in this set.
+  const needsTurn = missions.filter((m) => m.tier >= 2 && m.requirement.altitude === undefined);
+  assert.ok(needsTurn.length >= 9, 'expected the tier 2 downrange/orbit rungs plus all of tier 3');
+  for (const m of needsTurn) {
+    const closure = prerequisiteClosure(requiredNodeIds(m));
+    assert.ok(closure.has('guide-1'), `${m.id} can be drawn without guide-1, but pitchProgram flies straight up without it`);
+  }
+  // And the one tier 2 template that does NOT need a turn stays ungated:
+  // it is the tier's income filler, offerable on arrival with nothing bought.
+  const entry = missions.find((m) => m.id === 'orbit-entry');
+  assert.equal(entry.profile, 'sounding');
+  assert.equal(entry.requiresNode, undefined);
+});
+
+test('rendezvous and dock templates gate on the restarts and nav level the orbital sequence actually checks', () => {
+  // resolveOrbitalSequence (js/core/resolver.js): the match step stops when
+  // restarts < 2, so prop-10's single restart is never enough and prop-11
+  // is the gate; closestApproach = NAV_APPROACH[nav] * (1 + |err|/30) /
+  // (rcs ? 2 : 1) against `<= within`, so within 5000 needs nav 1
+  // (guide-3), within 500 needs nav 2 (guide-4), and the dock step's
+  // DOCK_RANGE of 100 m needs nav 3 (guide-5; nav 2 + rcs is 250 m). The
+  // two rendezvous rungs also need rcs (prop-12): nav 1 and nav 2 meet
+  // their rung only at zero phase error, which the window slider cannot
+  // set (see the worst-case test below).
+  const expect = {
+    'rdv-1': ['prop-11', 'guide-3', 'prop-12'],
+    'rdv-2': ['prop-11', 'guide-4', 'prop-12'],
+    dock: ['prop-11', 'guide-5', 'struct-module', 'struct-9'],
+  };
+  for (const [id, needed] of Object.entries(expect)) {
+    const m = missions.find((mm) => mm.id === id);
+    const closure = prerequisiteClosure(requiredNodeIds(m));
+    for (const node of needed) {
+      assert.ok(closure.has(node), `${id} should not be drawable without ${node}`);
+    }
+  }
+});
+
+// A gate is only honest if the listed hardware can actually meet the rung
+// with the controls the player has. The launch window slider steps by 0.01
+// of an orbit (js/ui/screens.js, `step="0.01"`), so the phase error can be
+// as large as half a step, 1.8 degrees, and is never exactly zero (a
+// target's phase is phaseFor(id), a hash — the first core sits at 0.778).
+// resolveOrbitalSequence closes to NAV_APPROACH[nav] * (1 + |err|/30),
+// halved by rcs; at zero error nav 1 is exactly rdv-1's 5000 m and nav 2
+// exactly rdv-2's 500 m, so without rcs both rungs were drawable with
+// hardware that could never quite make them (Codex review, PR #5).
+test('every rendezvous/dock gate still meets its rung at the window slider\'s worst half-step phase error', () => {
+  const WINDOW_STEP = 0.01;
+  const worstErrDeg = (WINDOW_STEP / 2) * 360;
+  for (const m of tier3Missions) {
+    const rendezvous = m.requirement.rendezvous ?? m.requirement.dock;
+    if (!rendezvous) continue;
+    const within = m.requirement.dock !== undefined ? DOCK_RANGE : m.requirement.rendezvous.within;
+    const owned = [...prerequisiteClosure(requiredNodeIds(m))];
+    const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned }));
+    const nav = Math.min(Math.floor(vehicle.nav ?? 0), NAV_APPROACH.length - 1);
+    const rcs = (vehicle.rcs ?? 0) >= 1;
+    const closest = (NAV_APPROACH[nav] * (1 + worstErrDeg / 30)) / (rcs ? 2 : 1);
+    assert.ok(
+      closest <= within,
+      `${m.id}: with exactly its gated hardware (nav ${nav}${rcs ? ' + rcs' : ''}) the approach at a ${worstErrDeg} degree phase error is ${closest} m, over its ${within} m`,
+    );
+    assert.ok((vehicle.restarts ?? 0) >= 2, `${m.id}: gated hardware must carry the match burn's two restarts`);
+  }
 });
 
 test('tier 3 mission payouts are well above tier 2\'s', () => {
@@ -1296,7 +1401,9 @@ test('a greedy player reaches the tier 3 goal (dock) in at most 80 tier 3 launch
       if (m.requiresObject && !target && !(m.requiresObject === 'core' && target)) {
         if (!state.objects.some((o) => o.kind === m.requiresObject)) continue;
       }
-      if (m.requiresNode && !state.owned.includes(m.requiresNode)) continue;
+      // `requiresNode` is a string or an array (contracts.js's requiredNodes
+      // normalises the same way): every listed node must be owned.
+      if (m.requiresNode && ![].concat(m.requiresNode).every((id) => state.owned.includes(id))) continue;
       // `unique`: offered only while no undocked object of that kind exists
       // (contracts.js applies the same rule in the game).
       if (m.unique && m.deploys && state.objects.some((o) => o.kind === m.deploys.kind && o.dockedTo == null)) continue;

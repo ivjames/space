@@ -19,7 +19,7 @@ import {
   recordLaunch, tierGoalMet, deriveVehicle, advanceTier, findTarget,
 } from '../core/state.js';
 import { applyOutcome } from '../core/economy.js';
-import { generateContracts } from '../core/contracts.js';
+import { generateContracts, lockReasons } from '../core/contracts.js';
 import { branchExhausted } from '../core/tree.js';
 import { playOutcome } from './ascent.js';
 import { playOrbital } from './map.js';
@@ -368,6 +368,72 @@ export function mountScreens(ctx) {
       </section>`;
   }
 
+  /**
+   * The tier's mission ladder: every template of the current tier, in
+   * js/data/missions.js order, whether or not the board drew it. The board
+   * hides what the player cannot do yet (js/core/contracts.js, lockReasons);
+   * this list is where they see the rungs and what unlocks each one. Rows
+   * are statements, not controls — nothing here selects a contract.
+   */
+  function reasonText(r) {
+    const deployName = (kind) => missions.find((m) => m.deploys?.kind === kind)?.deploys?.name ?? kind;
+    switch (r.kind) {
+      case 'node': return `Needs ${tree.byId.get(r.id)?.name ?? r.id}`;
+      case 'reputation': return `Needs ${r.need} rep (have ${r.have})`;
+      case 'object': return `Needs a ${deployName(r.objectKind)} in orbit`;
+      case 'unique': return `A ${deployName(r.objectKind)} is already in orbit`;
+      case 'tier': return `Tier ${r.tier}`;
+      default: return 'Locked';
+    }
+  }
+
+  function missionsHtml() {
+    const state = getState();
+    const offered = new Set(state.contracts ?? []);
+    const ladder = missions.filter((m) => m.tier === state.tier);
+    let available = 0;
+    const rows = ladder.map((m) => {
+      const isOffered = offered.has(m.id);
+      // An offer on the board is doable by construction, so it is never
+      // shown locked whatever lockReasons says of a stale save.
+      const reasons = isOffered ? [] : lockReasons(state, m);
+      const locked = reasons.length > 0;
+      if (!locked) available += 1;
+      const reason = isOffered && !m.floor ? 'On the board now.'
+        : m.floor ? 'Always offered.'
+        : locked ? reasons.map(reasonText).join(' · ')
+        : 'Available — not on this board.';
+      const rep = [
+        m.repGain ? `+${m.repGain} rep` : null,
+        m.repLoss ? `−${m.repLoss} rep on failure` : 'no rep risk',
+      ].filter(Boolean).join(' · ');
+      const tags = [
+        m.floor ? ' <span class="tag">floor</span>' : '',
+        isOffered ? ' <span class="tag">offered</span>' : '',
+      ].join('');
+      return `
+        <li class="row mission${locked ? ' locked' : ''}${isOffered ? ' offered' : ''}" data-mission="${escapeHtml(m.id)}"${locked ? ' data-locked' : ''}>
+          <div class="row-main">
+            <div class="row-title">${escapeHtml(m.name)}${tags}</div>
+            <div class="hint">${escapeHtml(requirementText(m.requirement))} · ${escapeHtml(rep)}</div>
+            <div class="hint row-reason">${escapeHtml(reason)}</div>
+          </div>
+          <div class="row-side">
+            <div class="cost">${m.payout}</div>
+            <div class="hint">payout</div>
+          </div>
+        </li>`;
+    }).join('');
+    return `
+      <section class="missions" data-missions>
+        <h2 class="branch-head">
+          <span>TIER ${state.tier} MISSIONS</span>
+          <span class="hint">${available} of ${ladder.length} available</span>
+        </h2>
+        <ul class="list">${rows}</ul>
+      </section>`;
+  }
+
   function contractsHtml() {
     const state = getState();
     const g = goal();
@@ -401,6 +467,7 @@ export function mountScreens(ctx) {
           </p>
           <ul class="list">${rows}</ul>
           <p class="hint foot">Tap a contract, then Select.</p>
+          ${missionsHtml()}
           ${objectsHtml()}
         </div>
       </div>`;
