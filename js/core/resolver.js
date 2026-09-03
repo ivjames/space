@@ -30,13 +30,17 @@
 //
 // STAGE ABORTS (ARCHITECTURE.md "Stage abort systems"). `vehicle.escape` is
 // how many stages, counted from the bottom, are covered by an abort system. A
-// reliability failure of a covered stage that is not the top stage and not on
-// the pad at T+0 is ESCAPED: the failed stage is dropped, the stack above
-// coasts ESCAPE_DELAY seconds and lights its own engine, still flying the pitch
-// program. An escaped failure is recorded in the outcome (`escapes`, and
-// `failure` when nothing terminal follows) and read out as a clause
-// ("...; stage 2 escaped clear."), but powered flight goes on. An abort never
-// rolls the rng, so a flight without one has an unchanged draw order.
+// reliability failure of a covered stage that is not the top stage, once the
+// stack has cleared the pad (altitude >= ESCAPE_MIN_ALT), is ESCAPED: the
+// failed stage is dropped, the stack above coasts ESCAPE_DELAY seconds and
+// lights its own engine, still flying the pitch program. Below ESCAPE_MIN_ALT
+// the abort is not armed and a failure takes the whole stack down as it always
+// did. An escaped failure is recorded in the outcome (`escapes`, and `failure`
+// when nothing terminal follows) and read out as a clause ("...; stage 2
+// escaped clear."), but powered flight goes on. An abort never rolls the rng,
+// so a flight without one has an unchanged draw order. If the true apogee falls
+// inside the ESCAPE_DELAY coast and the relight then fails, the apogee is
+// reported the moment that failure is known (see the apogee rule in the loop).
 
 import { G0, stageDeltaV, stackMassAbove } from './vehicle.js';
 import {
@@ -124,6 +128,16 @@ export const ORBIT_CONFIRM_COAST = 30;
  * the thrust — and it never counts as the end of powered flight.
  */
 export const ESCAPE_DELAY = 2;
+
+/**
+ * Altitude, m, the stack must have reached before an abort is ARMED. Below it
+ * a covered stage's failure is terminal exactly as on an uncovered vehicle: a
+ * booster that fails a fraction of a second off the pad has nothing to escape
+ * into — the stack would coast ESCAPE_DELAY seconds straight back into the
+ * ground before the relight, and a readout saying "stage 2 escaped clear" of a
+ * fireball on the pad would be a lie. (ARCHITECTURE.md "Stage abort systems".)
+ */
+export const ESCAPE_MIN_ALT = 100;
 
 // --- Pitch program constants (ARCHITECTURE.md, phase 1) ---------------------
 // The program is vertical until `turnStart`, then pitches over linearly with
@@ -932,6 +946,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   let failure = null;          // the TERMINAL failure; escaped ones live in `escapes`
   let goalEmitted = false;
   let apogeeEmitted = false;
+  let apogeePending = false;   // the altitude rate turned over during an abort coast
   let turnEmitted = false;
   let orbitConfirmedAt = null;
   let orbitFlag = false;
@@ -977,9 +992,11 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
    *
    * TERMINAL by default: thrust is cut for good and the flight coasts out.
    * ESCAPED when the stage is covered by an abort system (`stageIndex <
-   * vehicle.escape`), has a stage above it to escape with, and the failure is
-   * not on the pad at T+0 — there is nothing sensible to fire an upper stage
-   * into from the pad, and the top stage has nothing above it. An escape drops
+   * vehicle.escape`), has a stage above it to escape with, and the stack has
+   * cleared the pad (altitude >= ESCAPE_MIN_ALT) — there is nothing sensible
+   * to fire an upper stage into from the pad, and the top stage has nothing
+   * above it. The guard is altitude, not time: a failure 0.2 s into the burn
+   * is airborne but still at the pad for every purpose that matters. An escape drops
    * the failed stage (dry mass plus whatever propellant it still carried),
    * announces the abort as a 'separation' event `{ abort: true }` naming the
    * FAILED stage (the renderer tumbles the stage a separation names), advances
@@ -995,7 +1012,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     const i = stageIndex;
     const stage = stages[i];
     const alt = altOf(x, y);
-    const escapable = i < escape && i + 1 < stages.length && t > 0;
+    const escapable = i < escape && i + 1 < stages.length && alt >= ESCAPE_MIN_ALT;
 
     if (!escapable) {
       failure = { t, stage: stageNo(), kind: failureKind };
@@ -1289,12 +1306,35 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     }
 
     // Apogee: first time the altitude rate goes non-positive on the way up.
-    // Not during an abort coast: a burn is still coming, so the vehicle is not
-    // at its apogee however it is moving — the real one is found after the
-    // relight, and an altitude flight must not be ended (or told it peaked) by
-    // the two seconds between a stage failing and the next one lighting.
-    if (!apogeeEmitted && ignitionAt === Infinity
-      && prevRadial > 0 && radialSpeed(x, y, vx, vy) <= 0) {
+    //
+    // Not emitted during an abort coast: a burn is still coming, so the vehicle
+    // is not at its apogee however it is moving — if the relight lights, the
+    // real apogee is found after it, and an altitude flight must not be ended
+    // (or told it peaked) by the two seconds between a stage failing and the
+    // next one lighting. But the crossing must not be LOST either: if the
+    // altitude rate turns over inside the coast and the relight then fails
+    // terminally, `prevRadial > 0` never holds again, and without this the
+    // flight would run to impact with no 'apogee' event and an altitude
+    // mission would never end where it always has. So a crossing seen during
+    // the coast is only NOTED (`apogeePending`); at the first step after the
+    // coast it is either discarded — the stage lit, so a real crossing follows
+    // if it climbs again, exactly as if the coast had never happened — or
+    // emitted right then, at maxAltitude, and the end-at-apogee rule applies.
+    let atApogee = false;
+    if (ignitionAt !== Infinity) {
+      // Coasting to a relight: note the turnover, decide once the coast ends.
+      if (!apogeeEmitted && prevRadial > 0 && radialSpeed(x, y, vx, vy) <= 0) apogeePending = true;
+    } else if (apogeePending) {
+      // First step after the coast. `thrusting` means the relight lit and the
+      // turnover was not the apogee; otherwise it failed terminally (an escaped
+      // relight failure would have set a new ignitionAt and kept us coasting),
+      // so the turnover WAS the apogee and it is reported now.
+      apogeePending = false;
+      atApogee = !thrusting;
+    } else if (prevRadial > 0 && radialSpeed(x, y, vx, vy) <= 0) {
+      atApogee = true;   // the ordinary crossing, unchanged
+    }
+    if (atApogee && !apogeeEmitted) {
       apogeeEmitted = true;
       event(t, 'apogee', `Apogee at ${formatAltitude(maxAltitude)}.`, { alt: maxAltitude });
       // An ALTITUDE requirement is settled at apogee — nothing after it can

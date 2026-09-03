@@ -383,7 +383,9 @@ export const nodes = [
   // flying the pitch program -- so the flight ends in a "Reached N km.
   // Short by M m/s." readout with a failure clause appended, not a bang.
   // rel-escape-1 sets it to 1 (the booster is covered); rel-escape-2 sets
-  // it to 2 (the second stage too). A pad failure at T+0 and a failure of
+  // it to 2 (the second stage too). A failure before the stack has cleared
+  // the pad (below the resolver's ESCAPE_MIN_ALT, 100 m -- an ignition
+  // failure at T+0 or a burn failure in the first seconds) and a failure of
   // the top stage are never escaped, whatever the level -- there is nothing
   // above the top stage to escape with, and the description says so.
   //

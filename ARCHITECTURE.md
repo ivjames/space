@@ -608,12 +608,16 @@ tree has bought coverage for them.
 `dockBonus`; `components.js` declares `escape: 0` on the starter. Meaning:
 abort coverage — a failure, in flight, of any of the bottom `escape` stages
 lets the stack above separate clear and light its own engine, still flying
-its pitch program (control is retained). A pad failure at T+0 and a failure
-of the top stage are never escaped, whatever `escape` is set to. The abort
-itself never rolls and adds no mass.
+its pitch program (control is retained). A failure below `ESCAPE_MIN_ALT`
+(the stack has not cleared the pad — an ignition failure at T+0, or a burn
+failure in the first seconds off it) and a failure of the top stage are never
+escaped, whatever `escape` is set to: below that altitude the stack would
+coast straight back into the ground before the relight, so the abort is not
+armed and the failure takes the stack down as before. The abort itself never
+rolls and adds no mass.
 
-`js/core/resolver.js` exports `ESCAPE_DELAY = 2` (s). On an escapable
-failure of 1-based stage `k` at time `t`:
+`js/core/resolver.js` exports `ESCAPE_DELAY = 2` (s) and `ESCAPE_MIN_ALT =
+100` (m). On an escapable failure of 1-based stage `k` at time `t`:
 - the `'failure'` event carries `escaped: true` (same text as an unescaped
   failure, e.g. "Stage 1 engine failure at T+40s.");
 - a `'separation'` event `{ stage: k, abort: true }` fires, text "Abort:
@@ -623,6 +627,14 @@ failure of 1-based stage `k` at time `t`:
 - stage `k+1` ignites at exactly `t + ESCAPE_DELAY`, with its normal
   ignition roll — if that fails and is itself covered, another abort
   follows.
+
+Apogee detection is suppressed during the coast (a burn is still coming),
+but a turnover of the altitude rate seen inside it is not lost: if the
+relight then fails terminally, the 'apogee' event is emitted on the first
+step after the coast (at `maxAltitude`) and the end-at-apogee rule for
+altitude missions applies, so such a flight ends at apogee rather than
+running to impact. If the relight lights, the turnover is discarded and the
+real apogee is found after the burn, as before.
 
 No rng draw is added for the abort itself, so a flight with no escaped
 failure has an unchanged draw order and the save-replay contract
@@ -669,7 +681,12 @@ searches). Tier 2 is now 15 nodes (still within "twelve to sixteen", above).
   own position, not just the first. The rocket keeps flying its pitch
   program after an escaped failure; only the terminal failure leaves the
   tumbling wreck on screen. The escaped stage tumbles away through the same
-  separation handling as an ordinary stage drop.
+  separation handling as an ordinary stage drop. The wreck is keyed on
+  `'failure'` timeline events, so an orbital-phase `'restart-failure'` (an
+  `outcome.failure` of kind `'restart'`) never draws a wreck in the ascent
+  view — intended: on a target mission the ascent playback hands off to
+  `js/ui/map.js` at `'insertion'` (`js/ui/screens.js`, `stopAtKind`), and
+  every orbital failure happens after insertion, so the map view owns it.
 - Shop (`js/ui/shop.js`): the set-`escape` effects render as "booster abort
   system" (value 1) and "abort coverage: stages 1–N" (value N).
 

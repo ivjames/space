@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeRng } from '../js/core/rng.js';
-import { G0, buildVehicle, stageDeltaV, totalDeltaV } from '../js/core/vehicle.js';
+import { G0, buildVehicle, stageDeltaV, stackMassAbove, totalDeltaV } from '../js/core/vehicle.js';
 import {
   resolveLaunch,
   requiredDeltaV,
@@ -27,6 +27,7 @@ import {
   PHASE_TOLERANCE_DEG,
   ORBIT_CONFIRM_COAST,
   ESCAPE_DELAY,
+  ESCAPE_MIN_ALT,
 } from '../js/core/resolver.js';
 import {
   elementsFrom,
@@ -1042,4 +1043,171 @@ test('escapes is present and 0 when the vehicle never leaves the pad', () => {
   assert.equal(o.readout, 'Insufficient thrust to lift off.');
   assert.ok('escapes' in o);
   assert.equal(o.escapes, 0);
+});
+
+test('an escaped IGNITION failure drops the unlit stage with its full propellant load', () => {
+  // Three stages, escape 2. Stage 1 flies clean; stage 2's ignition roll (0.9
+  // against 0.5) fails at separation and is escaped; stage 3 (reliability 1,
+  // unscripted draws pass) lights ESCAPE_DELAY later and burns out normally.
+  const third = { addStage: { dryMass: 50, propMass: 40, thrust: 3000, isp: 300, reliability: 1 } };
+  const v = fixture([third, FLAKY_STAGE_2, ESCAPE(2)]);
+  const o = resolveLaunch(v, MISSION_100KM, FULL, scriptedRng([0.1, 0.5, 0.1, 0.9]));
+
+  const fail = o.timeline.find((e) => e.kind === 'failure');
+  assert.equal(fail.kind, 'failure');
+  assert.equal(fail.stage, 2);
+  assert.equal(fail.escaped, true);
+  assert.equal(o.failure.kind, 'ignition');
+  assert.equal(o.escapes, 1);
+  const relight = o.timeline.find((e) => e.kind === 'ignition' && e.stage === 3);
+  assert.ok(Math.abs(relight.t - (fail.t + ESCAPE_DELAY)) < 1e-6);
+
+  // The stage that never lit still had its whole load aboard, and it left with
+  // it: the first sample after the abort weighs exactly the stack above stage 2.
+  const after = o.samples.find((s) => s.t > fail.t);
+  assert.ok(after, 'a sample follows the abort');
+  assert.equal(after.stage, 3);
+  assert.ok(Math.abs(after.mass - stackMassAbove(v, 1, 1)) < 1e-6,
+    `${after.mass} vs ${stackMassAbove(v, 1, 1)}`);
+
+  // Delta-v credited: the whole of stage 1 and the whole of stage 3, none of
+  // stage 2 (it never burned).
+  const expected = stageDeltaV(v, 0) + stageDeltaV(v, 2);
+  assert.ok(Math.abs(o.deltaVAchieved - expected) < 1e-6, `${o.deltaVAchieved} vs ${expected}`);
+  assert.match(o.readout, /Stage 2 ignition failure at T\+\d+s; stage 3 escaped clear\.$/);
+});
+
+test('an escape on a SUCCESSFUL flight reads as a success with the escape clause', () => {
+  // Stage 1 fails at 90% of its burn (late enough that stage 2 still carries
+  // the stack well past 20 km); the mission is the tier 1 sounding rocket.
+  const o = resolveLaunch(fixture([FLAKY_STAGE_1, ESCAPE(1)]), MISSION_20KM, FULL,
+    scriptedRng([0.1, 0.9, 0.9]));
+  assert.equal(o.success, true);
+  assert.equal(o.shortBy, 0);
+  assert.equal(o.escapes, 1);
+  assert.equal(o.failure.escaped, true);
+  assert.match(o.readout, /^Reached \d+ km\. Stage 1 engine failure at T\+\d+s; stage 2 escaped clear\.$/);
+});
+
+test('an escape at fuelFraction 0.8 coasts at the partial-load stack mass and relights on time', () => {
+  const v = fixture([FLAKY_STAGE_1, ESCAPE(1)]);
+  const o = resolveLaunch(v, MISSION_100KM, { fuelFraction: 0.8 }, scriptedRng(STAGE_1_MID_BURN_FAILURE));
+
+  const fail = o.timeline.find((e) => e.kind === 'failure');
+  assert.equal(fail.escaped, true);
+  const relight = o.timeline.find((e) => e.kind === 'ignition' && e.stage === 2);
+  assert.ok(Math.abs(relight.t - (fail.t + ESCAPE_DELAY)) < 1e-6,
+    `relit at ${relight.t}, expected ${fail.t + ESCAPE_DELAY}`);
+
+  const after = o.samples.filter((s) => s.t > fail.t);
+  assert.ok(after.length > 0);
+  assert.ok(after.every((s) => s.stage === 2), 'every sample after the abort carries stage 2');
+  // During the coast nothing burns, so the mass is the stack above stage 1 at
+  // this load — stage 2's dry mass, 80% of its propellant, and the payload.
+  const coast = after.filter((s) => s.t < relight.t);
+  assert.ok(coast.length > 0, 'the coast is sampled');
+  for (const s of coast) {
+    assert.ok(Math.abs(s.mass - stackMassAbove(v, 0, 0.8)) < 1e-6,
+      `coast mass ${s.mass} vs ${stackMassAbove(v, 0, 0.8)}`);
+  }
+});
+
+test('pad guard: a burn failure below ESCAPE_MIN_ALT is terminal, the same failure later is escaped', () => {
+  // The fixture's stage 1 climbs past 100 m about 4.5 s into a 47 s burn, so a
+  // burn roll placed at fraction 0.001 resolves on the first step (T+0.1, a few
+  // centimetres up) and one at 0.5 resolves at ~23 s, tens of km up.
+  const early = resolveLaunch(fixture([FLAKY_STAGE_1, ESCAPE(1)]), MISSION_100KM, FULL,
+    scriptedRng([0.1, 0.001, 0.9]));
+  assert.equal(early.failure.kind, 'burn');
+  assert.equal(early.failure.stage, 1);
+  assert.ok(!('escaped' in early.failure), 'a failure on the pad is not escaped');
+  assert.equal(early.escapes, 0);
+  assert.ok(early.maxAltitude < ESCAPE_MIN_ALT, `failed at ${early.maxAltitude} m`);
+  assert.match(early.readout, /^Stage 1 engine failure at T\+\d+s\.$/);
+  assert.ok(!early.timeline.some((e) => e.kind === 'separation'), 'the stack goes down together');
+  assert.ok(!early.timeline.some((e) => e.kind === 'ignition' && e.stage === 2));
+
+  const late = resolveLaunch(fixture([FLAKY_STAGE_1, ESCAPE(1)]), MISSION_100KM, FULL,
+    scriptedRng([0.1, 0.5, 0.9]));
+  assert.equal(late.failure.escaped, true);
+  assert.equal(late.escapes, 1);
+  const fail = late.timeline.find((e) => e.kind === 'failure');
+  assert.ok(fail.alt >= ESCAPE_MIN_ALT, `escaped at ${fail.alt} m`);
+  assert.match(late.readout, /; stage 2 escaped clear\.$/);
+});
+
+test('an apogee inside the abort coast is reported when the relight fails, and an altitude flight ends there', () => {
+  // A weak second stage (TWR well under 1: 1200 N against ~5.6 kN of weight)
+  // that is already decelerating when it fails. Reliabilities: stage 1 is 1,
+  // stages 2 and 3 are 0.5, so the script reads: stage 1 ignition 0.1 pass,
+  // burn-roll fraction 0.5, burn roll 0.1 pass; stage 2 ignition 0.1 pass,
+  // burn-roll fraction 0.120 (early in a ~490 s burn, about T+105 s), burn roll
+  // 0.9 FAIL — escaped, since escape is 2; stage 3 ignition 0.9 FAIL — terminal,
+  // it is the top stage. The altitude rate turns over during the 2 s coast, so
+  // without deferral no 'apogee' event would ever fire and the flight would run
+  // to impact.
+  const base = {
+    stages: [
+      { dryMass: 150, propMass: 380, thrust: 20000, isp: 250, reliability: 1 },
+      { dryMass: 200, propMass: 200, thrust: 1200, isp: 300, reliability: 0.5 },
+      { dryMass: 40, propMass: 30, thrust: 2000, isp: 300, reliability: 0.5 },
+    ],
+    payloadMass: 100,
+    dragArea: 0.2,
+    dragCoeff: 0.3,
+  };
+  const v = buildVehicle(base, [ESCAPE(2)]);
+  const o = resolveLaunch(v, MISSION_100KM, FULL,
+    scriptedRng([0.1, 0.5, 0.1, 0.1, 0.120, 0.9, 0.9]));
+
+  const failures = o.timeline.filter((e) => e.kind === 'failure');
+  assert.equal(failures.length, 2, 'the script must produce an escape then a terminal failure');
+  assert.equal(failures[0].escaped, true);
+  assert.equal(failures[0].stage, 2);
+  assert.ok(!failures[1].escaped);
+  assert.equal(failures[1].stage, 3);
+  assert.equal(o.escapes, 1);
+  assert.equal(o.failure.kind, 'ignition', 'the terminal failure is the top stage failing to light');
+  assert.equal(o.failure.stage, 3);
+
+  const apogee = o.timeline.find((e) => e.kind === 'apogee');
+  assert.ok(apogee, 'an apogee event is emitted');
+  // The turnover happened inside the coast: the apogee is reported at the
+  // relight (which failed), not before it.
+  assert.ok(apogee.t >= failures[1].t - 1e-6, `apogee at ${apogee.t}, relight at ${failures[1].t}`);
+  assert.ok(apogee.t < failures[1].t + 1, 'and within a step of it');
+  assert.ok(Math.abs(apogee.alt - o.maxAltitude) < 1e-6);
+  assert.ok(!o.timeline.some((e) => e.kind === 'impact'), 'an altitude flight does not run to impact');
+  assert.ok(Math.abs(o.samples.at(-1).t - apogee.t) < 0.1 + 1e-6,
+    `flight ends at apogee: last sample ${o.samples.at(-1).t}, apogee ${apogee.t}`);
+  assert.equal(o.timeline.at(-1).kind, 'end');
+  assert.match(o.readout, /^Stage 3 ignition failure at T\+\d+s\. Stage 2 engine failure at T\+\d+s; stage 3 escaped clear\.$/);
+});
+
+test('an orbital restart failure replaces an escaped ascent failure in outcome.failure', () => {
+  // The strong fixture on a rendezvous, with 2 restarts. Stage 1 fails at 99%
+  // of its burn (0.9 against 0.5) and is escaped; stage 2 lights, passes its
+  // burn roll, and cuts off at the target's periapsis with propellant in
+  // reserve; the orbital phase's first restart roll (0.9 against stage 2's
+  // 0.5) fails. The ascent is decided by physics, so this is deterministic.
+  const RESTARTS = { stat: 'restarts', op: 'set', value: 2 };
+  const MISSION_RDV = { id: 'rdv-1', tier: 3, requirement: { rendezvous: { target: 'core', within: 5000 } } };
+  const target = { periapsis: 100000, apoapsis: 100000, phase: 0 };
+  const v = strongFixture([FLAKY_STAGE_1, FLAKY_STAGE_2, RESTARTS, ESCAPE(1)]);
+  const rng = scriptedRng([0.1, 0.99, 0.9, 0.1, 0.5, 0.1, 0.9]);
+  const o = resolveLaunch(v, MISSION_RDV, { fuelFraction: 1, turn: 0.5, window: 0 }, rng, { target });
+
+  assert.equal(rng.draws, 7, 'the script is consumed exactly: three ascent rolls per stage, one restart');
+  assert.equal(o.orbit, true);
+  assert.ok(o.insertion, 'the ascent inserted despite the escape');
+  assert.equal(o.escapes, 1);
+  assert.equal(o.failure.kind, 'restart');
+  assert.equal(o.failure.stage, 2);
+  assert.ok(!('escaped' in o.failure), 'the terminal failure is the one named');
+  assert.ok(o.failure.t > o.insertion.t);
+  const escaped = o.timeline.find((e) => e.kind === 'failure' && e.escaped);
+  assert.equal(escaped.stage, 1);
+  assert.ok(o.timeline.some((e) => e.kind === 'restart-failure'));
+  assert.equal(o.success, false);
+  assert.match(o.readout, /^Stage 2 restart failure at T\+\d+s\. Stage 1 engine failure at T\+\d+s; stage 2 escaped clear\.$/);
 });

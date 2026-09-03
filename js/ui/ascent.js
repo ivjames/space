@@ -41,6 +41,11 @@
 // event leaks nothing either: the screen changes at the instant the player
 // reads that event in the ticker, never before it, and a flight that never
 // inserts has no such event and plays to its end exactly as it always did.
+// It also means an ORBITAL failure is never this view's to draw: the wreck is
+// keyed on 'failure' events (see "---- failure ----" below), and a
+// 'restart-failure' — outcome.failure.kind 'restart', the orbital phase's
+// only failure — happens after 'insertion', where this playback has already
+// handed off to the map view. Intended, not an omission.
 //
 // What it shows, and why: DESIGN.md §5 says readable failure is the point —
 // the animation has to show *why* the run ended where it did. So altitude is
@@ -1098,6 +1103,14 @@ export function playOutcome(canvas, outcome, opts = {}) {
   // 'failure' event carrying `escaped: true`; the TERMINAL one — the one that
   // ends powered flight, at most one per flight and not necessarily there at
   // all — carries no such key.
+  //
+  // Only 'failure' events count. The orbital phase's 'restart-failure' event
+  // (outcome.failure.kind 'restart') is deliberately not one of them: with a
+  // target the caller stops this playback at 'insertion' (js/ui/screens.js,
+  // `stopAtKind`) and js/ui/map.js takes over, and every orbital failure is
+  // after insertion, so no restart failure is ever reached here and none
+  // should draw a wreck on the ascent canvas. A flight that never inserts has
+  // no orbital phase at all.
   //
   // So every 'failure' event already passed draws its own bang, at its own
   // place, at its own age, with its own shrapnel; and only the terminal one
