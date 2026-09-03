@@ -204,8 +204,9 @@ export function mountShop(el, ctx) {
         </section>`;
     }).join('');
 
-    // The toggle is a real button, so Enter and Space reach it natively; only
-    // click is handled below, or a keyboard press would toggle twice.
+    // The toggle is a real button, so Enter and Space activate it natively
+    // (the keydown handler below leaves it alone); the rows are divs and
+    // need the help.
     const ownedTotal = state.owned.length;
     const bar = ownedTotal === 0 ? '' : `
       <div class="shop-bar">
@@ -220,7 +221,7 @@ export function mountShop(el, ctx) {
   }
 
   function onActivate(ev) {
-    if (ev.type === 'click' && ev.target.closest?.('[data-toggle-owned]')) {
+    if (ev.target.closest?.('[data-toggle-owned]')) {
       showOwned = !showOwned;
       render();
       return;
@@ -241,6 +242,9 @@ export function mountShop(el, ctx) {
   el.addEventListener('click', onActivate);
   el.addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter' || ev.key === ' ') {
+      // A <button> fires its own click on these keys; cancelling the
+      // keydown would swallow it, so only the row divs are handled here.
+      if (ev.target.closest?.('[data-toggle-owned]')) return;
       ev.preventDefault();
       onActivate(ev);
     }
