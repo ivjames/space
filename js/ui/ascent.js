@@ -167,6 +167,13 @@ const NOSE_H = 8;
 const NOZZLE_H = 3;
 /** Interstage band at the top of a lower segment, px. */
 const BAND_H = 2;
+/**
+ * Real seconds the stack above a spent stage takes to settle onto the sample
+ * point after a separation. The nozzle of the new bottom stage would otherwise
+ * re-anchor on the point and drop the whole stack by the spent stage's height
+ * in one frame, while the trajectory itself is continuous.
+ */
+const SEPARATION_SETTLE_S = 1.2;
 /** What a stage counts as when only a stage COUNT is given: the starter. */
 const NOMINAL_STAGE = { dryMass: 40, propMass: 30 };
 
@@ -964,7 +971,10 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.rotate(heading);
     // Which segments are attached comes from the vehicle and the stage flying
     // now — never from a separation that has not happened yet. The stack is
-    // drawn standing on (x, y), and pitches about that point, its engine.
+    // drawn standing on (x, y), and pitches about that point, its engine —
+    // except for the moment after a separation, when it is still settling
+    // down onto it (separationLift).
+    ctx.translate(0, -separationLift());
     drawStack(attachedAt(stage), burning);
     ctx.restore();
   }
@@ -982,6 +992,31 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.restore();
   }
 
+  /** The full-vehicle segment of a 1-based stage number, clamped into range. */
+  function stageSeg(stageNo) {
+    return fullStack[Math.min(Math.max((stageNo ?? 1) - 1, 0), fullStack.length - 1)];
+  }
+
+  /**
+   * How far above the sample point the attached stack is still drawn, px
+   * along the body axis: the height of every stage dropped within the last
+   * SEPARATION_SETTLE_S real seconds, fading to zero, so the stack stays
+   * where it was at the instant of separation and eases down onto the point
+   * instead of snapping. Reads only separations already passed; a skipped
+   * playback (age 1e9) has settled completely.
+   */
+  function separationLift() {
+    let lift = 0;
+    for (const ev of timeline) {
+      if (ev.kind !== 'separation') continue;
+      if (simT < ev.t) break;
+      const age = ageOf(stamps.get(ev));
+      if (age >= SEPARATION_SETTLE_S) continue;
+      lift += stageSeg(ev.stage).height * (1 - age / SEPARATION_SETTLE_S);
+    }
+    return lift;
+  }
+
   function drawDebris() {
     // A spent stage drops away and falls behind. Its world position is the
     // position at separation (a past event); the fall itself is a screen-space
@@ -995,8 +1030,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
       const at = sampleAt(samples, ev.t);
       const y = altToY(at.alt) + age * age * 90 + age * 12;
       // The event names the stage that separated (1-based, from the resolver).
-      const seg = fullStack[Math.min(Math.max((ev.stage ?? 1) - 1, 0), fullStack.length - 1)];
-      drawDroppedStage(seg, drToX(at.downrange ?? 0) + age * 14, y, age, fade);
+      drawDroppedStage(stageSeg(ev.stage), drToX(at.downrange ?? 0) + age * 14, y, age, fade);
     }
   }
 
@@ -1021,6 +1055,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
       ctx.globalAlpha = 0.9;
       ctx.translate(wx, wy);
       ctx.rotate(age * 2.4);
+      ctx.translate(0, -separationLift());
       drawStack(attachedAt(failure.stage ?? at.stage ?? 1), false);
       ctx.restore();
     }
