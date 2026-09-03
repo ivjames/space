@@ -7,7 +7,7 @@
 // refreshes the HUD.
 //
 // TIERS (phase 1). Only nodes at or below the player's current tier are
-// listed — `branches(tree, state.tier)` — so tier 2's twelve nodes simply do
+// listed — `branches(tree, state.tier)` — so tier 2's fifteen nodes simply do
 // not exist on the shelf until the player has reached tier 2. Inside a
 // branch the nodes stay in level order, with a thin divider where the tier
 // changes: the branch reads as one ladder that grew, not as two lists. A
@@ -34,6 +34,7 @@ const STAT_LABELS = {
   docking: 'docking',
   rcs: 'rcs',
   dockBonus: 'docking odds',
+  escape: 'abort coverage',
 };
 
 /**
@@ -41,6 +42,18 @@ const STAT_LABELS = {
  * more than "docking = 1", and there is no level 2 of either.
  */
 const CAPABILITY_NAMES = { docking: 'docking adapter', rcs: 'reaction control' };
+
+/**
+ * Abort coverage (`escape`, ARCHITECTURE.md "Stage abort systems") is a
+ * count of bottom stages, so it reads as a name at level 1 — the booster is
+ * the only stage covered — and as a range above it: "abort coverage:
+ * stages 1–2". Same wording the loadout's vehicle stats block uses.
+ */
+function escapeSummary(value) {
+  const n = Math.floor(value);
+  if (n === 1) return 'booster abort system';
+  return `abort coverage: stages 1–${n}`;
+}
 
 const MASS_STATS = new Set(['propMass', 'dryMass', 'payloadMass']);
 
@@ -96,6 +109,7 @@ export function effectSummary(effect) {
     return `${label} ${signed(effect.value, MASS_STATS.has(key) ? ' kg' : '')}`;
   }
   if (CAPABILITY_NAMES[key] && effect.value >= 1) return CAPABILITY_NAMES[key];
+  if (key === 'escape' && effect.value >= 1) return escapeSummary(effect.value);
   return `${label} ${effect.value}`;
 }
 

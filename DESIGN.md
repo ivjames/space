@@ -123,6 +123,19 @@ ended where it did, and the readout must point at a specific tree branch:
 "short by 400 m/s" points at engines or staging, "stage 2 ignition failure"
 points at reliability. That link is the reason the tree exists.
 
+Even a failure that *does* put an engine out need not end the run — a
+different lever from the milder rolls above, and a purchase rather than a
+softer outcome: abort systems, bought from the reliability branch like
+everything else (Decision 5 — funds, not a timer), let the stack above a
+failed stage separate clear and fly on under its own power. An anomaly is
+not escapable, because there is nothing to escape: the engines are still
+running and dropping a healthy stage would not put the vehicle back on its
+program. The player still sees the bang and the failed stage falling
+away, but the rocket keeps climbing, and the readout names both things —
+the failure and, if the flight still comes up short, the shortfall — so the
+tree purchase reads as "the failure didn't cost me the run" rather than as
+the failure disappearing.
+
 ## 6. Tiers
 
 Tiers are **milestones in one continuous game**, not prestige resets. Each has

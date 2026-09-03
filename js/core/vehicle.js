@@ -78,11 +78,14 @@ const NAMED_VEHICLE_FIELDS = new Set(['stages', 'payloadMass', 'dragArea', 'drag
  *   docking    0/1   docking adapter
  *   rcs        0/1   fine approach thrusters
  *   dockBonus  0..1  added to the docking roll's threshold
+ *   escape     int   stage abort coverage: how many interstages, counted
+ *                    from the bottom, let the stack above separate from a
+ *                    stage that fails under it and fly on (resolver.js)
  *
  * Anything else a base declares as a top-level number still comes through as an
  * extra stat, so adding a further stat stays a data change (phase 1's contract).
  */
-const CAPABILITY_STATS = ['guidance', 'restarts', 'nav', 'docking', 'rcs', 'dockBonus'];
+const CAPABILITY_STATS = ['guidance', 'restarts', 'nav', 'docking', 'rcs', 'dockBonus', 'escape'];
 
 const REQUIRED_STAGE_FIELDS = ['dryMass', 'propMass', 'thrust', 'isp', 'reliability'];
 
@@ -124,8 +127,8 @@ function normalizeStage(stage, where) {
  * node sets it to 1, with no edit here. Non-numeric extras are ignored — a
  * vehicle is a stat block, and only numbers are stats.
  *
- * The CAPABILITY_STATS (`guidance`, and phase 2's `restarts`, `nav`, `docking`,
- * `rcs`, `dockBonus`) are always present and default to 0, so the resolver can
+ * The CAPABILITY_STATS (`guidance`, phase 2's `restarts`, `nav`, `docking`,
+ * `rcs`, `dockBonus`, and `escape`) are always present and default to 0, so the resolver can
  * read them on a hand-written phase 0 fixture without a guard, and a tree node
  * can `set` or `add` one on a base that never declared it.
  *
