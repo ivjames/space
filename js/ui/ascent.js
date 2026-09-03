@@ -48,7 +48,10 @@
 // world space so they scroll past), the ground carries marks that scroll
 // sideways so downrange is legible the same way, exhaust burns only while a
 // stage is actually producing thrust, a flash marks the failure instant, and
-// a spent stage drops away at separation.
+// a spent stage drops away at separation. The sprite is stage-accurate: one
+// segment per stage of the BUILT vehicle (stackGeometry, sized by each stage's
+// mass), each with its own engine nozzle, an interstage band between every
+// pair, and at separation the segment that actually dropped is what falls.
 //
 // SKY. The sky is a pure function of the CURRENT altitude — day blue at the
 // pad, darkening on an eased ramp from 10 km, near-black by 60 km, black by
@@ -145,6 +148,76 @@ const GROUND_H = 22;
 const HEADING_LOOKBACK = 1;
 /** Displacement below which the vehicle counts as not yet moving, m. */
 const HEADING_MIN_M = 1;
+
+// ---- sprite geometry ------------------------------------------------------
+// The rocket is drawn as one segment per stage of the built vehicle. Every
+// number here is a function of the vehicle alone (its stages' masses), which
+// is known before the flight: nothing in the sprite may read the outcome.
+/** Body px per cube-root-kilogram of a stage's dry + propellant mass. */
+const PX_PER_CBRT_KG = 4;
+/** No segment shorter than this, so a light upper stage stays legible. */
+const MIN_SEG_H = 9;
+/** Bottom stage width, px; each stage above is TAPER of the one below. */
+const BOTTOM_W = 10;
+const TAPER = 0.85;
+const MIN_W = 5;
+/** Nose cone height above the topmost attached segment, px. */
+const NOSE_H = 8;
+/** Engine nozzle poking out below each segment, px. */
+const NOZZLE_H = 3;
+/** Interstage band at the top of a lower segment, px. */
+const BAND_H = 2;
+/** What a stage counts as when only a stage COUNT is given: the starter. */
+const NOMINAL_STAGE = { dryMass: 40, propMass: 30 };
+
+/**
+ * Sprite geometry of the vehicle's stack, for the part still attached.
+ *
+ * @param {Array<{dryMass:number, propMass:number}>|number} stages the built
+ *        vehicle's stages, bottom first (only `dryMass` and `propMass` are
+ *        read), or a plain count N meaning N equal starter-sized stages.
+ * @param {number} [currentStage] 1-based stage currently flying; every stage
+ *        below it has separated and is left out.
+ * @returns {{ segments: Array<{height:number, width:number, fins:boolean}>,
+ *             bodyHeight: number, noseHeight: number, height: number,
+ *             count: number }}
+ *   `segments` is bottom first. A segment's height grows with its stage's
+ *   total mass as its cube root (PX_PER_CBRT_KG per cbrt(kg), never below
+ *   MIN_SEG_H); widths start at BOTTOM_W and taper by TAPER per stage up, never
+ *   below MIN_W; `fins` is true only on the bottom stage of the FULL vehicle.
+ *   `bodyHeight` is the attached segments summed, `height` adds the nose cone,
+ *   `count` is the full vehicle's stage count. Pure and deterministic: it
+ *   reads the vehicle, never the outcome.
+ */
+export function stackGeometry(stages, currentStage = 1) {
+  let list;
+  if (typeof stages === 'number') {
+    const n = Math.max(1, Math.floor(stages));
+    list = Array.from({ length: n }, () => NOMINAL_STAGE);
+  } else if (Array.isArray(stages) && stages.length > 0) {
+    list = stages;
+  } else {
+    list = [NOMINAL_STAGE];
+  }
+  let width = BOTTOM_W;
+  const all = list.map((s, i) => {
+    const mass = Math.max(0, (Number(s?.dryMass) || 0) + (Number(s?.propMass) || 0));
+    const height = Math.max(MIN_SEG_H, Math.round(Math.cbrt(mass) * PX_PER_CBRT_KG));
+    const seg = { height, width: Math.max(MIN_W, Math.round(width)), fins: i === 0 };
+    width *= TAPER;
+    return seg;
+  });
+  const first = Math.min(Math.max(Math.floor(currentStage ?? 1) - 1, 0), all.length - 1);
+  const segments = all.slice(first);
+  const bodyHeight = segments.reduce((sum, seg) => sum + seg.height, 0);
+  return {
+    segments,
+    bodyHeight,
+    noseHeight: NOSE_H,
+    height: bodyHeight + NOSE_H,
+    count: all.length,
+  };
+}
 
 function cssVar(el, name, fallback) {
   const v = getComputedStyle(el).getPropertyValue(name).trim();
@@ -313,9 +386,14 @@ function normalizeRequirement(req) {
  * @param {number|object} [opts.requirement] the mission requirement — a bare
  *        altitude in metres (phase 0) or a requirement object (phase 1). Drawn
  *        as the dashed target marker; it is NOT an input to the scale.
- * @param {number} [opts.stages] how many stages the vehicle has (from the
- *        vehicle, not the outcome) so the sprite can be drawn as a stack
- *        before the first separation. Defaults to 1.
+ * @param {object} [opts.vehicle] the built vehicle (js/core/vehicle.js), so
+ *        the sprite can be drawn as the actual stack — one segment per stage,
+ *        sized by mass (stackGeometry) — and so the segment that drops at a
+ *        separation is the stage that separated. From the vehicle, never the
+ *        outcome.
+ * @param {number} [opts.stages] older form: a stage COUNT, drawn as that many
+ *        equal segments. Used only when `opts.vehicle` is absent. Defaults
+ *        to 1.
  * @param {string} [opts.stopAtKind] stop at the FIRST timeline event of this
  *        kind instead of at the last event, so another view can take the
  *        canvas over from there (phase 2: 'insertion' hands off to
@@ -339,7 +417,12 @@ export function playOutcome(canvas, outcome, opts = {}) {
     : (timeline.length ? Math.max(timeline[timeline.length - 1].t, 0) : 0);
 
   const target = normalizeRequirement(opts.requirement);
-  const stageCount = Math.max(opts.stages ?? 1, 1);
+  // Sprite geometry from the vehicle (or a bare count), fixed for the flight;
+  // the stage flying now picks which of its segments are still attached.
+  const fullStack = stackGeometry(opts.vehicle?.stages ?? opts.stages ?? 1, 1).segments;
+  const attachedAt = (stage) => fullStack.slice(
+    Math.min(Math.max(Math.floor(stage ?? 1) - 1, 0), fullStack.length - 1),
+  );
   const tickStep = TICK_STEP_M;
   const viewSpan = VIEW_SPAN_M;
 
@@ -741,94 +824,157 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.restore();
   }
 
+  // ---- the vehicle ---------------------------------------------------------
+  // Everything below draws in the sprite's local frame: x across the body, y
+  // down it, the ATTACHED body (nose excluded) centred on the origin. `segs`
+  // is bottom first, as stackGeometry returns it. Colours: the body is the
+  // night palette's foreground, bands and fins its muted grey, nozzles an ink
+  // that is dark over daylight and muted grey at night, the nose the accent.
+
+  /** Nozzle/ink colour for the current sky. */
+  const inkColor = () => rgba(mix(DAY_INK, rgbMuted, sky.dark), 1);
+
+  /** One stage's tube, with a darker panel line down one side so it reads as a cylinder. */
+  function drawSegment(seg, top) {
+    const { width: sw, height: sh } = seg;
+    ctx.fillStyle = colors.fg;
+    ctx.fillRect(-sw / 2, top, sw, sh);
+    const panel = Math.max(1, Math.round(sw * 0.22));
+    ctx.fillStyle = rgba(rgbMuted, 0.45);
+    ctx.fillRect(sw / 2 - panel, top, panel, sh);
+    // A near-white sprite disappears against a pale sky, so on a bright one
+    // it gets a dark outline. It fades out entirely as the sky goes black.
+    if (sky.day > 0.05) {
+      ctx.strokeStyle = rgba(DAY_INK, 0.65 * sky.day);
+      ctx.lineWidth = 1;
+      ctx.strokeRect(-sw / 2 - 0.5, top - 0.5, sw + 1, sh + 1);
+    }
+  }
+
+  /** The engine bell under a segment whose bottom edge is at `bottom`. */
+  function drawNozzle(seg, bottom) {
+    const throat = seg.width * 0.26;
+    const bell = seg.width * 0.42;
+    ctx.fillStyle = inkColor();
+    ctx.beginPath();
+    ctx.moveTo(-throat, bottom);
+    ctx.lineTo(throat, bottom);
+    ctx.lineTo(bell, bottom + NOZZLE_H);
+    ctx.lineTo(-bell, bottom + NOZZLE_H);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /** Fins either side of the bottom stage. */
+  function drawFins(seg, bottom) {
+    const hw = seg.width / 2;
+    ctx.fillStyle = colors.muted;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(side * hw, bottom - 6);
+      ctx.lineTo(side * (hw + 5), bottom + 2);
+      ctx.lineTo(side * hw, bottom);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  /** Nose cone on the segment whose top edge is at `top`. */
+  function drawNose(seg, top) {
+    const hw = seg.width / 2;
+    ctx.fillStyle = rgba(sky.accent, 1);
+    ctx.beginPath();
+    ctx.moveTo(-hw, top);
+    ctx.lineTo(hw, top);
+    ctx.lineTo(0, top - NOSE_H);
+    ctx.closePath();
+    ctx.fill();
+    if (sky.day > 0.05) {
+      ctx.strokeStyle = rgba(DAY_INK, 0.65 * sky.day);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(-hw, top);
+      ctx.lineTo(0, top - NOSE_H);
+      ctx.lineTo(hw, top);
+      ctx.stroke();
+    }
+  }
+
+  /** Exhaust from a nozzle whose bell ends at `from`, scaled to the stage's width. */
+  function drawFlame(seg, from) {
+    // Flicker is presentation only — nothing here feeds back into state.
+    const flick = 0.7 + 0.3 * Math.sin(performance.now() / 35);
+    const len = seg.width * 2 * flick;
+    const hw = seg.width / 2 + 1;
+    const grad = ctx.createLinearGradient(0, from, 0, from + len);
+    grad.addColorStop(0, '#fff2c0');
+    grad.addColorStop(0.4, '#ffa53c');
+    grad.addColorStop(1, 'rgba(255,80,40,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(-hw, from);
+    ctx.lineTo(hw, from);
+    ctx.lineTo(0, from + len);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /**
+   * The attached stack: every segment's tube, an interstage band between
+   * each pair, a nozzle under every segment (each stage has its own engine),
+   * fins on the vehicle's bottom stage if it is still attached, the nose on
+   * whatever is topmost, and exhaust from the bottom-most nozzle if burning.
+   */
+  function drawStack(segs, burning) {
+    if (segs.length === 0) return;
+    const bodyH = segs.reduce((sum, seg) => sum + seg.height, 0);
+    const bottoms = [];
+    let y = bodyH / 2;
+    for (const seg of segs) {
+      bottoms.push(y);
+      y -= seg.height;
+    }
+    if (burning) drawFlame(segs[0], bottoms[0] + NOZZLE_H);
+    if (segs[0].fins) drawFins(segs[0], bottoms[0]);
+    segs.forEach((seg, j) => drawSegment(seg, bottoms[j] - seg.height));
+    // Bands and nozzles go on top of the tubes: the band is the top of the
+    // lower stage, the upper stage's bell sits over it.
+    segs.forEach((seg, j) => {
+      if (j > 0) {
+        const lower = segs[j - 1];
+        ctx.fillStyle = colors.muted;
+        ctx.fillRect(-lower.width / 2, bottoms[j], lower.width, BAND_H);
+      }
+      drawNozzle(seg, bottoms[j]);
+    });
+    const top = segs.length - 1;
+    drawNose(segs[top], bottoms[top] - segs[top].height);
+  }
+
   function drawRocket(dr, alt, stage, burning, heading) {
     const x = drToX(dr);
     const y = altToY(alt);
-    // Sprite shape comes from the vehicle (how many stages it has) and the
-    // stage flying now — never from a separation that has not happened yet.
-    const stacked = stageCount > 1 && stage <= 1;
-    const bodyH = stacked ? 26 : 17;
-    const bodyW = 7;
-
     ctx.save();
     ctx.translate(x, y);
     // Nose along the velocity direction: vertical on the pad, pitching over
     // as the gravity turn takes hold, nose-down again on the way back in.
     ctx.rotate(heading);
-
-    if (burning) {
-      // Flicker is presentation only — nothing here feeds back into state.
-      const flick = 0.7 + 0.3 * Math.sin(performance.now() / 35);
-      const len = (stacked ? 20 : 15) * flick;
-      const grad = ctx.createLinearGradient(0, bodyH / 2, 0, bodyH / 2 + len);
-      grad.addColorStop(0, '#fff2c0');
-      grad.addColorStop(0.4, '#ffa53c');
-      grad.addColorStop(1, 'rgba(255,80,40,0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.moveTo(-bodyW / 2 - 1, bodyH / 2);
-      ctx.lineTo(bodyW / 2 + 1, bodyH / 2);
-      ctx.lineTo(0, bodyH / 2 + len);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    // Body
-    ctx.fillStyle = colors.fg;
-    ctx.fillRect(-bodyW / 2, -bodyH / 2, bodyW, bodyH);
-    // Interstage band on a stacked vehicle
-    if (stacked) {
-      ctx.fillStyle = colors.muted;
-      ctx.fillRect(-bodyW / 2, -bodyH / 2 + bodyH * 0.42, bodyW, 2);
-    }
-    // Nose
-    ctx.fillStyle = rgba(sky.accent, 1);
-    ctx.beginPath();
-    ctx.moveTo(-bodyW / 2, -bodyH / 2);
-    ctx.lineTo(bodyW / 2, -bodyH / 2);
-    ctx.lineTo(0, -bodyH / 2 - 8);
-    ctx.closePath();
-    ctx.fill();
-    // Fins
-    ctx.fillStyle = colors.muted;
-    ctx.beginPath();
-    ctx.moveTo(-bodyW / 2, bodyH / 2 - 5);
-    ctx.lineTo(-bodyW / 2 - 5, bodyH / 2 + 2);
-    ctx.lineTo(-bodyW / 2, bodyH / 2);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(bodyW / 2, bodyH / 2 - 5);
-    ctx.lineTo(bodyW / 2 + 5, bodyH / 2 + 2);
-    ctx.lineTo(bodyW / 2, bodyH / 2);
-    ctx.closePath();
-    ctx.fill();
-
-    // A near-white sprite disappears against a pale sky, so on a bright one it
-    // gets a dark outline. It fades out entirely as the sky goes black.
-    if (sky.day > 0.05) {
-      ctx.strokeStyle = rgba(DAY_INK, 0.65 * sky.day);
-      ctx.lineWidth = 1;
-      ctx.strokeRect(-bodyW / 2 - 0.5, -bodyH / 2 - 0.5, bodyW + 1, bodyH + 1);
-      ctx.beginPath();
-      ctx.moveTo(-bodyW / 2, -bodyH / 2);
-      ctx.lineTo(0, -bodyH / 2 - 8);
-      ctx.lineTo(bodyW / 2, -bodyH / 2);
-      ctx.stroke();
-    }
-
+    // Which segments are attached comes from the vehicle and the stage flying
+    // now — never from a separation that has not happened yet.
+    drawStack(attachedAt(stage), burning);
     ctx.restore();
   }
 
-  /** A tumbling chunk: a spent stage, or the vehicle itself after a failure. */
-  function drawChunk(x, y, age, fade) {
-    if (y > h + 20 || y < -20 || x < -20 || x > w + 20) return;
+  /** A spent stage tumbling away: the actual segment that dropped. */
+  function drawDroppedStage(seg, x, y, age, fade) {
+    if (y > h + 30 || y < -30 || x < -30 || x > w + 30) return;
     ctx.save();
     ctx.globalAlpha = fade;
     ctx.translate(x, y);
     ctx.rotate(age * 2.4);
-    ctx.fillStyle = rgba(mix(DAY_INK, rgbMuted, sky.dark), 1);
-    ctx.fillRect(-3, -5, 6, 10);
+    if (seg.fins) drawFins(seg, seg.height / 2);
+    drawSegment(seg, -seg.height / 2);
+    drawNozzle(seg, seg.height / 2);
     ctx.restore();
   }
 
@@ -844,7 +990,9 @@ export function playOutcome(canvas, outcome, opts = {}) {
       if (fade <= 0) continue;
       const at = sampleAt(samples, ev.t);
       const y = altToY(at.alt) + age * age * 90 + age * 12;
-      drawChunk(drToX(at.downrange ?? 0) + age * 14, y, age, fade);
+      // The event names the stage that separated (1-based, from the resolver).
+      const seg = fullStack[Math.min(Math.max((ev.stage ?? 1) - 1, 0), fullStack.length - 1)];
+      drawDroppedStage(seg, drToX(at.downrange ?? 0) + age * 14, y, age, fade);
     }
   }
 
@@ -855,8 +1003,23 @@ export function playOutcome(canvas, outcome, opts = {}) {
     const y = altToY(at.alt);
     const age = ageOf(stamps.get(timeline.find((e) => e.kind === 'failure')));
 
-    // The wreck keeps coasting, so the camera still has something to follow.
-    drawChunk(drToX(dr), altToY(alt), age, 0.9);
+    // The wreck keeps coasting, so the camera still has something to follow:
+    // whatever was attached when it failed, tumbling, engine out. The stage
+    // comes from the failure itself, not the sample at failure.t: an upper
+    // stage that fails at ignition does so at the same instant as the
+    // separation below it, before any sample carries the new stage number,
+    // so the sample would still say the booster was attached while
+    // drawDebris() shows it falling away.
+    const wx = drToX(dr);
+    const wy = altToY(alt);
+    if (wy < h + 40 && wy > -40 && wx > -40 && wx < w + 40) {
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.translate(wx, wy);
+      ctx.rotate(age * 2.4);
+      drawStack(attachedAt(failure.stage ?? at.stage ?? 1), false);
+      ctx.restore();
+    }
 
     // A bright flash right at the moment, then a lingering scorch mark so a
     // skipped playback still shows where it went wrong.

@@ -285,8 +285,10 @@ export const tierGoals = { 1: { requirement: { altitude: 100000 }, name: 'Reach 
   world scrolls down past the rocket. Altitude reads off the world, not a
   gauge: km tick lines and a dashed `TARGET n km` line drawn in world space,
   plus a T+ clock, altitude and speed in the top-left corner. Failure is
-  shown at the moment it happens; a spent stage drops away at separation.
-  Skippable by tap.
+  shown at the moment it happens. The sprite is stage-accurate: it takes
+  `opts.vehicle` and draws one segment per stage (sized by mass via the
+  exported `stackGeometry`, each with its own nozzle), and at separation the
+  segment that actually dropped is what tumbles away. Skippable by tap.
   **No-leak contract** (stated at the top of the file): nothing on the
   screen may reveal the outcome before the flight shows it, so during
   playback the module reads only the sample at the current sim time, the
