@@ -1514,6 +1514,23 @@ is removed. `data.test.js` checks both against the real resolver.
   parking orbit and the constants, and neither reads a burn. Two agreeing
   copies would not have stayed agreeing — a departure time only the resolver
   knew about would flash the capture burn beside the moon rather than at it.
+- **The flown arc, not the route.** The transfer drawn as one closed ellipse at
+  the instant the TLI lights is a route diagram: the whole way to the moon is
+  on screen before the vehicle has moved, and nothing after that grows. So the
+  cislunar frame draws the vehicle's conic **twice** — faint and dashed for the
+  whole of it, which is the same information the single curve carried, and
+  bright over the arc flown since the burn that put the vehicle on it, fading
+  out behind (`drawTrail`). Only the bright arc grows, and growing is what
+  approaching looks like. It is the ascent view's trail on a curve instead of a
+  line, and it reads the drawn orbit and the playback clock alone — strictly
+  less than the closed curve, so the no-leak contract is unaffected. The arc
+  holds at the arrival point while the vehicle is AT the moon, where there is
+  no planet-centred motion left to trace, and a departure burn starts a new
+  one. The marker is a craft glyph pointed along its heading rather than the
+  tier 3 ring (heading is the whole of what a transfer looks like from out
+  here; two craft on near-identical orbits have no heading worth telling
+  apart), and the chrome carries the closing range to the moon — measured off
+  the two positions on screen, exactly as tier 3's separation line is.
 - **Playback rate, the one invariant this phase widens.** Tier 3's rule is that
   the rate is a constant (`MAP_RATE`, 600×). No constant works across cislunar
   distances: one fast enough to cross five days of transfer reduces a `flyby`,
