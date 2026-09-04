@@ -14,6 +14,7 @@ import {
   TURN_END_LAZY,
   TURN_END_HARD,
 } from '../core/resolver.js';
+import { LUNAR_STEPS } from '../core/moon.js';
 import { totalDeltaV, G0 } from '../core/vehicle.js';
 import {
   recordLaunch, tierGoalMet, deriveVehicle, advanceTier, findTarget,
@@ -48,6 +49,13 @@ function ms(v) {
 function tickTime(t) {
   const sec = Math.max(0, Math.round(t));
   if (sec < 3600) return `T+${String(sec).padStart(3, ' ')}s`;
+  if (sec >= 86400) {
+    // A lunar flight runs for days (the transfer alone is five), where a
+    // three-digit hours field stops being a duration anyone reads — and the
+    // map's own clock says days too, for the same event.
+    const d = Math.floor(sec / 86400);
+    return `T+${d}d ${Math.floor((sec % 86400) / 3600)}h`;
+  }
   const h = Math.floor(sec / 3600);
   const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
   return `T+${h}:${m}h`;
@@ -89,8 +97,9 @@ function orbitText(periapsis, apoapsis) {
 
 /**
  * Which requirement shape a mission asks for. A mission has exactly one:
- * { altitude } | { downrange } | { orbit: { periapsis } } (phases 0-1), and
- * { rendezvous: { target, within } } | { dock: { target } } (phase 2).
+ * { altitude } | { downrange } | { orbit: { periapsis } } (phases 0-1),
+ * { rendezvous: { target, within } } | { dock: { target } } (phase 2), and
+ * { moon: { profile } } (phase 3).
  */
 function reqKind(requirement) {
   if (requirement) {
@@ -99,9 +108,51 @@ function reqKind(requirement) {
     if (requirement.orbit && typeof requirement.orbit.periapsis === 'number') return 'orbit';
     if (requirement.rendezvous && typeof requirement.rendezvous.within === 'number') return 'rendezvous';
     if (requirement.dock) return 'dock';
+    if (requirement.moon && typeof requirement.moon.profile === 'string') return 'moon';
   }
   return 'altitude';
 }
+
+/**
+ * A lunar profile as the board words it. The profile IS the mission (there is
+ * no loadout control for it), so this is the whole of what a tier 4 contract
+ * asks for, and the ladder reads as an escalation because the four phrases do.
+ * Keyed on js/core/resolver.js's LUNAR_PROFILES, never on a mission id.
+ */
+const MOON_PROFILE_TEXT = {
+  flyby: 'a lunar flyby',
+  orbit: 'lunar orbit',
+  land: 'a landing on the moon',
+  return: 'a landing and a return',
+};
+
+/**
+ * The same four, as the instruction the loadout screen heads itself with.
+ * A separate table rather than a case of the one above because the two sit in
+ * different sentences — "Tier 4 asks for a landing and a return" against
+ * "Land on the moon and return" — and forcing one string through both is what
+ * produces "Fly a landing and a return".
+ */
+const MOON_OBJECTIVE_TEXT = {
+  flyby: 'Fly past the moon',
+  orbit: 'Enter lunar orbit',
+  land: 'Land on the moon',
+  return: 'Land on the moon and return',
+};
+
+/**
+ * The lunar steps as the result screen names them — the resolver's own burn
+ * labels, so the row that says how far the flight got and the sentence that
+ * says what stopped it ("for the return burn") name the ladder the same way.
+ * Keyed by step name; the index a result carries is LUNAR_STEPS's.
+ */
+const LUNAR_STEP_TEXT = {
+  tli: 'translunar injection',
+  loi: 'lunar orbit insertion',
+  descent: 'landing',
+  ascent: 'ascent',
+  tei: 'return',
+};
 
 /** The requirement in its own unit: "25 km", "orbit ≥ 100 km", "rendezvous within 5 km". */
 function requirementText(requirement) {
@@ -110,6 +161,7 @@ function requirementText(requirement) {
     case 'orbit': return `orbit ≥ ${km(requirement.orbit.periapsis)}`;
     case 'rendezvous': return `rendezvous within ${km(requirement.rendezvous.within)}`;
     case 'dock': return 'dock';
+    case 'moon': return MOON_PROFILE_TEXT[requirement.moon.profile] ?? 'the moon';
     default: return km(requirement?.altitude ?? 0);
   }
 }
@@ -118,6 +170,18 @@ function requirementText(requirement) {
 function needsTarget(mission) {
   const kind = reqKind(mission?.requirement);
   return kind === 'rendezvous' || kind === 'dock';
+}
+
+/**
+ * The shapes whose flight does not end at insertion — the resolver's own
+ * `needsInsertion` (js/core/resolver.js), and the same distinction: a lunar
+ * mission resolves a phase after insertion but flies to a CONSTANT, so it
+ * takes the handoff to the map view without ever asking state.objects for a
+ * target. Everything about fetching or naming a target keeps asking
+ * needsTarget; everything about the insertion asks this.
+ */
+function needsInsertion(mission) {
+  return needsTarget(mission) || reqKind(mission?.requirement) === 'moon';
 }
 
 /** Which kind of object a target mission flies to ('core'). */
@@ -186,13 +250,25 @@ function tierBest(state, g) {
         text: typeof c === 'number' && Number.isFinite(c) ? range(c) : 'none yet',
       };
     }
+    case 'moon': {
+      // Tier 4 is judged on how far up the lunar ladder the player has ever
+      // got, which is what state.best.lunarStep holds — the resolver's own
+      // `reached`, sharing its -1 sentinel for "nothing completed" (a save
+      // that predates the tier says the same thing as a flight that never
+      // left the parking orbit, because it is the same thing).
+      const step = state.best?.lunarStep;
+      const name = typeof step === 'number' && step >= 0 ? LUNAR_STEPS[step] : null;
+      return { label: 'best lunar step', text: name ? LUNAR_STEP_TEXT[name] : 'none yet' };
+    }
     default:
       return { label: 'best altitude', text: km(state.best?.maxAltitude ?? 0) };
   }
 }
 
 /** What the tier is about, for the interstitial and the win screen. */
-const TIER_NAMES = { 1: 'Altitude', 2: 'Orbit', 3: 'Orbital maneuvering' };
+const TIER_NAMES = {
+  1: 'Altitude', 2: 'Orbit', 3: 'Orbital maneuvering', 4: 'The Moon',
+};
 
 /**
  * The one thing that changed, said once, on the interstitial that opens a
@@ -214,12 +290,23 @@ const TIER_BLURB = {
       new loadout choice, because a rocket inserted level with its target
       pays nothing for phasing.`,
   ],
+  4: [
+    `The flight no longer ends in orbit. Park in the lowest orbit that counts,
+      then spend what is left on the moon: injection, capture, descent, ascent,
+      the burn home.`,
+    `Nothing here is piloted either, and there is no launch window to pick — the
+      moon is where it is. What the tier buys is the stack that arrives in orbit
+      with stages still unfired, the restarts to light them, and the two pieces
+      of hardware no amount of delta-v substitutes for: a lander, and a heat
+      shield to come back through.`,
+  ],
 };
 
 /** The teaser on a win screen, for the tier the player is about to open. */
 const TIER_TEASER = {
   2: 'velocity, not altitude',
   3: 'a second launch, to something the first one left in orbit',
+  4: 'somewhere else entirely, and a way back from it',
 };
 
 /** Navigation quality, by `vehicle.nav` (resolver.js's NAV_APPROACH ladder). */
@@ -586,7 +673,11 @@ export function mountScreens(ctx) {
       ? `Dock with ${targetName}`
       : kind === 'rendezvous'
         ? `Within ${km(mission.requirement.rendezvous.within)} of ${targetName}`
-        : `Target ${requirementText(mission?.requirement)}`;
+        // A lunar mission is not flown TO anything in state, so "Target" is
+        // the wrong word for it: it is asked for as the thing it is.
+        : kind === 'moon'
+          ? (MOON_OBJECTIVE_TEXT[mission.requirement.moon.profile] ?? 'Fly to the moon')
+          : `Target ${requirementText(mission?.requirement)}`;
     // STEP 0.001, not 0.01. Both are inside PHASE_TOLERANCE_DEG (5 degrees)
     // by a wide margin -- a 0.01 slider's worst half-notch is 1.8 degrees,
     // so the coarse slider could never actually force a phasing burn, and
@@ -677,6 +768,7 @@ export function mountScreens(ctx) {
     // player must buy something DIFFERENT).
     const points = [];
     const orb = o?.orbital ?? null;
+    const lun = o?.lunar ?? null;
     // An anomaly points at its own branch whatever the verdict: guidance
     // drifted the flight off its program, or an engine ran below spec. Both
     // are rolls, so the hint names what makes the roll rarer; one hint per
@@ -714,6 +806,23 @@ export function mountScreens(ctx) {
         points.push(`<p class="hint points" data-points-at="structure">No docking adapter: nothing on this vehicle can latch. Structure carries it.</p>`);
       } else {
         points.push(`<p class="hint points" data-points-at="guidance">The approach was too wide. Navigation is what narrows it — and a smaller launch-window error widens nothing.</p>`);
+      }
+    } else if (!lost && o && !o.success && lun) {
+      // A tier 4 miss, the same way: the ladder names the step it could not
+      // climb, and two of the four stops are hardware the vehicle simply has
+      // not got — which no amount of delta-v substitutes for (DESIGN.md §6:
+      // the player must buy something DIFFERENT).
+      if (lun.stoppedAt === 'restarts') {
+        points.push(`<p class="hint points" data-points-at="propulsion">The stack ran out of relights before the burn it needed one for. A return flight lights five times; propulsion sells the restarts.</p>`);
+      } else if (lun.stoppedAt === 'lander') {
+        points.push(`<p class="hint points" data-points-at="structure">Nothing aboard can land. Structure carries the lander.</p>`);
+      } else if (lun.stoppedAt === 'shield') {
+        points.push(`<p class="hint points" data-points-at="structure">Nothing aboard survives entry, so there is no burn home worth making. Structure carries the heat shield.</p>`);
+      } else if (lun.stoppedAt === 'landing-failure') {
+        points.push(`<p class="hint points" data-points-at="reliability">The descent burn was right; the touchdown was not. Reliability rehearses the landing.</p>`);
+      } else if (lun.stoppedAt === 'deltaV') {
+        points.push(`<p class="hint points" data-points-at="propulsion">The stack ran dry short of the moon: propulsion adds isp and a departure stage…</p>`);
+        points.push(`<p class="hint points" data-points-at="structure">…or structure lightens what has to be pushed all the way there.</p>`);
       }
     } else if (!lost && o && !o.success) {
       // A vertical-only vehicle cannot fly an orbit, downrange, rendezvous
@@ -772,10 +881,32 @@ export function mountScreens(ctx) {
       rows.push(`<div><dt>Periapsis</dt><dd>${elementText(o?.periapsis)}</dd></div>`);
     } else if (kind === 'downrange') {
       rows.push(`<div><dt>Downrange</dt><dd>${km(o?.maxDownrange ?? 0)}</dd></div>`);
+    } else if (kind === 'moon') {
+      // The parking orbit the ladder was flown out of, then how far up it the
+      // flight got and what that cost. `lunar` is null when the ascent never
+      // inserted at all, which reads as "none" and 0 of 0 — the true statement
+      // about a flight that never had a ladder to climb.
+      rows.push(`<div><dt>Parking orbit</dt><dd>${escapeHtml(orbitText(o?.periapsis, o?.apoapsis))}</dd></div>`);
+      const reached = typeof lun?.reached === 'number' && lun.reached >= 0
+        ? (LUNAR_STEP_TEXT[LUNAR_STEPS[lun.reached]] ?? '—')
+        : 'none';
+      rows.push(`<div><dt>Deepest step</dt><dd data-result="lunar-step">${escapeHtml(reached)}</dd></div>`);
+      rows.push(`<div><dt>Lunar delta-v</dt><dd>${ms(lun?.dvUsed ?? 0)} of ${ms(lun?.dvAvailable ?? 0)}</dd></div>`);
     }
     rows.push(`<div><dt>Max speed</dt><dd>${ms(o?.maxSpeed ?? 0)}</dd></div>`);
     rows.push(`<div><dt>Delta-v used</dt><dd>${ms(o?.deltaVAchieved ?? 0)}</dd></div>`);
-    if (o && !o.success) rows.push(`<div><dt>Short by</dt><dd>${ms(o.shortBy)}</dd></div>`);
+    // A lunar flight that stopped somewhere says so in the resolver's own
+    // words — "Short by 640 m/s for the return burn", which names the step as
+    // well as the number and is composed where the ladder is, not here. It
+    // REPLACES the bare "Short by" row rather than sitting under it: two rows
+    // for one shortfall, one of them missing the half that matters.
+    if (kind === 'moon' && o && !o.success && lun?.stoppedAt) {
+      const label = lun.stoppedAt === 'deltaV' ? 'Shortfall' : 'Stopped';
+      rows.push(`<div class="note"><dt>${label}</dt>`
+        + `<dd data-result="lunar-shortfall">${escapeHtml(lun.readout)}</dd></div>`);
+    } else if (o && !o.success) {
+      rows.push(`<div><dt>Short by</dt><dd>${ms(o.shortBy)}</dd></div>`);
+    }
 
     const g = goal();
     const best = tierBest(state, g);
@@ -820,15 +951,26 @@ export function mountScreens(ctx) {
     // Each tier's win is stated in the terms that tier was played in — tier 3
     // did not "reach" anything, it built something (ARCHITECTURE.md, phase 2:
     // "Assembled a station in N launches").
+    // Tier 4 needs its own arm for the same reason: without one a lunar win
+    // falls through to the altitude default and prints "Reached 100 km",
+    // which is not what the player just did.
+    const moonWon = {
+      flyby: `Flew past the moon in ${launches} launches`,
+      orbit: `Orbited the moon in ${launches} launches`,
+      land: `Landed on the moon in ${launches} launches`,
+      return: `Landed and returned in ${launches} launches`,
+    };
     const won = kind === 'dock'
       ? `Assembled a station in ${launches} launches`
       : kind === 'rendezvous'
         ? `Rendezvoused in ${launches} launches`
-        : kind === 'orbit'
-          ? `Reached orbit in ${launches} launches`
-          : kind === 'downrange'
-            ? `Reached ${km(g.requirement.downrange)} downrange in ${launches} launches`
-            : `Reached ${km(g?.requirement.altitude ?? 100000)} in ${launches} launches`;
+        : kind === 'moon'
+          ? (moonWon[g.requirement.moon.profile] ?? `Reached the moon in ${launches} launches`)
+          : kind === 'orbit'
+            ? `Reached orbit in ${launches} launches`
+            : kind === 'downrange'
+              ? `Reached ${km(g.requirement.downrange)} downrange in ${launches} launches`
+              : `Reached ${km(g?.requirement.altitude ?? 100000)} in ${launches} launches`;
     const nextGoal = tierGoals[state.tier + 1] ?? null;
     return `
       <div class="screen" data-screen="win">
@@ -1083,11 +1225,13 @@ export function mountScreens(ctx) {
     };
 
     /**
-     * The handoff (ARCHITECTURE.md, phase 2). On a target mission the ascent
-     * view stops at the `insertion` event and the SAME canvas is handed to the
-     * map view, which plays the orbital phase from there. A flight that never
-     * inserted has no such event: the ascent plays to its end as it always
-     * did, and this never runs.
+     * The handoff (ARCHITECTURE.md, phases 2 and 3). On a mission with a phase
+     * after insertion the ascent view stops at the `insertion` event and the
+     * SAME canvas is handed to the map view, which plays that phase from there
+     * — the orbital sequence in the planet-centred frame, the lunar one in the
+     * cislunar one, which the map picks from the outcome itself. A flight that
+     * never inserted has no such event: the ascent plays to its end as it
+     * always did, and this never runs.
      */
     const toMapView = () => {
       view.handle = playOrbital(canvas, outcome, {
@@ -1102,7 +1246,10 @@ export function mountScreens(ctx) {
       // downrange or an orbit, and the marker has to say which. A target
       // mission is flown to the TARGET's periapsis (which is what the
       // resolver cuts the ascent off at), and that orbit is state — known
-      // before the flight, so marking it leaks nothing.
+      // before the flight, so marking it leaks nothing. A lunar mission goes
+      // through as the `{ moon }` requirement it is, and ascent.js marks the
+      // parking orbit the resolver cuts it off at — leaking nothing for the
+      // same reason.
       requirement: target
         ? { orbit: { periapsis: target.periapsis } }
         : mission.requirement,
@@ -1111,12 +1258,16 @@ export function mountScreens(ctx) {
       // separation; that comes from the vehicle, never from the outcome
       // (js/ui/ascent.js).
       vehicle,
-      stopAtKind: target ? 'insertion' : undefined,
+      // Keyed on "has a phase after insertion", not on "has a target": a lunar
+      // mission has the first without the second (js/core/resolver.js's
+      // needsInsertion), and keying it on the target left tier 4 playing its
+      // ascent to the end and never reaching the map at all.
+      stopAtKind: needsInsertion(mission) ? 'insertion' : undefined,
       onEvent: appendTicker,
       onDone: () => {
         // Read AFTER the ascent has played: by now the insertion either
         // happened on screen or the flight ended without one.
-        if (target && outcome.insertion && outcome.orbital) toMapView();
+        if (outcome.insertion && (outcome.orbital || outcome.lunar)) toMapView();
         else flightDone();
       },
     });

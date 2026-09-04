@@ -1,5 +1,5 @@
 // New game state, derived vehicle, tier progress. Pure. See
-// ARCHITECTURE.md for the full state/save schema (version 3, phase 2).
+// ARCHITECTURE.md for the full state/save schema (version 4, phase 3).
 import { collectEffects } from './tree.js';
 
 import { phaseFor } from './orbit.js';
@@ -10,17 +10,34 @@ import { phaseFor } from './orbit.js';
 // very first purchase has to come from a launch.
 //
 // `version` here is the schema a fresh game is BORN at, and must track
-// save.js's SCHEMA_VERSION (3, phase 2) — hardcoded rather than imported to
+// save.js's SCHEMA_VERSION (4, phase 3) — hardcoded rather than imported to
 // avoid a state.js -> save.js dependency this module didn't have before
 // (the same "duplicated literal" tradeoff phase 0 already made: save.js's
 // own SCHEMA_VERSION constant is the second copy).
 //
 // `best` is per-tier and per-metric (ARCHITECTURE.md, "state.js, save.js —
-// tier progression, schema v2" and "...schema v3"): `maxAltitude` is kept
-// for tier 1 and old saves, `maxDownrange`/`bestPeriapsis` are tier 2's,
-// `bestClosestApproach`/`docked` are tier 3's (phase 2), and `wins` records
-// which tier win screens have already been shown (`{ [tier]: true }`) —
-// see advanceTier below for where a tier's win gets recorded.
+// tier progression, schema v2", "...schema v3" and "...schema v4"):
+// `maxAltitude` is kept for tier 1 and old saves,
+// `maxDownrange`/`bestPeriapsis` are tier 2's,
+// `bestClosestApproach`/`docked` are tier 3's (phase 2), `lunarStep` is
+// tier 4's (phase 3), and `wins` records which tier win screens have
+// already been shown (`{ [tier]: true }`) — see advanceTier below for
+// where a tier's win gets recorded.
+//
+// `lunarStep` is the deepest step of the lunar ladder any flight has ever
+// completed, in the SAME encoding the resolver's `outcome.lunar.reached`
+// uses: an index into moon.js's `LUNAR_STEPS`
+// (`['tli','loi','descent','ascent','tei']`), and **-1 for "nothing
+// completed"**, which is why a fresh game starts there rather than at 0.
+// 0 is a real rung — it is `tli`, the translunar injection a flyby is
+// judged on — so 0 as the starting value would say a brand-new game had
+// already flown one. -1 is the sentinel the resolver itself carries
+// (`resolver.js`'s `requiredLunarStep` returns -1 for an unknown profile
+// "which is the value `reached` itself carries when nothing was
+// completed"), so storing it untranslated is what lets tierGoalMet below
+// mirror the resolver's success test exactly: a flight the resolver called
+// a success can never leave a `best` that tierGoalMet calls unmet, and an
+// unflown game meets no lunar goal, flyby included.
 //
 // `objects` is new in phase 2 (ARCHITECTURE.md, "Persistent objects in
 // orbit"): everything the player has ever launched and left in orbit (a
@@ -29,7 +46,7 @@ import { phaseFor } from './orbit.js';
 // not touch this field.
 export function newGame(seed) {
   return {
-    version: 3,
+    version: 4,
     seed,
     draws: 0,
     funds: 0,
@@ -44,6 +61,7 @@ export function newGame(seed) {
       bestPeriapsis: null,
       bestClosestApproach: null,
       docked: false,
+      lunarStep: -1,
       wins: {},
     },
     contracts: [],
@@ -171,8 +189,9 @@ function objectOrbitFrom(outcome, mission) {
 // carries `maxDownrange` / `periapsis` — see maxOrKeep above, phase 1
 // outcome fields may be absent on an older/fabricated outcome), and (phase
 // 2) best.bestClosestApproach / best.docked from `outcome.closestApproach`
-// / `outcome.docked`; appends to history (capped at 20 most recent, now
-// also carrying `closestApproach` and `docked`); applies `mission.deploys`
+// / `outcome.docked`, and (phase 3) best.lunarStep from
+// `outcome.lunar.reached`; appends to history (capped at 20 most recent, now
+// also carrying `closestApproach`, `docked` and `lunarStep`); applies `mission.deploys`
 // on a successful outcome (ARCHITECTURE.md, "Persistent objects in orbit":
 // a new object, id `<kind>-<n>`, orbit from objectOrbitFrom above, phase
 // from phaseFor(id) — see the module-load guard at the top of this file —
@@ -194,6 +213,25 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
     bestPeriapsis: maxOrKeep(state.best.bestPeriapsis ?? null, outcome.periapsis),
     bestClosestApproach: minOrKeep(state.best.bestClosestApproach ?? null, outcome.closestApproach),
     docked: (state.best.docked ?? false) || outcome.docked === true,
+    // The lunar ladder only ever goes deeper, so maxOrKeep is the right
+    // helper and its discipline is what matters most here: every outcome
+    // written before phase 3 — and every hand-written fixture in the test
+    // suite — has no `lunar` block at all, so `outcome.lunar?.reached` is
+    // `undefined`, maxOrKeep rejects it as non-finite, and the running
+    // best is left exactly as it was. Without the optional chain this
+    // would throw on the thousands of non-lunar outcomes the game
+    // resolves; without maxOrKeep's finite check an absent field would be
+    // coerced to 0/NaN and clobber a real result.
+    //
+    // -1, not 0, is the floor: it is both the value newGame starts at and
+    // the value the resolver reports for a lunar flight that completed no
+    // step, so a launch that fell short of TLI takes max(-1, -1) = -1 and
+    // changes nothing. maxOrKeep's other guard — `current === null` means
+    // "no floor yet" — is not in play here, because -1 IS the floor and is
+    // a perfectly ordinary number to take a max against. The encoding is
+    // the resolver's own (an index into moon.js's LUNAR_STEPS), passed
+    // through untranslated — see the newGame doc block and tierGoalMet.
+    lunarStep: maxOrKeep(state.best.lunarStep ?? -1, outcome.lunar?.reached),
   };
   const entry = {
     tier,
@@ -204,6 +242,16 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
     downrange: outcome.maxDownrange ?? null,
     closestApproach: outcome.closestApproach ?? null,
     docked: outcome.docked ?? false,
+    // -1, not null, for "this flight went nowhere near the moon" — the
+    // other absent-field defaults here each match what save.js's migration
+    // back-fills into an older save's history entries, and migrations[3]
+    // back-fills `lunarStep: -1`. Using null here and -1 there would leave
+    // a history list where the same "no lunar step" fact is spelled two
+    // ways depending on how old the row is, which is exactly the thing any
+    // reader of a history row would then have to special-case. -1 rather
+    // than 0 for the same reason as `best.lunarStep` above: 0 is `tli`, a
+    // rung a sounding rocket plainly did not climb.
+    lunarStep: outcome.lunar?.reached ?? -1,
     readout: outcome.readout,
   };
   const history = [...state.history, entry].slice(-20);
@@ -265,6 +313,60 @@ export function advanceTier(state) {
   };
 }
 
+// The lunar ladder, in order, and which rung each mission profile has to
+// climb to (ARCHITECTURE.md, "Phase 3 — tier 4, the Moon"). The list is a
+// LOCAL COPY of js/core/moon.js's `LUNAR_STEPS`, which is the source of
+// truth; state.js deliberately does not import it. Two reasons, and the
+// second is the one that would still hold if the first went away:
+//
+//  - state.js is imported by everything (screens, contracts, the storage
+//    layer) and moon.js is a leaf of the flight model that nothing else
+//    here touches, so a static import would put a module of orbital
+//    mechanics on the load path of the save/load screen. deriveVehicle
+//    above dodges the same problem with a dynamic import; tierGoalMet is
+//    synchronous and cannot.
+//  - state.js's whole job is to read persisted numbers back. What it needs
+//    from moon.js is not the moon's physics but the ORDINAL of a step in a
+//    five-element list — and taking a dependency on a module of orbital
+//    mechanics to learn that 'tei' is the last of five is the wrong shape
+//    of coupling. If the ladder ever gains a step, moon.js and this list
+//    have to change together; the comment above `LUNAR_STEPS` there says
+//    so, and test/state.test.js pins the order here.
+//
+// `best.lunarStep` holds the resolver's own `outcome.lunar.reached`, an
+// index into this list, so the comparison below is the resolver's own
+// success test (`reached >= requiredLunarStep(profile)`) applied to the
+// running best instead of to one flight. That equivalence is the point:
+// any offset between the two encodings would let a flight the resolver
+// called a success leave a best the tier goal calls unmet.
+//
+// The encoding is shared down to its sentinel: **-1 means "no step of the
+// ladder has ever been completed"**, in state.js exactly as in the
+// resolver, which is why newGame and migrations[3] both start the field
+// there rather than at 0. That is what makes the comparison below correct
+// for every profile rather than for most of them — 'tli' is index 0, so a
+// floor of 0 would have reported a `{ moon: { profile: 'flyby' } }` goal
+// as met on a brand-new game, before anything had flown. It is met now
+// only once some flight has actually reached TLI. test/state.test.js pins
+// that case specifically.
+//
+// `required < 0` below is the same guard resolver.js's `requiredLunarStep`
+// makes, for a related reason: an unmapped profile answers -1 there, and
+// with -1 also a legal value of `lunarStep`, `lunarStep >= -1` would be
+// true of every state there has ever been — so an unknown profile has to
+// be rejected before the comparison, not by it.
+const LUNAR_STEP_ORDER = ['tli', 'loi', 'descent', 'ascent', 'tei'];
+const PROFILE_STEP = { flyby: 'tli', orbit: 'loi', land: 'descent', return: 'tei' };
+
+// An unknown profile falls through to `false` below, deliberately: this
+// whole function ends in `return false`, so an unrecognised requirement
+// shape is silently reported as "goal never met" rather than throwing.
+// That is why the `{ moon }` arm is not optional — without it a tier 4
+// save would report its goal unmet forever, with nothing anywhere saying
+// why, and the same silence is why an unmapped profile is handled
+// explicitly (`required < 0`) instead of being left to `indexOf`'s -1,
+// which would compare as "met by everything".
+
 // tierGoalMet(state, missions) -> boolean
 // Checks state.best against tierGoals[state.tier]. Accepts either the
 // tierGoals map itself, or an object carrying it as `.tierGoals` (e.g. the
@@ -284,7 +386,9 @@ export function advanceTier(state) {
 // best.bestClosestApproach, and a `dock` requirement scans state.objects
 // directly rather than best.docked (a boolean can't say WHICH object got
 // docked, but the objects array can, so that's the source of truth here —
-// best.docked stays a cheap "has this ever happened" flag for the UI/HUD).
+// best.docked stays a cheap "has this ever happened" flag for the UI/HUD),
+// and (phase 3) a `moon.profile` requirement reads best.lunarStep against
+// the step that profile has to reach — see LUNAR_STEP_ORDER above.
 export function tierGoalMet(state, missions) {
   const goals = missions.tierGoals ?? missions;
   const goal = goals[state.tier];
@@ -306,6 +410,11 @@ export function tierGoalMet(state, missions) {
   }
   if (req.dock !== undefined) {
     return (state.objects ?? []).some((obj) => obj.dockedTo != null);
+  }
+  if (req.moon !== undefined) {
+    const required = LUNAR_STEP_ORDER.indexOf(PROFILE_STEP[req.moon.profile]);
+    if (required < 0) return false;
+    return (state.best.lunarStep ?? 0) >= required;
   }
   return false;
 }

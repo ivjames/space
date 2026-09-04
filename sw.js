@@ -34,6 +34,7 @@ const PRECACHE_URLS = [
   'js/core/vehicle.js',
   'js/core/resolver.js',
   'js/core/orbit.js',
+  'js/core/moon.js',
   'js/core/tree.js',
   'js/core/economy.js',
   'js/core/contracts.js',

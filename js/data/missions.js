@@ -570,10 +570,197 @@ export const missions = [
     repLoss: 6,
     minReputation: 85,
   },
+
+  // -----------------------------------------------------------------------
+  // TIER 4 -- the Moon. ARCHITECTURE.md, "js/data/missions.js -- tier 4
+  // ladder": five rungs, all tier 4, balanced against the REAL phase 3
+  // resolver (js/core/moon.js's ladder + js/core/resolver.js's lunar
+  // sequence) via `node tools/balance.mjs`'s TIER 4 section -- not a
+  // plausible-looking continuation of tier 3's numbers.
+  //
+  //   relay       orbit >= 160 km, deploys a comsat, REPEATABLE -- the
+  //               tier's income filler, and it exists for exactly the reason
+  //               tier 3's `satellite` does (see that rung's note above): on
+  //               arrival in tier 4 every other rung on the board gates on
+  //               lunar hardware that costs six figures and cannot be there
+  //               on day one, so without a filler the whole tier's income is
+  //               the 400-fund floor contract for as long as it takes to buy
+  //               a moon rocket. No `minReputation`: immediately offerable,
+  //               the same role sound-1, orbit-down-1 and satellite play
+  //               entering their own tiers.
+  //
+  //               Its periapsis is `core`'s own 160 km, DELIBERATELY not a
+  //               step above it -- which makes it flyable by a tier 3 winner
+  //               BY CONSTRUCTION, not by luck: winning tier 3 means docking,
+  //               `dock` gates on prop-13, prop-13 requires struct-10, and
+  //               [prop-8, guide-1, struct-10] is exactly `core`'s gate, so
+  //               anyone who has docked has already flown this orbit. It also
+  //               deploys a satellite rather than something unique, so it can
+  //               be flown again and again. test/data.test.js pins both, as
+  //               it does for satellite.
+  //   moon-flyby  the first lunar rung: one burn (tli) and coast round.
+  //   moon-orbit  + the capture burn (loi).
+  //   moon-land   + the powered descent, the landing roll, and a lander.
+  //   moon-return the tier goal: down, up, and home.
+  //
+  // The four lunar rungs carry no `deploys` and no `requiresObject`: phase 3
+  // leaves nothing at the moon (`state.objects` is untouched -- the surface
+  // base is phase 3b) and the moon is a CONSTANT in js/core/moon.js rather
+  // than an entry in state, so unlike a rendezvous these rungs need no target
+  // to be quoted, drawn or flown.
+  //
+  // `profile` STOPS BEING DEAD DATA HERE. It has been written on every
+  // template since tier 1 and read by nothing. It still is not a dispatch
+  // axis -- every switch in the codebase reads the REQUIREMENT SHAPE, and
+  // that stays true -- but test/data.test.js now pins that a template's
+  // profile agrees with its requirement, so the annotation is either correct
+  // or it fails. The rule it pins is the one the existing data already
+  // followed: a `moon` requirement's profile is exactly the profile its
+  // ladder flies ('flyby' | 'orbit' | 'land' | 'return'); a shape that needs
+  // an orbit to be judged (orbit, rendezvous, dock) is 'orbit'; a 'sounding'
+  // profile only ever carries an altitude or downrange requirement. It is
+  // deliberately not "profile is a function of the shape": orbit-apogee asks
+  // for 300 km of altitude and is an orbital flight, orbit-entry asks for
+  // 110 km and is a sounding shot, and both of those are true.
+  //
+  // GATES (`requiresNode`). relay is orbit-shaped, so it follows the ladder
+  // rule and `node tools/gates.mjs` derives it: [prop-8, guide-1, struct-10],
+  // the same gate `core` carries and for the same reason (no vehicle without
+  // struct-10 reaches 160 km).
+  //
+  // The four LUNAR rungs are hand-authored and MEASURED, the way the
+  // rendezvous and dock rungs are: each is flyable with exactly its
+  // `requiresNode` closure over every selectable loadout, and stops being
+  // flyable when the node the rung is really about is removed.
+  // test/data.test.js checks both against the real resolver. What the
+  // measurement said, and it disagreed with the shape of the tier that was
+  // sketched:
+  //
+  //   guide-1     all four, via the chain: an orbit needs a turn, and
+  //               pitchProgram flies straight up without `guidance >= 1`.
+  //               Nothing in the lunar chain reaches back to it, so it is
+  //               listed rather than implied.
+  //   struct-11   moon-flyby. THE CORE, and the surprise of the tier. The
+  //               obvious gate was the departure stage -- but the lunar stack
+  //               masses ~92 kg against a 5 kg payload, so the core that can
+  //               just barely insert the full stack inserts a BARE payload
+  //               with 6 800 m/s still aboard and an apoapsis in the tens of
+  //               thousands of km, which makes its departure burn cheaper
+  //               too. Measured: struct-11 + guide-1 flies the flyby on all
+  //               21 turn notches, and the tier 3 winner's vehicle flies it
+  //               on none (430-800 m/s aboard against a ~2 900 m/s burn). So
+  //               the flyby rung is gated on the launch vehicle, and gating
+  //               it on the departure stage would have been a gate the data
+  //               invented. js/data/tree.js's tier 4 note, fact 3, has the
+  //               numbers.
+  //   prop-11     moon-orbit. NOT a delta-v gate: resolveLunarSequence
+  //               spends one restart per step, `orbit` flies two (tli, loi),
+  //               and prop-10 alone sets restarts to 1 -- so with the core
+  //               and 6 800 m/s aboard the sequence still stops before the
+  //               capture burn having spent nothing. prop-11 (+2, three in
+  //               all) is the only node below tier 4 that raises it.
+  //               Carried into moon-land as well, whose descent is the
+  //               third restart.
+  //   struct-13   moon-land. The lander: without `lander >= 1` the sequence
+  //               stops at `stoppedAt: 'lander'` in front of the descent,
+  //               whatever the budget. It requires struct-12 (the departure
+  //               stage it rides on), which requires struct-11, so the core
+  //               is carried by the chain and is not listed twice.
+  //   struct-15   moon-return. The heat shield, which the resolver checks IN
+  //               FRONT of the trans-earth injection: no shield, no burn, and
+  //               `best.lunarStep` never reaches "returned". Its chain
+  //               carries struct-14 (the ascent stage) and prop-14 (that
+  //               stage's engine).
+  //   prop-17     moon-return. The fifth restart. Four relights fly tli,
+  //               loi, descent and ascent -- everything but the way home --
+  //               so a vehicle one relight short lifts off the surface and
+  //               stays in lunar orbit.
+  //   prop-15     moon-return. THE LAST 286 m/s. With the shield, the ascent
+  //               stage and five restarts but without the descent propellant
+  //               reserve, the best loadout in the whole sweep reaches the
+  //               ascent and stops 286 m/s short of the burn home -- the same
+  //               role prop-9 plays at the top of tier 2, and the reason the
+  //               goal rung costs one purchase more than the rung below it.
+  //
+  // Nodes implied by a listed node's prerequisite chain (struct-11 under
+  // struct-13/struct-15, prop-10 under prop-11, prop-14 under prop-15/16/17)
+  // are not repeated, so a locked contract reports each missing purchase once.
+  //
+  // Payouts continue above tier 3's ceiling (55 000) and escalate with
+  // profile depth -- a flyby is one burn, a return is five and a landing roll
+  // -- while repGain/repLoss and minReputation continue tier 3's progression
+  // (5-10 / 3-6, gates at 40/55/70/85) one step further. The gates are met in
+  // advance rather than waited on: `node tools/balance.mjs`'s tier 4 greedy
+  // report shows the reputation curve crossing every gate on the FIRST tier 4
+  // launch (a tier 3 winner arrives on 85 and relay pays 6 reputation a
+  // flight), so what the player waits on is hardware, never standing. That
+  // simulation takes 18 tier 4 launches to the goal, longest dry streak 2 --
+  // inside ARCHITECTURE.md's 15-60 and 4.
+  {
+    id: 'relay',
+    tier: 4,
+    name: 'Relay constellation launch',
+    profile: 'orbit',
+    requirement: { orbit: { periapsis: 160000 } },
+    deploys: { kind: 'satellite', name: 'Relay satellite' },
+    requiresNode: ['prop-8', 'guide-1', 'struct-10'],
+    payout: 65000,
+    repGain: 6,
+    repLoss: 4,
+  },
+  {
+    id: 'moon-flyby',
+    tier: 4,
+    name: 'Lunar flyby',
+    profile: 'flyby',
+    requirement: { moon: { profile: 'flyby' } },
+    requiresNode: ['struct-11', 'guide-1'],
+    payout: 85000,
+    repGain: 8,
+    repLoss: 5,
+    minReputation: 45,
+  },
+  {
+    id: 'moon-orbit',
+    tier: 4,
+    name: 'Lunar orbit survey',
+    profile: 'orbit',
+    requirement: { moon: { profile: 'orbit' } },
+    requiresNode: ['struct-11', 'prop-11', 'guide-1'],
+    payout: 110000,
+    repGain: 9,
+    repLoss: 5,
+    minReputation: 60,
+  },
+  {
+    id: 'moon-land',
+    tier: 4,
+    name: 'Lunar landing',
+    profile: 'land',
+    requirement: { moon: { profile: 'land' } },
+    requiresNode: ['struct-13', 'prop-11', 'guide-1'],
+    payout: 150000,
+    repGain: 11,
+    repLoss: 6,
+    minReputation: 75,
+  },
+  {
+    id: 'moon-return',
+    tier: 4,
+    name: 'Land and return',
+    profile: 'return',
+    requirement: { moon: { profile: 'return' } },
+    requiresNode: ['struct-15', 'prop-17', 'prop-15', 'guide-1'],
+    payout: 210000,
+    repGain: 13,
+    repLoss: 7,
+    minReputation: 90,
+  },
 ];
 
 export const tierGoals = {
   1: { requirement: { altitude: 100000 }, name: 'Reach 100 km' },
   2: { requirement: { orbit: { periapsis: 100000 } }, name: 'Reach orbit' },
   3: { requirement: { dock: { target: 'core' } }, name: 'Assemble a station' },
+  4: { requirement: { moon: { profile: 'return' } }, name: 'Land and return' },
 };

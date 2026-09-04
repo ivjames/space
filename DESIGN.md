@@ -380,7 +380,8 @@ screen. Content for a tier is written when that tier is built, not before.
 | 0 | Foundation above, tier 1 tree, side-view ascent, sub-orbit goal | Yes: the Hedgehog Launch layer |
 | 1 | Tier 2: velocity model, orbit goal, reputation earning | Yes |
 | 2 | Tier 3: map view, rendezvous/docking resolver, assembly goal | Yes |
-| 3 | Tier 4: profiles, survey, first resources, base equipment, **the clock**, manual haul, storage notification | Yes |
+| 3 | Tier 4: the Moon — flyby, orbit, land, return profiles | Yes |
+| 3b | Survey, first resources, base equipment, **the clock**, manual haul, storage notification | Yes |
 | 4 | Auto-transport tiers, resource-gated nodes, refueling delta-v | Yes |
 | 5 | Tier 5: transfer windows, multiple bodies, duration | Yes |
 | 6 | Tier 6: asteroids, mining station, economy shift | Yes |
@@ -396,6 +397,17 @@ screen. Content for a tier is written when that tier is built, not before.
   profile all depend on each other. Splitting it leaves half of a system
   visible with nothing to do. Order inside the phase: survey → land →
   equipment and production → storage and offline accrual → haul → notification.
+
+  **Where the cut fell.** That paragraph is why phase 3 is split at survey
+  rather than at landing. The clock, production, equipment, storage, haul and
+  the survey that reveals what they act on do all depend on each other, and
+  none of them ships alone — a survey on its own reveals two hidden numbers
+  per site that nothing reads, which is precisely the half-a-system failure
+  above. The flight content does not have that property: flyby, orbit, land
+  and return each pay a contract and the tier wins on the last of them, so
+  tier 4 reads as finished without a single resource in the game. Phase 3 is
+  the flight tier; 3b is the economy, whole. The order inside the phase is
+  unchanged, survey simply sits at the front of 3b rather than the front of 3.
 - **Reputation** can be introduced in phase 1 as a stat that only rises, and
   gain its cost (loss on failure, contract minimums) in phase 3 when there
   is enough contract variety for minimums to mean something.
@@ -417,7 +429,13 @@ screen. Content for a tier is written when that tier is built, not before.
 Not decided. Each changes something concrete.
 
 1. **Setting names.** The fictional system, the bodies, the agency. Needed
-   before tier 4 content; not before.
+   before tier 4 content; not before. **Answered by precedent, not by
+   choice:** the planet has been "Earth-like and unnamed" since phase 1
+   (`js/core/resolver.js`, `R_EARTH`), the map view calls it "the planet",
+   and tier 4 ships its destination as "the Moon" on the same terms. Naming
+   the system, the bodies and the agency is still open and still costs
+   nothing to defer; what is now decided is that unnamed is the default and
+   a name is an addition, not a gap to fill before content can be written.
 2. **Elapsed-time clamp** for offline accrual. Placeholder 24h.
 3. **Hauls in the score.** Decided yes above; revisit if it makes the manual
    phase feel punitive in playtesting.

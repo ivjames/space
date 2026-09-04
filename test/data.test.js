@@ -483,11 +483,21 @@ test('every tier 2 mission has a minReputation gate', () => {
   }
 });
 
-test('ideal full-tree (tier 1 + tier 2) delta-v is between 9 and 11 km/s', () => {
+// This bound exists to catch a tree that has quietly become a shop -- a
+// pile of upgrades with no ceiling -- so it is RE-PINNED as each tier
+// lands rather than deleted (ARCHITECTURE.md says so for phase 3 by name).
+// It has always read `fullTree` (every node in js/data/tree.js), so its
+// value has moved with every tier: 9-11 km/s described the tier 1 + 2 tree
+// and still held through tier 3, whose nodes add restarts, nav and a small
+// reserve tank rather than delta-v. Tier 4 moves it properly, and has to:
+// a `return` flight spends ~8 100 m/s AFTER insertion, on top of the ~10.4
+// km/s the ascent itself costs, so a tree that could not reach roughly 18.5
+// km/s could not fly the tier's goal at all. Measured: 18 530 m/s.
+test('ideal full-tree (all four tiers) delta-v is between 17.5 and 19.5 km/s', () => {
   const allIds = nodes.map((n) => n.id);
   const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: allIds }));
   const dv = totalDeltaV(vehicle, 1);
-  assert.ok(dv >= 9000 && dv <= 11000, `full tree ideal dv was ${dv.toFixed(0)} m/s (want 9000-11000)`);
+  assert.ok(dv >= 17500 && dv <= 19500, `full tree ideal dv was ${dv.toFixed(0)} m/s (want 17500-19500)`);
 });
 
 // =======================================================================
@@ -711,16 +721,23 @@ test('turn is a real decision: the full tree\'s good-turn window is wider than t
 });
 
 // =======================================================================
-// GOAL 4: TWR safety rail across tier 1 + tier 2 combined. Bounded version
-// of `node tools/balance.mjs`'s GOAL 4 report: BFS-enumerate every
-// prereq-valid owned combination across BOTH tiers (small in practice --
-// see js/data/tree.js's THRUST-TO-WEIGHT SAFETY RAIL note -- prerequisites
-// chain hard enough that this stays well under the 10s budget), then check
-// liftoff TWR >= 1.05 and every upper stage's TWR at ignition >= 0.5 on
-// each one.
+// GOAL 4: TWR safety rail across every tier in the file. Bounded version of
+// `node tools/balance.mjs`'s GOAL 4 report: BFS-enumerate every prereq-valid
+// owned combination over ALL nodes (small in practice -- see js/data/tree.js's
+// THRUST-TO-WEIGHT SAFETY RAIL note -- prerequisites chain hard enough that
+// 53 nodes give 161 032 combinations rather than 2^53, and the sweep stays
+// inside a few seconds), then check liftoff TWR >= 1.05 and every upper
+// stage's TWR at ignition >= 0.5 on each one.
+//
+// It has always enumerated `nodes` entire, so it grew with tier 3 and again
+// with tier 4 without needing a change here; only the title was still
+// naming two tiers. Tier 4 is the case that makes it earn its keep:
+// struct-11 multiplies booster propellant by eighteen and carries its own
+// engines precisely so that no reachable owned state can put that mass on
+// the tier 3 booster's thrust.
 // =======================================================================
 
-test('no purchase order among tier 1 + tier 2 nodes leaves liftoff TWR under 1.05 or an upper stage under 0.5 at ignition', () => {
+test('no purchase order among any of the tree\'s nodes leaves liftoff TWR under 1.05 or an upper stage under 0.5 at ignition', () => {
   const allIds = nodes.map((n) => n.id);
   const seen = new Set(['']);
   let frontier = [[]];
@@ -966,9 +983,17 @@ test('every tier 3 node\'s prerequisite sits at or below its own tier (loadTree(
 // sketch describes: restarts 1 (prop-10) + 2 (prop-11) = 3; nav climbs to
 // 3 (guide-5, the last of the guide-3/4/5 chain); docking set 1
 // (struct-9); rcs set 1 (prop-12); dockBonus > 0 (rel-8).
+// Owned sets scoped to TIER 3 AND BELOW. Several tier 3 assertions below
+// are about what a tier 3 player's best vehicle does, and "the full tree"
+// stopped meaning that when tier 4 landed: tier 4 raises `restarts` from 3
+// to 5 and multiplies the booster by eighteen, so measuring a tier 3
+// property on every node in the file measures a moon rocket. Same reasoning
+// tools/balance.mjs's tier 2 section already gives for sweeping tiers 1 + 2
+// only -- a tier's balance is a claim about the vehicle that tier can build.
+const tier123Ids = nodes.filter((n) => (n.tier ?? 1) <= 3).map((n) => n.id);
+
 test('the five phase 2 vehicle stats are each set/raised by some tier 3 node', () => {
-  const fullOwned = nodes.map((n) => n.id);
-  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
+  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: tier123Ids }));
   assert.equal(vehicle.restarts, 3, 'restarts: prop-10 (set 1) + prop-11 (add 2)');
   assert.equal(vehicle.nav, 3, 'nav: guide-3/4/5 chain should reach 3');
   assert.equal(vehicle.docking, 1, 'docking: struct-9 (set 1)');
@@ -1387,8 +1412,13 @@ test('every tier 3 mission is reachable by the full tree (simulated, target = co
 // eccentricity trap the tree.js BALANCING NOTES documents. Reported
 // honestly rather than forced.
 test('the window slider matters: docking needs a bounded band around the target phase, not the whole slider', () => {
-  const fullOwned = nodes.map((n) => n.id);
-  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
+  // TIER 3's best vehicle, not the whole file's: this is a claim about what
+  // the window slider does for a player at the top of tier 3, and a tier 4
+  // stack (eighteen times the booster propellant, delta-v to spare after
+  // insertion) can afford the phasing burn from far more of the slider --
+  // it widened this band from 4 notches to 11 when tier 4 landed, which is
+  // a fact about the moon rocket and not about the window.
+  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: tier123Ids }));
   const coreMission = missions.find((m) => m.id === 'core');
   const target = {
     id: 'core-1',
@@ -1714,7 +1744,12 @@ test('every altitude/downrange/orbit mission gates on the generators of its chea
     }
     checked += 1;
   }
-  assert.ok(checked >= 12, `expected the tier 1-3 altitude/downrange/orbit rungs, checked ${checked}`);
+  // Tier 1's five, tier 2's six, tier 3's two and tier 4's `relay` -- every
+  // template whose requirement this table can measure. Pinned as an exact
+  // count rather than a floor from here on: a new orbit-shaped rung that
+  // quietly stopped being derived (a typo in its tier, say) would otherwise
+  // slip past a `>=`.
+  assert.equal(checked, 14, `expected the 14 altitude/downrange/orbit rungs across all four tiers, checked ${checked}`);
 });
 
 test('the gates admit the ladder: each tier\'s goal set is offered every rung of its tier, and a tier 3 arrival is offered satellite', () => {
@@ -1725,4 +1760,425 @@ test('the gates admit the ladder: each tier\'s goal set is offered every rung of
   for (const m of tier2Missions) assert.ok(owns(tier2Goal, m), `${m.id} should be open to the tier 2 goal set`);
   assert.ok(owns(tier2Goal, missions.find((m) => m.id === 'satellite')), 'satellite should be open to a tier 3 arrival');
   assert.ok(!owns(tier2Goal, missions.find((m) => m.id === 'core')), 'core should wait for struct-10');
+
+  // And one tier further: a TIER 4 arrival is whoever just docked, so the
+  // set to test against is `dock`'s gate closure. `relay` is that tier's
+  // only income until a moon rocket exists, so it has to be open on the
+  // board the player lands on; the lunar rungs must not be, or the gate
+  // would be offering a flight no vehicle in that state can fly.
+  const tier3Goal = [...prerequisiteClosure(requiredNodeIds(missions.find((m) => m.id === 'dock')))];
+  assert.ok(owns(tier3Goal, missions.find((m) => m.id === 'relay')), 'relay should be open to a tier 4 arrival');
+  for (const m of missions.filter((mm) => mm.requirement.moon !== undefined)) {
+    assert.ok(!owns(tier3Goal, m), `${m.id} should wait for the lunar hardware, not be open on arrival`);
+  }
+});
+
+// =========================================================================
+// TIER 4 — the Moon (ARCHITECTURE.md, "Phase 3 -- tier 4, the Moon"). The
+// phase 3 resolver (js/core/moon.js + resolveLunarSequence) has landed, so
+// everything below runs unconditionally: no test.skip guard, the way tier
+// 3's section dropped its own once the orbital phase was real.
+//
+// The structural assertions mirror tier 3's one tier along; the
+// resolver-driven ones are where the tier is actually pinned, because tier
+// 4's gates cannot be derived by tools/gates.mjs (a lunar rung's metric is
+// how far up js/core/moon.js's ladder the remaining stack climbs after
+// insertion, not an altitude, a downrange or a periapsis). Those gates are
+// MEASURED here, both ways: flyable with exactly the gate's closure, and
+// not flyable with the node the rung is about taken out.
+// =========================================================================
+
+const tier4Nodes = nodes.filter((n) => (n.tier ?? 1) === 4);
+const tier4Missions = missions.filter((m) => m.tier === 4);
+const lunarMissions = tier4Missions.filter((m) => m.requirement.moon !== undefined);
+
+test('tier 4 nodes exist: 12 to 14 of them, across all four branches', () => {
+  assert.ok(
+    tier4Nodes.length >= 12 && tier4Nodes.length <= 14,
+    `got ${tier4Nodes.length} tier 4 nodes`,
+  );
+  const branchesSeen = new Set(tier4Nodes.map((n) => n.branch));
+  assert.deepEqual([...branchesSeen].sort(), ['guidance', 'propulsion', 'reliability', 'structure']);
+});
+
+// Tier 3's rule, one tier along, and stated in the stronger form
+// ARCHITECTURE.md words for this tier: "Every tier 4 node's prerequisites
+// must be tier 4 or tier 3, never a bare tier 1 node". A tier 4 node
+// hanging directly off tier 1 would be a branch the player can rush past
+// two tiers of content to reach.
+test('every tier 4 node\'s prerequisites are tier 3 or tier 4, never a bare tier 1 or tier 2 node', () => {
+  for (const node of tier4Nodes) {
+    for (const req of node.requires ?? []) {
+      const reqTier = fullTree.byId.get(req).tier ?? 1;
+      assert.ok(
+        reqTier === 3 || reqTier === 4,
+        `${node.id} (tier 4) requires ${req} (tier ${reqTier}); tier 4 prerequisites must be tier 3 or tier 4`,
+      );
+    }
+  }
+});
+
+// Phase 3's three new vehicle stats (js/core/vehicle.js's CAPABILITY_STATS:
+// lander, shield, landerBonus) are each actually set by SOME tier 4 node,
+// and `restarts` reaches the five the deepest profile needs -- five is not
+// decoration, it is LUNAR_PROFILES.return's length, one restart per step.
+test('the three phase 3 vehicle stats are each set/raised by some tier 4 node, and restarts reaches five', () => {
+  const fullOwned = nodes.map((n) => n.id);
+  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
+  assert.equal(vehicle.lander, 1, 'lander: struct-13 (set 1)');
+  assert.equal(vehicle.shield, 1, 'shield: struct-15 (set 1)');
+  assert.ok(vehicle.landerBonus > 0, 'landerBonus: guide-7 and rel-11 should raise it above 0');
+  assert.equal(vehicle.restarts, 5, 'restarts: prop-10 (1) + prop-11 (2) + prop-16 (1) + prop-17 (1)');
+});
+
+// The lander and the shield are pure MISSION GATES, exactly as struct-9's
+// docking adapter is: they carry the stat the resolver reads and no mass at
+// all, because the mass of the hardware is already in the stage each rides
+// on. This is also what keeps them out of tools/gates.mjs's trajectory
+// enumeration (its INERT list names them), so the split there and the data
+// here have to agree -- pinning it means a later "make the lander weigh
+// something" change fails here rather than silently doubling the table.
+test('the lander and heat-shield nodes carry their capability stat and nothing else', () => {
+  for (const id of ['struct-13', 'struct-15']) {
+    const node = fullTree.byId.get(id);
+    assert.ok(node, `${id} should exist`);
+    assert.equal(node.tier, 4);
+    assert.equal(node.branch, 'structure');
+    assert.equal(node.effects.length, 1, `${id} should carry exactly one effect`);
+    assert.equal(node.effects[0].op, 'set');
+    assert.equal(node.effects[0].value, 1);
+    assert.ok(
+      ['lander', 'shield'].includes(node.effects[0].stat),
+      `${id}'s single effect should set lander or shield, got ${node.effects[0].stat}`,
+    );
+  }
+});
+
+// The two `addStage` nodes both live in the STRUCTURE branch, and that is a
+// hard constraint rather than a stylistic one: js/core/tree.js's
+// collectEffects hoists every addStage effect ahead of every other effect in
+// BRANCH order, and propulsion sorts before structure, so a propulsion
+// addStage would append its stage before struct-4's and struct-6's and
+// renumber `stages.1.*` and `stages.2.*` in every tier 2 and tier 3 effect.
+// ARCHITECTURE.md puts the departure stage in propulsion; it cannot go
+// there, and this is the test that says so.
+test('every addStage node in the tree is a structure node, so the stage order stays stable', () => {
+  for (const node of nodes) {
+    if (!(node.effects ?? []).some((e) => e.addStage !== undefined)) continue;
+    assert.equal(
+      node.branch, 'structure',
+      `${node.id} adds a stage from the ${node.branch} branch; collectEffects orders addStage effects by branch, so this would renumber the stages tier 2 and tier 3 effects target`,
+    );
+  }
+  const fullOwned = nodes.map((n) => n.id);
+  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
+  assert.equal(vehicle.stages.length, 5, 'the full tree is a five-stage stack: booster, second, third, departure, ascent');
+});
+
+const REQUIREMENT_SHAPES_4 = ['altitude', 'downrange', 'orbit', 'rendezvous', 'dock', 'moon'];
+
+test('every tier 4 mission has exactly one of the six requirement shapes', () => {
+  assert.equal(tier4Missions.length, 5, `expected exactly 5 tier 4 missions, got ${tier4Missions.length}`);
+  for (const m of tier4Missions) {
+    const shapes = REQUIREMENT_SHAPES_4.filter((k) => m.requirement[k] !== undefined);
+    assert.equal(shapes.length, 1, `${m.id} should have exactly one requirement shape, got [${shapes}]`);
+  }
+});
+
+test('the tier 4 ladder matches ARCHITECTURE.md exactly: relay, moon-flyby, moon-orbit, moon-land, moon-return', () => {
+  assert.deepEqual(tier4Missions.map((m) => m.id), ['relay', 'moon-flyby', 'moon-orbit', 'moon-land', 'moon-return']);
+  assert.deepEqual(lunarMissions.map((m) => m.requirement.moon.profile), ['flyby', 'orbit', 'land', 'return']);
+});
+
+test('relay deploys a satellite and is repeatable (no unique flag)', () => {
+  const m = missions.find((mm) => mm.id === 'relay');
+  assert.equal(m.deploys.kind, 'satellite');
+  assert.equal(m.unique, undefined);
+});
+
+// The board a player meets on arriving in tier 4 is the same shape tier 3's
+// was: every other rung of the tier gates on lunar hardware that costs six
+// figures and cannot be owned on day one, so `relay` is the whole tier's
+// income until a moon rocket exists. It therefore has to be flyable by
+// whatever just won tier 3 -- and the one thing that vehicle is KNOWN to do
+// is fly `core`'s 160 km orbit, because winning tier 3 means docking and
+// `dock`'s gate carries prop-13, which requires struct-10, which is
+// `core`'s own gate. So relay's periapsis may never exceed core's, and no
+// reputation gate may hide it on arrival. Same rule, same reason, as
+// satellite's cap against tierGoals[2] one tier down.
+test('relay is flyable by a tier 3 winner: its periapsis never exceeds core\'s, and it has no reputation gate', () => {
+  const relay = missions.find((m) => m.id === 'relay');
+  const core = missions.find((m) => m.id === 'core');
+  assert.ok(
+    relay.requirement.orbit.periapsis <= core.requirement.orbit.periapsis,
+    `relay asks ${relay.requirement.orbit.periapsis} m but a tier 4 arrival has only proven ${core.requirement.orbit.periapsis} m`,
+  );
+  assert.equal(relay.minReputation, undefined, 'and no reputation gate can hide it on arrival');
+  const dockGate = [...prerequisiteClosure(requiredNodeIds(missions.find((m) => m.id === 'dock')))];
+  for (const id of requiredNodeIds(relay)) {
+    assert.ok(
+      dockGate.includes(id),
+      `relay gates on ${id}, which a tier 3 winner does not necessarily own -- the filler would not be flyable on arrival`,
+    );
+  }
+});
+
+test('tier 4 mission payouts are well above tier 3\'s', () => {
+  const maxTier3Payout = Math.max(...tier3Missions.map((m) => m.payout));
+  for (const m of tier4Missions) {
+    assert.ok(
+      m.payout > maxTier3Payout,
+      `${m.id}'s payout ${m.payout} should exceed tier 3's max payout ${maxTier3Payout}`,
+    );
+  }
+  // ...and escalate with profile depth: a flyby is one burn, a return is
+  // five and a landing roll, and the board should say so.
+  const payouts = lunarMissions.map((m) => m.payout);
+  for (let i = 1; i < payouts.length; i += 1) {
+    assert.ok(payouts[i] > payouts[i - 1], `lunar payouts should escalate with profile depth, got [${payouts}]`);
+  }
+});
+
+test('tier 4 repGain/repLoss and minReputation continue tier 3\'s progression', () => {
+  for (const m of tier4Missions) {
+    assert.ok(m.repGain >= 6 && m.repGain <= 14, `${m.id} repGain ${m.repGain} outside the tier 4 range`);
+    assert.ok(m.repLoss >= 4 && m.repLoss <= 8, `${m.id} repLoss ${m.repLoss} outside the tier 4 range`);
+  }
+  const maxTier3Gate = Math.max(...tier3Missions.map((m) => m.minReputation ?? 0));
+  const gates = lunarMissions.map((m) => m.minReputation);
+  assert.ok(gates.every((g) => typeof g === 'number'), 'every lunar rung carries a reputation gate');
+  for (let i = 1; i < gates.length; i += 1) {
+    assert.ok(gates[i] > gates[i - 1], `minReputation gates should climb, got [${gates}]`);
+  }
+  // The tier's TOP gate sits above tier 3's top, which is what "continues
+  // the progression" means; the tier's FIRST gate does not have to, and
+  // tier 3's own does not either (its 40 sits well under tier 2's 75). A
+  // tier whose easiest rung outranked the last tier's hardest would be a
+  // tier the player arrives at locked out of.
+  assert.ok(
+    Math.max(...gates) > maxTier3Gate,
+    `the tier's top gate (${Math.max(...gates)}) should sit above tier 3's (${maxTier3Gate})`,
+  );
+  assert.ok(Math.max(...gates) <= 100, 'a gate above 100 could never be crossed (economy.js clamps reputation)');
+});
+
+test('tierGoals[4] is a lunar return requirement', () => {
+  assert.ok(tierGoals[4]);
+  assert.deepEqual(tierGoals[4].requirement, { moon: { profile: 'return' } });
+});
+
+// `mission.profile` stops being dead data (ARCHITECTURE.md, phase 3). It is
+// NOT a dispatch axis -- every switch in the codebase reads the requirement
+// SHAPE, and that stays true -- but it has been written on every template
+// since tier 1 and read by nothing, so it was free to drift. This pins it.
+//
+// The rule is deliberately not "profile is a function of the shape", which
+// the existing data does not obey and should not: orbit-apogee asks for
+// 300 km of altitude and is flown as an orbital mission, orbit-entry asks
+// for 110 km and is a sounding shot, and both of those are true. What must
+// hold is weaker and real:
+//   - a `moon` requirement's profile is exactly the profile its ladder flies
+//   - a lunar profile name never appears on a non-lunar requirement
+//   - a shape that can only be judged from orbit is flown as 'orbit'
+//   - a 'sounding' profile only ever carries altitude or downrange
+test('every mission template\'s profile agrees with its requirement', () => {
+  const LUNAR_PROFILE_NAMES = ['flyby', 'land', 'return'];
+  for (const m of missions) {
+    assert.equal(typeof m.profile, 'string', `${m.id} has no profile`);
+    if (m.requirement.moon !== undefined) {
+      assert.equal(
+        m.profile, m.requirement.moon.profile,
+        `${m.id}: profile '${m.profile}' but requirement flies '${m.requirement.moon.profile}'`,
+      );
+      continue;
+    }
+    assert.ok(
+      !LUNAR_PROFILE_NAMES.includes(m.profile),
+      `${m.id} carries the lunar profile '${m.profile}' on a ${JSON.stringify(m.requirement)} requirement`,
+    );
+    if (m.requirement.orbit !== undefined || m.requirement.rendezvous !== undefined || m.requirement.dock !== undefined) {
+      assert.equal(m.profile, 'orbit', `${m.id} is judged from orbit, so its profile should be 'orbit'`);
+    }
+    if (m.profile === 'sounding') {
+      assert.ok(
+        m.requirement.altitude !== undefined || m.requirement.downrange !== undefined,
+        `${m.id} is a sounding flight but its requirement is ${JSON.stringify(m.requirement)}`,
+      );
+    }
+  }
+});
+
+// ---------------------------------------------------------------------
+// Resolver-driven TIER 4 assertions.
+// ---------------------------------------------------------------------
+
+// A lunar mission has ONE loadout control that matters -- `turn` -- because
+// the profile is the mission and there is no window slider without a
+// phasing target. `fuelFraction` is still a slider the player can move, so
+// both are swept here, the same way the tier 3 target-rung test sweeps
+// fuel and turn together.
+const FUEL_STEPS_4 = Array.from({ length: 11 }, (_, i) => 0.5 + i * 0.05);
+
+function fliesLunar(mission, owned) {
+  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned }));
+  for (const fuelFraction of FUEL_STEPS_4) {
+    for (const turn of TURN_STEPS) {
+      const outcome = resolveLaunch(
+        forceReliability(vehicle), mission, { fuelFraction, turn }, makeRng(SEED), {},
+      );
+      if (outcome.success === true) return true;
+    }
+  }
+  return false;
+}
+
+// THE GATE MEASUREMENT, both ways. js/data/missions.js's tier 4 note names
+// the node each rung is really about; this is where that claim is checked
+// against the resolver rather than asserted in a comment.
+//
+//   moon-flyby   struct-11   the launch vehicle. Not the departure stage:
+//                            the lunar stack masses ~92 kg against a 5 kg
+//                            payload, so the core that can just insert the
+//                            full stack inserts a bare one with 6 800 m/s
+//                            still aboard.
+//   moon-orbit   prop-11     the second restart, not delta-v at all.
+//   moon-land    struct-13   the lander.
+//   moon-return  struct-15   the heat shield -- and prop-17 (the fifth
+//                            restart) and prop-15 (the last 286 m/s) are
+//                            checked too, because all three are in its gate
+//                            and each one alone is the difference.
+const LUNAR_GATE_SUBJECTS = {
+  'moon-flyby': ['struct-11'],
+  'moon-orbit': ['prop-11'],
+  'moon-land': ['struct-13'],
+  'moon-return': ['struct-15', 'prop-17', 'prop-15'],
+};
+
+test('every lunar rung is flyable with exactly its gated hardware, and stops being so without the node it is about', () => {
+  for (const m of lunarMissions) {
+    const gated = [...prerequisiteClosure(requiredNodeIds(m))];
+    assert.ok(
+      fliesLunar(m, gated),
+      `${m.id}: no selectable loadout flies the rung with exactly its gated hardware [${gated.join(', ')}]`,
+    );
+    for (const subject of LUNAR_GATE_SUBJECTS[m.id]) {
+      assert.ok(
+        gated.includes(subject),
+        `${m.id}: ${subject} is the node this rung is about, so it belongs in the gate`,
+      );
+      const without = gated.filter((id) => id !== subject);
+      assert.ok(
+        !fliesLunar(m, without),
+        `${m.id}: still flyable without ${subject}, so gating on it is no longer justified -- re-measure the gate`,
+      );
+    }
+  }
+});
+
+test('every tier 4 mission is reachable by the full tree (simulated)', () => {
+  const fullOwned = nodes.map((n) => n.id);
+  const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
+  const metrics = bestMetricsOverTurns(vehicle, 1);
+  for (const m of tier4Missions) {
+    if (m.requirement.moon === undefined) {
+      assert.ok(missionMetBy(m, metrics), `full tree does not reach ${m.id} (${JSON.stringify(m.requirement)})`);
+      continue;
+    }
+    assert.ok(fliesLunar(m, fullOwned), `full tree never flies ${m.id} over the fuel/turn sweep`);
+  }
+});
+
+// The greedy player, tier 4. Unlike the tier 2 and tier 3 greedy tests this
+// one does not replay the tiers below it: it starts from the state a tier 3
+// winner demonstrably has -- `dock`'s gate closure owned, nothing banked,
+// and reputation 85, which is `dock`'s own minReputation and therefore a
+// number a player who has just docked is standing on. Replaying tiers 1-3
+// here would add a minute of runtime to re-derive a starting point those
+// tests already pin.
+//
+// Each launch: fly the best-paying tier <= 4 contract this vehicle can
+// actually complete (orbit-shaped rungs judged on the periapsis scan, lunar
+// rungs on a real resolveLaunch probe over a coarse turn sweep), credit
+// through the same clamped `credit` the game uses, then spend down on the
+// cheapest node that measurably improves the goal probe, falling back to
+// the cheapest affordable node when nothing does. `node tools/balance.mjs`
+// runs the same simulation at full resolution and reports 18 launches with
+// a longest dry streak of 2; the bound here is ARCHITECTURE.md's 80.
+test('a greedy player reaches the tier 4 goal (land and return) in at most 80 tier 4 launches, continuing from the tier 3 end state', () => {
+  const DECISION_TURNS = Array.from({ length: 11 }, (_, i) => i * 0.1);
+  const MAX_LAUNCHES = 120;
+  const goalMission = missions.find((m) => m.id === 'moon-return');
+  const floorMission = missions.find((m) => m.floor);
+  const startOwned = [...prerequisiteClosure(requiredNodeIds(missions.find((m) => m.id === 'dock')))];
+
+  const buildOwned = (owned) => buildVehicle(baseVehicle, collectEffects(fullTree, { owned }));
+  function probeLunar(vehicle, mission) {
+    let best = null;
+    for (const turn of DECISION_TURNS) {
+      const outcome = resolveLaunch(
+        forceReliability(vehicle), mission, { fuelFraction: 1, turn }, makeRng(SEED), {},
+      );
+      const l = outcome.lunar;
+      const score = (outcome.success ? 1e12 : 0)
+        + (l ? l.reached * 1e6 - Math.min(l.shortBy ?? 0, 1e5) : -1e9);
+      if (!best || score > best.score) best = { score, turn, outcome };
+    }
+    return best;
+  }
+
+  let state = { owned: startOwned, funds: 0, resources: {}, reputation: 85, tier: 4, objects: [] };
+  let launches = 0;
+  let won = false;
+
+  while (!won && launches < MAX_LAUNCHES) {
+    const vehicle = buildOwned(state.owned);
+    const metrics = bestMetricsOverTurns(vehicle, 1);
+
+    let best = floorMission;
+    for (const m of missions) {
+      if ((m.tier ?? 1) > 4) continue;
+      if (m.minReputation !== undefined && state.reputation < m.minReputation) continue;
+      if (m.requiresNode && !requiredNodeIds(m).every((id) => state.owned.includes(id))) continue;
+      // Tier 3's target-shaped rungs need an object in orbit this
+      // simulation never deploys, so they are simply not on its board.
+      if (m.requiresObject || m.requirement.rendezvous !== undefined || m.requirement.dock !== undefined) continue;
+      if (m.payout <= best.payout) continue;
+      if (m.requirement.moon !== undefined) {
+        if (probeLunar(vehicle, m).outcome.success) best = m;
+      } else if (missionMetBy(m, metrics)) {
+        best = m;
+      }
+    }
+
+    const turn = best.requirement.moon !== undefined
+      ? probeLunar(vehicle, best).turn
+      : (metrics.bestTurn ?? 0.3);
+    const outcome = resolveLaunch(
+      forceReliability(vehicle), best, { fuelFraction: 1, turn }, makeRng(SEED + launches), {},
+    );
+    state = credit(state, { funds: best.payout, reputation: best.repGain });
+    launches += 1;
+    if (best.id === goalMission.id && outcome.success) { won = true; break; }
+
+    for (;;) {
+      let pick = null;
+      const base = probeLunar(buildOwned(state.owned), goalMission).score;
+      for (const node of fullTree.nodes) {
+        if (!canBuy(fullTree, state, node.id)) continue;
+        const s = probeLunar(buildOwned([...state.owned, node.id]), goalMission).score;
+        if (s > base + 1 && (!pick || (node.cost.funds ?? 0) < (pick.cost.funds ?? 0))) pick = node;
+      }
+      if (!pick) {
+        for (const node of fullTree.nodes) {
+          if (!canBuy(fullTree, state, node.id)) continue;
+          if (!pick || (node.cost.funds ?? 0) < (pick.cost.funds ?? 0)) pick = node;
+        }
+      }
+      if (!pick) break;
+      state = buy(fullTree, state, pick.id);
+    }
+  }
+
+  assert.ok(won, `greedy player never landed and returned within ${MAX_LAUNCHES} tier 4 launches`);
+  assert.ok(launches <= 80, `greedy player took ${launches} tier 4 launches, expected <= 80`);
 });

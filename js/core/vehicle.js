@@ -81,11 +81,23 @@ const NAMED_VEHICLE_FIELDS = new Set(['stages', 'payloadMass', 'dragArea', 'drag
  *   escape     int   stage abort coverage: how many interstages, counted
  *                    from the bottom, let the stack above separate from a
  *                    stage that fails under it and fly on (resolver.js)
+ *   lander     0/1   a lander: without one the lunar sequence cannot descend
+ *   shield     0/1   a heat shield: without one it cannot come home
+ *   landerBonus 0..1 added to the landing roll's threshold
+ *
+ * The last three are phase 3's, and are the same kind of thing the phase 2 ones
+ * are: a structure node sets `lander` and `shield`, a reliability node adds
+ * `landerBonus`, and js/core/resolver.js reads all three off the vehicle with no
+ * guard. Seeding them here is what lets those nodes exist at all — an effect can
+ * only target a stat that already exists.
  *
  * Anything else a base declares as a top-level number still comes through as an
  * extra stat, so adding a further stat stays a data change (phase 1's contract).
  */
-const CAPABILITY_STATS = ['guidance', 'restarts', 'nav', 'docking', 'rcs', 'dockBonus', 'escape'];
+const CAPABILITY_STATS = [
+  'guidance', 'restarts', 'nav', 'docking', 'rcs', 'dockBonus', 'escape',
+  'lander', 'shield', 'landerBonus',
+];
 
 const REQUIRED_STAGE_FIELDS = ['dryMass', 'propMass', 'thrust', 'isp', 'reliability'];
 
@@ -128,7 +140,8 @@ function normalizeStage(stage, where) {
  * vehicle is a stat block, and only numbers are stats.
  *
  * The CAPABILITY_STATS (`guidance`, phase 2's `restarts`, `nav`, `docking`,
- * `rcs`, `dockBonus`, and `escape`) are always present and default to 0, so the resolver can
+ * `rcs`, `dockBonus`, and `escape`, and phase 3's `lander`, `shield` and
+ * `landerBonus`) are always present and default to 0, so the resolver can
  * read them on a hand-written phase 0 fixture without a guard, and a tree node
  * can `set` or `add` one on a base that never declared it.
  *
