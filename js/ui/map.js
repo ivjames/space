@@ -136,6 +136,34 @@
 // at the close-up's scale is a set of paths tens of thousands of pixels wide,
 // and there is nothing to be gained by stroking them at alpha 0.01.
 //
+// THE SHOT ON THE GROUND. The close-up is a picture of an orbit, and it stops
+// being a picture of a landing in the last few kilometres of one: at a fit set
+// by the drawn lunar orbit the moon is ninety pixels of radius, so the final
+// kilometre is two of them and the lander is a marker touching a limb. The
+// player watched the rocket leave the planet from a hundred metres away
+// (js/ui/ascent.js: VIEW_SPAN_M, a fixed fifteen kilometres per canvas height);
+// the moon is where the tier ends, and it deserves the same seat. So below
+// SURFACE_ALT the view CUTS to js/ui/surface.js — the surface shot — which
+// draws the touchdown and, a day later, the liftoff that starts the trip home,
+// side-on, on the launch view's own ruler: the same metres per pixel, the same
+// km ticks, the same ground marks. Sharing those constants is what makes "the
+// same scale" a fact rather than a claim.
+//
+// It is a CUT and not a camera move, and that is the difference between it and
+// the close-up above. The camera could travel from the planet to the moon
+// because the two pictures share an origin, an orientation and a projection and
+// differ only by 150x of scale. The surface shot shares none of them: its up is
+// the local vertical at the landing site, its ground is flat, its altitudes are
+// honest where the close-up's are stretched x6, and it is another 180x in.
+// Easing between two pictures with nothing in common is a smear, so the view
+// does what a broadcast does when the tracking camera has nothing left to show
+// — it cuts to the one on the ground, dipped through black over SHOT_CUT_S.
+// Which picture is live is `shotFade`, and what asks for the cut is the
+// altitude the vehicle is drawn at right now: a position already on the screen,
+// which is the same licence the three lunar rates take. A fourth rate goes with
+// it (SHOT_RATE), because 240x plays the last eight kilometres in a fifth of a
+// second.
+//
 // THE MOON'S POSITION is drawable from the first frame for the same reason the
 // target's orbit is — it is a constant, not an outcome. Its circle is A_MOON,
 // and its phase is set so that it is at the transfer's apoapsis at the moment
@@ -182,6 +210,7 @@ import {
   A_MOON, ASCENT_TIME, DESCENT_TIME, LLO_ALT, LLO_PERIOD, R_MOON,
   lunarLadder, lunarSchedule,
 } from '../core/moon.js';
+import { SURFACE_ALT, drawSurface } from './surface.js';
 
 /**
  * How much altitude is stretched relative to the planet's own radius. A 200 km
@@ -242,6 +271,22 @@ export const LUNAR_BURN_RATE = 240;
 export const SURFACE_RATE = 43200;
 
 /**
+ * Simulated seconds per real second inside the SURFACE SHOT — the fourth rate,
+ * and the slowest of them, for the same reason the other three exist: what the
+ * vehicle is doing has changed, and the number that read the last leg does not
+ * read this one. `LUNAR_BURN_RATE` plays the whole descent in three seconds,
+ * which is right while a hundred kilometres of it is on screen at once and
+ * wrong for the last eight, where the picture is a kilometre and a half of
+ * canvas: at 240x the lander crosses it in a fifth of a second. At this value
+ * the last 8 km of a descent take about seven seconds and the first 8 km of the
+ * ascent home about four, which is a landing and a liftoff rather than two
+ * cuts. Keyed on the drawn altitude, which is an observable — the same licence
+ * `rateNow`'s radius scaling takes, and it says nothing about how the flight
+ * ends. The stay keeps SURFACE_RATE: a day at 30x is nine hours of watching.
+ */
+export const SHOT_RATE = 30;
+
+/**
  * How much lunar altitude is stretched in the close-up, relative to the moon's
  * own radius. Exactly the reason ALT_EXAGGERATION exists, one body over: the
  * orbit the ladder is priced against sits 100 km above a 1 737 km moon, which
@@ -287,6 +332,21 @@ const ZOOM_TAU = 0.42;
  * simulation stopped, so it shows nothing that had not already happened.
  */
 const LUNAR_HOLD_S = 1.6;
+
+/**
+ * How long the cut to and from the surface shot takes, real seconds.
+ *
+ * It is a CUT, dipped through black, and not the camera move the close-up is.
+ * The camera could move from the planet to the moon because both pictures share
+ * an origin and an orientation and are 150x apart; the surface shot shares
+ * neither — its up is the local vertical at the landing site, its ground is
+ * flat, and nothing in it is exaggerated — and it is another 180x in. Easing
+ * between two pictures with nothing in common is a smear, so the view does what
+ * a broadcast does when the tracking camera has nothing left to show: it cuts
+ * to the one on the ground. Fast enough that the dip costs about ten simulated
+ * seconds, slow enough to read as a cut rather than a glitch.
+ */
+const SHOT_CUT_S = 0.36;
 
 /**
  * Below this much of either picture, that picture is not drawn at all. It is a
@@ -634,6 +694,12 @@ export function playOrbital(canvas, outcome, opts = {}) {
   let lunarRef = null;              // { t, theta }
   let powered = null;               // { t, theta, span, kind }
   let touchdownTheta = 0;
+  // THE SURFACE SHOT (js/ui/surface.js). How far the cut to it has gone, 0..1,
+  // in real seconds like `zoom`: below a half the frame is the orbital picture,
+  // above it the one on the ground, and the dip through black is widest at the
+  // half. Nothing about it reads the outcome — it is asked for by the altitude
+  // the vehicle is CURRENTLY drawn at, which is a position already on screen.
+  let shotFade = 0;
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -1004,8 +1070,13 @@ export function playOrbital(canvas, outcome, opts = {}) {
     // says which: the stretched frame's altitudes, the cislunar frame's
     // bodies, and — the close-up being the cislunar frame's trade made over
     // again about the moon — the close-up's altitudes.
+    // The shot on the ground is the one picture in the game where neither of
+    // the two is a lie: the moon is not drawn as a body at all, nothing is
+    // stretched, and a pixel is the same number of metres it was on the way up
+    // off the planet. So the slot says which scale that is instead.
     const note = cislunar
-      ? (zoom > 0.5 ? `lunar altitude ×${LUNAR_ALT_EXAGGERATION}` : 'bodies not to scale')
+      ? (shotShown() ? 'launch scale'
+        : zoom > 0.5 ? `lunar altitude ×${LUNAR_ALT_EXAGGERATION}` : 'bodies not to scale')
       : `altitude ×${ALT_EXAGGERATION}`;
     ctx.fillText(note, 6, h - 6);
 
@@ -1293,17 +1364,93 @@ export function playOrbital(canvas, outcome, opts = {}) {
     // about whether the vehicle gets there. At the moon it gives way to the
     // altitude, which is the same measurement one body over and is what the
     // descent is: a hundred kilometres counted down to nothing.
+    veil();
     drawChrome(
       here ? null : Math.hypot(mp.x - vp.x, mp.y - vp.y),
       here ? here.r - R_MOON : null,
     );
   }
 
+  /**
+   * Is the vehicle low enough for the shot on the ground (js/ui/surface.js)?
+   *
+   * The altitude it is drawn at right now, and which leg it is on — both of
+   * them things a burn or an event has already said, exactly as the three lunar
+   * rates are. A coast in lunar orbit is a hundred kilometres up and is the
+   * close-up's picture; a descent below SURFACE_ALT, the stay, and the first
+   * kilometres of the ascent home are the surface's.
+   */
+  function nearSurface() {
+    if (!cislunar || !atMoon) return false;
+    if (atMoon === 'surface') return true;
+    if (!powered) return false;
+    return lunarPoint(simT).r - R_MOON <= SURFACE_ALT;
+  }
+
+  /** Which of the two pictures owns this frame. */
+  const shotShown = () => shotFade >= 0.5;
+
+  /**
+   * What the surface shot is drawn from, measured off the same lunar state the
+   * close-up plots: the altitude above the surface, and the signed downrange to
+   * the SITE — the point the descent under way is aimed at, which is the far end
+   * of the leg that has already lit, or the point the ascent lifted from.
+   *
+   * The site is not the outcome. Where a descent is aimed is fixed by the burn
+   * that started it and DESCENT_TIME, both in the past; whether the vehicle
+   * arrives there is the landing event's to say, and an abort is drawn stopped
+   * short of it (ABORT_U), which is the one thing the close-up was too far out
+   * to show.
+   */
+  function surfaceState() {
+    const p = lunarPoint(simT);
+    const site = atMoon === 'surface' || !powered
+      ? touchdownTheta
+      : powered.kind === 'descent' ? poweredAt(powered, 1).theta : powered.theta;
+    const kind = atMoon === 'surface' || !powered ? 'surface' : powered.kind;
+    return {
+      alt: p.r - R_MOON,
+      x: R_MOON * (p.theta - site),
+      kind,
+      aborted: landingAborted,
+      engine: kind !== 'surface',
+      realT,
+    };
+  }
+
+  /** The dip through black the cut is made across (SHOT_CUT_S). */
+  function veil() {
+    const a = 1 - Math.abs(2 * shotFade - 1);
+    if (a <= 0.01) return;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, a);
+    ctx.fillStyle = colors.bg;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+
+  /**
+   * The shot on the ground: the same starfield the frame above it has, the
+   * surface view (js/ui/surface.js) at the launch scale, and the same chrome —
+   * the clock and the altitude never blink, whichever camera is live.
+   */
+  function frameSurface() {
+    const state = surfaceState();
+    drawSpace();
+    drawSurface(ctx, { w, h, colors }, state);
+    veil();
+    drawChrome(null, state.alt);
+  }
+
   function frame() {
     resize();
     applyCamera();
-    if (cislunar) frameCislunar();
-    else frameOrbital();
+    if (!cislunar) {
+      frameOrbital();
+      return;
+    }
+    if (shotShown()) frameSurface();
+    else frameCislunar();
   }
 
   // ---- playback ----------------------------------------------------------
@@ -1506,7 +1653,10 @@ export function playOrbital(canvas, outcome, opts = {}) {
     handle.done = true;
     // A skip has no time to move the camera in, so it arrives where it would
     // have arrived.
-    if (skipped && cislunar) zoom = atMoon ? 1 : 0;
+    if (skipped && cislunar) {
+      zoom = atMoon ? 1 : 0;
+      shotFade = nearSurface() ? 1 : 0;
+    }
     frame();
     detach();
     onDone();
@@ -1527,8 +1677,9 @@ export function playOrbital(canvas, outcome, opts = {}) {
     // things the vehicle can be doing there set the rate instead. Each is
     // something a burn or an event has already said (see LUNAR_RATE).
     if (atMoon) {
+      const powering = atMoon === 'descent' || atMoon === 'ascent';
       const near = atMoon === 'surface' ? SURFACE_RATE
-        : atMoon === 'descent' || atMoon === 'ascent' ? LUNAR_BURN_RATE
+        : powering ? (nearSurface() ? SHOT_RATE : LUNAR_BURN_RATE)
           : LUNAR_RATE;
       return rate * (near / CISLUNAR_RATE);
     }
@@ -1550,6 +1701,21 @@ export function playOrbital(canvas, outcome, opts = {}) {
     if (Math.abs(target - zoom) < 0.002) zoom = target;
   }
 
+  /**
+   * Run the cut to or from the shot on the ground. Linear rather than the
+   * camera's exponential ease: a cut has a length, and half of it is the frame
+   * the pictures change on (SHOT_CUT_S).
+   */
+  function easeShot(dt) {
+    if (!cislunar) return;
+    const target = nearSurface() ? 1 : 0;
+    if (shotFade === target) return;
+    const step = dt / SHOT_CUT_S;
+    shotFade = target > shotFade
+      ? Math.min(target, shotFade + step)
+      : Math.max(target, shotFade - step);
+  }
+
   function tick(now) {
     if (stopped) return;
     if (!lastNow) lastNow = now;
@@ -1560,13 +1726,33 @@ export function playOrbital(canvas, outcome, opts = {}) {
     if (holding) {
       holdLeft -= dt;
       easeCamera(dt);
+      easeShot(dt);
       frame();
       if (holdLeft <= 0) complete();
       else raf = requestAnimationFrame(tick);
       return;
     }
-    simT += dt * rateNow();
+    // A RATE IS ONLY VALID UP TO THE NEXT THING THAT CHANGES IT, so a frame
+    // never carries the clock past a burn or an event. The stay on the surface
+    // runs at SURFACE_RATE — a day in two seconds — and one frame of that is
+    // 4 320 simulated seconds, which is ten times the whole climb back to
+    // orbit: unclamped, the frame that ends the stay steps over the ascent
+    // burn, over ASCENT_TIME and out the far side, and the flight goes from
+    // sitting on the moon to being in orbit round it between two frames with
+    // nothing drawn in between. Clamping drops the remainder of that frame,
+    // which costs at most one frame at the new rate, and it lands every burn
+    // flash on its own instant rather than up to a frame late.
+    const bound = Math.min(
+      burnsApplied < burns.length ? burns[burnsApplied].t : Infinity,
+      emitted < events.length ? events[emitted].t : Infinity,
+    );
+    const step = dt * rateNow();
+    // Everything at or before `simT` has been flushed, so `bound` is always
+    // ahead of it; the guard is there so that a degenerate timeline stalls
+    // nothing — a clamp to a boundary behind the clock would never advance.
+    simT = bound > simT ? Math.min(simT + step, bound) : simT + step;
     easeCamera(dt);
+    easeShot(dt);
     if (simT >= finalT) {
       finish();
       return;
