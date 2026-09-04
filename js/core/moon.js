@@ -197,7 +197,7 @@ export const LLO_PERIOD = 2 * Math.PI
   * Math.sqrt(((R_MOON + LLO_ALT) ** 3) / MU_MOON);
 
 /**
- * Seconds spent on the surface between the descent and the ascent.
+ * Seconds spent on the surface between the touchdown and the ascent.
  *
  * One day, which is between Apollo 11's 21 hours and Apollo 17's 75. Nothing
  * measures it — there is no clock in phase 3 (that is 3b) and no surface
@@ -206,6 +206,42 @@ export const LLO_PERIOD = 2 * Math.PI
  * as mission elapsed time.
  */
 export const SURFACE_STAY = 86400;
+
+/**
+ * How long the powered descent takes, s — the ONE place the impulsive
+ * approximation is given a duration, and the reason is that something has to
+ * watch it.
+ *
+ * Every other burn in this file is a velocity change made in no time at a
+ * point (approximation 1 above), and for pricing that is exactly right: the
+ * ladder is delta-v and delta-v does not care how long the engine ran. But the
+ * descent is the one rung whose WHOLE CONTENT is the trip between two places —
+ * a hundred kilometres up, and the ground — and a rung that begins and ends at
+ * the same instant cannot be flown, drawn, or watched. So the schedule gives
+ * it a length, the touchdown is that much later than the burn that starts it,
+ * and js/ui/map.js has an interval to fly the vehicle down in.
+ *
+ * A GAME NUMBER in the same sense as SURFACE_STAY, but a measured one: Apollo
+ * 11's powered descent ran 12 minutes 36 seconds from PDI to contact, and
+ * every later mission was within a minute of it. Nothing is priced against it
+ * — the delta-v is what it was, and the finite-burn losses it implies are
+ * already inside LANDING_LOSS — so moving it moves the length of one animation
+ * and the mission elapsed time, and nothing else.
+ */
+export const DESCENT_TIME = 720;
+
+/**
+ * How long the ascent to lunar orbit takes, s. The same thing as DESCENT_TIME
+ * and for the same reason, at the LM ascent stage's own figure: about seven
+ * minutes from liftoff to orbit insertion.
+ *
+ * It is shorter than the descent rather than equal to it, which is the one
+ * place the descent/ascent symmetry LANDING_LOSS asserts does not hold: the
+ * two cost the same delta-v because the problem run backwards is the same
+ * problem, but the ascent stage is a tenth of the mass and does not have to
+ * hover and look for somewhere to put itself down.
+ */
+export const ASCENT_TIME = 430;
 
 /**
  * When each step of a lunar flight happens, s.
@@ -242,22 +278,35 @@ export const SURFACE_STAY = 86400;
  * period rather than burning at t0: a burn at the instant of insertion is not
  * a coast, and the map has to have something to draw.
  *
- * Capture is one transfer time of flight later. Descent and the burn home each
- * sit a quarter of a low lunar orbit after arriving, which is the shortest wait
- * that is not zero.
+ * Capture is one transfer time of flight later. The descent burn and the burn
+ * home each sit a quarter of a low lunar orbit after arriving in it, which is
+ * the shortest wait that is not zero.
+ *
+ * THE TWO POWERED LEGS HAVE A LENGTH, and everything after them is measured
+ * from where they end rather than from where they start (DESCENT_TIME,
+ * ASCENT_TIME). So `touchdown` is the moment the vehicle is on the ground —
+ * which is what the landing event and the landing roll are about, and is not
+ * the same instant as the burn that begins the descent — the surface stay runs
+ * from there, and `orbited` is the moment the ascent has finished putting the
+ * vehicle back in the orbit the return burn leaves from. Five of the seven are
+ * burn times, keyed by the LUNAR_STEPS they belong to; `touchdown` and
+ * `orbited` are the two ends that are not burns.
  *
  * @param {number} t0 insertion time, s
  * @param {number} parkPeriod period of the achieved parking orbit, s
  * @param {{tof: number}} ladder from `lunarLadder`
  * @param {number} [phase=0] orbit fraction since periapsis at t0, 0..1
  *   (values outside wrap; a non-finite one is treated as 0)
- * @returns {{tli: number, loi: number, descent: number, ascent: number, tei: number}}
+ * @returns {{tli: number, loi: number, descent: number, touchdown: number,
+ *            ascent: number, orbited: number, tei: number}}
  */
 export function lunarSchedule(t0, parkPeriod, ladder, phase = 0) {
   const p = Number.isFinite(phase) ? ((phase % 1) + 1) % 1 : 0;
   const tli = t0 + (1 - p) * parkPeriod;
   const loi = tli + ladder.tof;
   const descent = loi + LLO_PERIOD / 4;
-  const ascent = descent + SURFACE_STAY;
-  return { tli, loi, descent, ascent, tei: ascent + LLO_PERIOD / 4 };
+  const touchdown = descent + DESCENT_TIME;
+  const ascent = touchdown + SURFACE_STAY;
+  const orbited = ascent + ASCENT_TIME;
+  return { tli, loi, descent, touchdown, ascent, orbited, tei: orbited + LLO_PERIOD / 4 };
 }

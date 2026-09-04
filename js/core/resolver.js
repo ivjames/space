@@ -65,7 +65,7 @@ import {
   transferDeltaV,
   phasingDeltaV,
 } from './orbit.js';
-import { A_MOON, LUNAR_STEPS, lunarLadder, lunarSchedule } from './moon.js';
+import { A_MOON, LLO_PERIOD, LUNAR_STEPS, lunarLadder, lunarSchedule } from './moon.js';
 
 /**
  * Planet radius, m. Earth-like and unnamed (DESIGN.md: real physics, fictional
@@ -1092,10 +1092,12 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
  *            passage — where js/core/moon.js prices it, and not where the
  *            ascent cut off
  *   loi      lunar orbit insertion, one transfer time of flight later
- *   descent  powered descent, a quarter of a lunar orbit after that, and then
- *            the landing roll
- *   ascent   back to lunar orbit, after SURFACE_STAY seconds on the surface
- *   tei      trans-earth injection, a quarter of a lunar orbit later again.
+ *   descent  powered descent, a quarter of a lunar orbit after that. The roll
+ *            is drawn here; the touchdown it decides is announced DESCENT_TIME
+ *            later, which is when the vehicle is actually on the ground
+ *   ascent   back to lunar orbit, after SURFACE_STAY seconds on the surface,
+ *            and ASCENT_TIME more of it to get there
+ *   tei      trans-earth injection, a quarter of a lunar orbit after that.
  *            Entry itself is free: the atmosphere does the braking, and the
  *            heat shield is a hardware gate rather than a rung.
  *
@@ -1322,6 +1324,15 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
     if (step === 'descent') {
       // Touchdown. One draw, exactly as the docking roll, and a failed one
       // leaves the vehicle at the step below with `landed` false.
+      //
+      // AT `stepTime.touchdown`, NOT AT THE BURN. The descent is the one rung
+      // with a duration (js/core/moon.js, DESCENT_TIME), and the moment it is
+      // about is the far end of that duration: the burn is the vehicle leaving
+      // orbit, and the touchdown — or the abort — is twelve minutes of falling
+      // later. The roll is still drawn here, in ladder order, so the draw
+      // sequence is unchanged; only the instant the outcome is announced at
+      // moves, which is what gives the map a descent to fly rather than a
+      // vehicle that is in orbit on one frame and on the ground on the next.
       const threshold = Math.min(LANDING_RELIABILITY_MAX, LANDING_RELIABILITY + landerBonus);
       const roll = rng.next();
       if (!(roll < threshold)) {
@@ -1330,7 +1341,7 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
         // Flavour telemetry derived from the roll already drawn — no extra
         // draw, so the sequence's draw count does not depend on the text.
         events.push({
-          t: time,
+          t: stepTime.touchdown,
           kind: 'landing-failure',
           text: `Landing aborted: ${(1 + roll * 4).toFixed(1)} m/s lateral drift.`,
         });
@@ -1341,7 +1352,22 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
       // and the final 'end' event carries the readout into the same ticker, so
       // identical strings print the line twice. The event is the moment; the
       // readout is the summary of the flight.
-      events.push({ t: time, kind: 'landing', text: 'Touchdown on the moon.' });
+      events.push({ t: stepTime.touchdown, kind: 'landing', text: 'Touchdown on the moon.' });
+    }
+
+    if (step === 'ascent') {
+      // The far end of the climb, at `stepTime.orbited`, for the same reason
+      // the touchdown is announced at the far end of the descent: the moment
+      // the step is ABOUT is the moment it arrives, not the moment it lights.
+      //
+      // It is also the thing that keeps the ascent on screen. A `return` that
+      // climbs back to orbit and then cannot make the burn home — no shield,
+      // no restart, or not enough delta-v — stops before `tei` pushes anything
+      // at all, so without this the last event on its timeline is the ascent
+      // burn's own instant. The map plays the timeline and stops at its last
+      // event, so it stopped with the vehicle still on the surface at the
+      // start of a climb it had already completed, and `reached` said it had.
+      events.push({ t: stepTime.orbited, kind: 'lunar-orbit', text: 'Back in lunar orbit.' });
     }
 
     reached = LUNAR_STEPS.indexOf(step);
@@ -1365,6 +1391,27 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
   // is about, and the flight now ends on it.
   if (profile === 'flyby' && reached >= 0) {
     events.push({ t: stepTime.loi, kind: 'flyby', text: 'Closest approach: rounding the moon.' });
+  }
+
+  // THE REVOLUTION, and the same argument one rung up. An `orbit` profile's
+  // last burn is the capture, so without this its flight ends at the instant
+  // it arrives: the map stops on the frame the engine cuts off, having shown a
+  // vehicle reach lunar orbit and never be in one. What the contract paid for
+  // is the orbit, and an orbit is a thing you are in for a while.
+  //
+  // So a completed capture is followed by one revolution, at the period the
+  // ladder is priced against (LLO_PERIOD). Like the flyby's pass it is an
+  // EVENT and not a step: no delta-v, no restart, `reached` does not move, and
+  // the profile's success is still the capture's. Only `orbit` gets it —
+  // `land` and `return` have their own reasons to still be there afterwards,
+  // and adding two hours to a flight that is about to descend would delay the
+  // descent to say something the descent already says.
+  if (profile === 'orbit' && reached >= LUNAR_STEPS.indexOf('loi')) {
+    events.push({
+      t: stepTime.loi + LLO_PERIOD,
+      kind: 'lunar-orbit',
+      text: 'One revolution of the moon.',
+    });
   }
 
   let readout;

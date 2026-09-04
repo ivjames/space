@@ -7,6 +7,8 @@ import {
   A_MOON,
   LLO_ALT,
   LANDING_LOSS,
+  ASCENT_TIME,
+  DESCENT_TIME,
   LLO_PERIOD,
   LUNAR_STEPS,
   SURFACE_STAY,
@@ -303,13 +305,18 @@ test('the rest of the schedule hangs off the transfer and the lunar orbit', () =
   const ladder = lunarLadder(rp, ra);
   const s = lunarSchedule(500, period, ladder, 0.3);
 
-  // Capture one time of flight after departure; descent a quarter of a lunar
-  // orbit after arriving; the ascent a surface stay later; the burn home a
-  // quarter orbit after that.
+  // Capture one time of flight after departure; the descent burn a quarter of
+  // a lunar orbit after arriving; the touchdown a powered descent after that;
+  // the ascent a surface stay later; the burn home a quarter orbit after the
+  // ascent has finished putting the vehicle back in orbit.
   assert.ok(Math.abs(s.loi - (s.tli + ladder.tof)) < 1e-9);
   assert.ok(Math.abs(s.descent - (s.loi + LLO_PERIOD / 4)) < 1e-9);
-  assert.ok(Math.abs((s.ascent - s.descent) - SURFACE_STAY) < 1e-6);
-  assert.ok(Math.abs(s.tei - (s.ascent + LLO_PERIOD / 4)) < 1e-9);
+  assert.ok(Math.abs((s.touchdown - s.descent) - DESCENT_TIME) < 1e-6);
+  // The stay is measured from the TOUCHDOWN, not from the burn that starts the
+  // descent: the vehicle is not on the surface until it is on the surface.
+  assert.ok(Math.abs((s.ascent - s.touchdown) - SURFACE_STAY) < 1e-6);
+  assert.ok(Math.abs((s.orbited - s.ascent) - ASCENT_TIME) < 1e-6);
+  assert.ok(Math.abs(s.tei - (s.orbited + LLO_PERIOD / 4)) < 1e-9);
   // Strictly ordered, which is what lets the resolver walk it as flight order.
   const times = LUNAR_STEPS.map((step) => s[step]);
   for (let i = 1; i < times.length; i += 1) assert.ok(times[i] > times[i - 1], LUNAR_STEPS[i]);

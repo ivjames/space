@@ -1349,8 +1349,38 @@ has something to sell.
 
 Burn times are the transfer's own: `tli` **at the next periapsis passage
 after insertion**, `loi` at `tli.t + tof`, `descent` a quarter of a lunar
-period later, `ascent` and `tei` after a surface stay of `SURFACE_STAY`
-seconds.
+period later, `ascent` after a surface stay of `SURFACE_STAY` seconds, and
+`tei` a quarter of a lunar period after the ascent has finished.
+
+**The two powered legs have a length, and it is the only place the impulsive
+approximation is given one.** `lunarSchedule` returns two times that are not
+burns — `touchdown` at `descent + DESCENT_TIME` and `orbited` at
+`ascent + ASCENT_TIME` — and the surface stay is measured from `touchdown`
+rather than from the burn that starts the descent. Delta-v does not care how
+long an engine ran and no rung is priced against either constant; what needs
+them is that the descent is the one step whose whole content is the trip
+between two places, and a step that begins and ends at the same instant cannot
+be watched. So the resolver draws the landing roll where it always did, in
+ladder order, and emits the `landing` (or `landing-failure`) event at
+`stepTime.touchdown` — twelve minutes of falling after the burn — which is the
+interval the map view flies the vehicle down in.
+
+**An orbit profile's revolution is an event, not a step**, by exactly the
+argument the flyby's arrival is made by one paragraph down. `orbit`'s last burn
+is the capture, so without this its flight ends on the frame the engine cuts
+off: a vehicle that reached lunar orbit and was never in one. A completed
+capture is therefore followed by a `lunar-orbit` event one `LLO_PERIOD` later.
+It spends nothing, uses no restart, does not move `reached` and does not touch
+success. Only `orbit` gets it: `land` and `return` have their own reasons to
+still be there afterwards, and two hours added to a flight that is about to
+descend would delay the descent to say what the descent says better.
+
+A completed `ascent` emits the same event at `stepTime.orbited`, and that one
+is not decoration: a `return` that climbs back to orbit and then cannot make
+the burn home — no shield, no restart, not enough delta-v — breaks before `tei`
+pushes anything, so without it the last entry on that flight's timeline is the
+ascent burn's own instant, and the map stopped with the vehicle on the surface
+at the start of a climb `reached` says it finished.
 
 **A flyby's arrival is an event, not a step.** `flyby` is the one profile
 whose ladder ends with a burn made at the PLANET: it rounds the moon on the
@@ -1519,7 +1549,8 @@ is removed. `data.test.js` checks both against the real resolver.
   `drawOrbit`, `elementsFrom` and `positionAt` all still apply — no
   hyperbola tracer is needed, which is the point of resolving the transfer
   as a Hohmann pair. The lunar-orbit and surface steps are drawn at the moon
-  marker as a ring and a landed dot; the moon moves on its own circle.
+  marker as a ring and a landed dot while the picture is wide, and by the
+  close-up below once the camera has gone in; the moon moves on its own circle.
   The no-leak contract is unchanged and is the reason the moon's position is
   drawable from frame one: it is a constant, like a target's orbit is state.
   Placing the moon before any burn has played back needs the burn schedule,
@@ -1545,6 +1576,48 @@ is removed. `data.test.js` checks both against the real resolver.
   here; two craft on near-identical orbits have no heading worth telling
   apart), and the chrome carries the closing range to the moon — measured off
   the two positions on screen, exactly as tier 3's separation line is.
+- **The close-up, a camera rather than a third frame.** The three steps AT the
+  moon have no planet-centred orbit worth drawing, which is why the resolver
+  hands them `elements: null`; drawing them ON the moon marker — a ring around
+  it, a dot on its limb — put a capture, a descent, a landing, a stay, an
+  ascent and a departure inside ten floored pixels, so the part of the tier the
+  contract is named for was the part that could not be seen. So the cislunar
+  frame keeps its two bodies, its clock and its events and moves its CAMERA:
+  centre and fit ease from the planet at the origin fitted to `A_MOON` to the
+  moon itself fitted to the drawn lunar orbit, about 150x closer. The scale
+  eases geometrically and the pan is derived from the scale rather than from
+  the eased parameter, so the moon holds roughly still while the picture opens
+  around it; panning linearly against a geometric zoom throws it off the canvas
+  halfway and brings it back. The two pictures do not cross-fade evenly — each
+  is faded over the half of the move it means anything in and cut below
+  `FRAME_CUTOFF`, because planet-centred furniture at the close-up's scale is a
+  set of arcs thousands of pixels wide. In the close-up the moon is drawn at
+  TRUE size and the 100 km orbit is stretched by `LUNAR_ALT_EXAGGERATION`,
+  which is the planet-centred frame's trade made again one body over, and the
+  corner note says so. The camera holds wide for `LUNAR_DWELL_S` after the
+  capture and again after the burn home, so each of those reads as the event it
+  is before the view moves, and `finish` holds the last frame for
+  `LUNAR_HOLD_S` of real time with the simulation stopped rather than cutting
+  to the result screen mid-move.
+- **What the close-up draws, and where each part of it comes from.** The
+  vehicle is on the orbit the capture put it in, at the period the ladder is
+  priced against, entered on the side facing home (which is the side a transfer
+  arrives from). The powered descent flies it down over `DESCENT_TIME` with
+  altitude going as `(1-u)^2` and the angle swept as the integral of `(1-u)`,
+  so it brakes as it falls and touches down with both rates at zero, about 18
+  degrees of moon downrange — Apollo's descent covered 16. The ascent is the
+  same in reverse over `ASCENT_TIME`, and each leaves the fading trail the
+  transfer leaves, in the MOON's frame (sampling the moon's own motion along a
+  twelve-minute descent would smear it across the thousand kilometres the moon
+  travels while it happens). An ABORT is drawn short of the ground — `ABORT_U`,
+  a few hundred metres — because an abort is not a touchdown and the failure is
+  announced at ground level, the roll being about the contact itself. The
+  no-leak contract is untouched: every position is derived from a burn that has
+  already happened, the constants in `moon.js` and the playback clock. The one
+  thing worth naming is that the descent's LENGTH is known when it starts and
+  its OUTCOME is not — both the `landing` and the `landing-failure` event
+  arrive at the far end of it — which is what makes a descent something to
+  watch rather than something to have watched.
 - **Playback rate, the one invariant this phase widens.** Tier 3's rule is that
   the rate is a constant (`MAP_RATE`, 600×). No constant works across cislunar
   distances: one fast enough to cross five days of transfer reduces a `flyby`,
@@ -1553,7 +1626,15 @@ is removed. `data.test.js` checks both against the real resolver.
   54 000× at lunar distance and a sixtieth of that in the parking orbit. It
   reads a position already on the screen, so it stays outcome-independent, and
   it is the same shape as the ascent view's burn and coast rates. `formatClock`
-  grows a days branch here; tier 3's timelines never reached one.
+  grows a days branch here; tier 3's timelines never reached one. At the moon
+  the radius that scales it stops meaning anything — everything there happens
+  within a thousandth of `A_MOON` — so three more rates take over, keyed on
+  what the vehicle is DOING, which a burn or an event has already said:
+  `LUNAR_RATE` coasting (a two-hour revolution in about nine seconds),
+  `LUNAR_BURN_RATE` on the two powered legs (a twelve-minute descent in three),
+  and `SURFACE_RATE` for the stay, which is a day of nothing in two. All three
+  are applied as a fraction of the playback rate, so an overridden `speed`
+  still scales everything together.
 - **Loadout**: no new control. The profile is the mission, not a choice, and
   the window slider is meaningless without a phasing target.
 - **Result**: rows for the deepest step reached, delta-v used of available,

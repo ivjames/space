@@ -92,10 +92,49 @@
 // Everything else is reused. The transfer is a planet-centred Hohmann ellipse
 // — that is the point of resolving the lunar leg as one (js/core/moon.js) —
 // so makeOrbit, drawOrbit and stateAt apply unchanged and there is no
-// hyperbola to trace. The three steps AT the moon have no planet-centred orbit
-// worth drawing and the resolver hands them `elements: null` for that reason,
-// so they are drawn at the moon marker instead: a ring for lunar orbit, a dot
-// on the limb for a landing.
+// hyperbola to trace.
+//
+// THE CLOSE-UP. The three steps AT the moon have no planet-centred orbit worth
+// drawing, and the resolver hands them `elements: null` for exactly that
+// reason. Drawing them ON the moon marker — a ring around it for lunar orbit,
+// a dot on its limb for a landing — is what the cislunar frame did, and at
+// this fit the marker is ten pixels of floored dust speck: the whole of a
+// capture, a descent, a landing, a stay, an ascent and a departure happened
+// inside a circle the width of the word MOON beside it. The mission is the
+// part that cannot be seen.
+//
+// So when the vehicle arrives the CAMERA GOES IN. It is one frame still — the
+// same two bodies, the same clock, the same events — with a centre and a fit
+// that move: from the planet at the origin fitted to A_MOON, to the moon
+// itself fitted to the drawn lunar orbit, about 150x closer. The scale eases
+// geometrically and the pan is tied to it (the moon holds roughly still on
+// screen while the picture opens around it, then centres), because panning
+// linearly against a geometric zoom throws the moon off the canvas halfway
+// through and brings it back.
+//
+// In the close-up the moon is drawn at TRUE SIZE and the 100 km orbit is
+// stretched by LUNAR_ALT_EXAGGERATION — precisely the trade the planet-centred
+// frame makes, one body over, and the corner note swaps from "bodies not to
+// scale" to "lunar altitude x6" to say so. The vehicle is on that ring, moving
+// at the period the ladder is priced against; the powered descent flies it
+// down over DESCENT_TIME, braking, so its downrange rate falls away as its
+// altitude does and it arrives with both at zero; the ascent is the same in
+// reverse over ASCENT_TIME. Each leaves the same fading trail behind it that
+// the transfer does, in the moon's frame rather than the planet's.
+//
+// None of that is new information. Every position in the close-up is derived
+// from a burn that has already happened, the constants in js/core/moon.js and
+// the playback clock: where the vehicle is put on the ring is the direction of
+// home at the capture, and how far round it has gone since is the clock. The
+// ONE thing worth naming is that the descent's LENGTH is known when it starts
+// (it is a constant) while its OUTCOME is not: the landing event and the
+// landing-failure event both arrive at the far end of it, which is what makes
+// a descent something to watch rather than something to have watched.
+//
+// The two pictures do not cross-fade into each other, they hand over: below
+// FRAME_CUTOFF of either, that one is not drawn. The planet-centred furniture
+// at the close-up's scale is a set of paths tens of thousands of pixels wide,
+// and there is nothing to be gained by stroking them at alpha 0.01.
 //
 // THE MOON'S POSITION is drawable from the first frame for the same reason the
 // target's orbit is — it is a constant, not an outcome. Its circle is A_MOON,
@@ -139,7 +178,10 @@
 // vehicle drawn anywhere else would jump across the frame when it lit.
 
 import { R, altitudeOf, elementsFrom, positionAt, radiusOf } from '../core/orbit.js';
-import { A_MOON, R_MOON, lunarLadder, lunarSchedule } from '../core/moon.js';
+import {
+  A_MOON, ASCENT_TIME, DESCENT_TIME, LLO_ALT, LLO_PERIOD, R_MOON,
+  lunarLadder, lunarSchedule,
+} from '../core/moon.js';
 
 /**
  * How much altitude is stretched relative to the planet's own radius. A 200 km
@@ -171,6 +213,89 @@ export const CISLUNAR_RATE = 54000;
  * that a degenerate radius cannot stall the playback at zero.
  */
 const CISLUNAR_MIN_FRAC = 0.01;
+
+/**
+ * Rates at the moon, simulated seconds per real second, once the camera has
+ * gone in (see THE CLOSE-UP in the header). Three of them, because the lunar
+ * leg has three speeds and no single one of them reads:
+ *
+ *   LUNAR_RATE       coasting in low lunar orbit. A two-hour revolution plays
+ *                    in about nine seconds, which makes the quarter of one the
+ *                    schedule waits before descending a little over two — long
+ *                    enough for the camera to finish arriving in it, which is
+ *                    what sets the number.
+ *   LUNAR_BURN_RATE  the powered descent and the powered ascent — the two legs
+ *                    that are a trip rather than an instant, and the only ones
+ *                    worth watching closely. A twelve-minute descent takes
+ *                    three seconds of it.
+ *   SURFACE_RATE     the stay, which is a day of doing nothing (there is no
+ *                    surface activity in phase 3) and is over in two seconds.
+ *
+ * Each is keyed on what the vehicle is DOING, which is something a burn or an
+ * event has already said — the same licence rateNow's radius scaling takes, and
+ * the same shape as js/ui/ascent.js's burn and coast rates. They are quoted
+ * absolutely and applied as a fraction of the playback rate, so a test that
+ * overrides `speed` still scales all four together.
+ */
+export const LUNAR_RATE = 800;
+export const LUNAR_BURN_RATE = 240;
+export const SURFACE_RATE = 43200;
+
+/**
+ * How much lunar altitude is stretched in the close-up, relative to the moon's
+ * own radius. Exactly the reason ALT_EXAGGERATION exists, one body over: the
+ * orbit the ladder is priced against sits 100 km above a 1 737 km moon, which
+ * is 6% and draws as a line on the limb. At x6 it is a ring a third of a radius
+ * clear of the surface, which is a picture of an orbit.
+ */
+export const LUNAR_ALT_EXAGGERATION = 6;
+
+/** Room left around the drawn lunar orbit in the close-up. */
+const LUNAR_FIT_SLACK = 1.18;
+
+/**
+ * How far down an aborted descent is drawn, as a fraction of the descent it
+ * was making.
+ *
+ * An abort is not a touchdown — `landed` is false, the contract does not pay,
+ * and the readout says the flight ended on the way down — so the one thing the
+ * close-up must not do is draw the vehicle sitting on the surface in red. That
+ * is exactly what freezing it where the abort is ANNOUNCED would do: the roll
+ * is about the touchdown itself ("3.2 m/s lateral drift"), so the resolver
+ * announces it at the far end of the descent, which is ground level. A few
+ * hundred metres short of it is a wave-off, which is what the word means.
+ */
+const ABORT_U = 0.94;
+
+/**
+ * Drawn distance from the moon's CENTRE for something at true distance `r`
+ * from it: the moon keeps its size, the altitude above it is stretched. The
+ * exact counterpart of `drawRadius` at the planet, and the reason the close-up
+ * has a note in the corner.
+ */
+const drawLunar = (r) => R_MOON + (r - R_MOON) * LUNAR_ALT_EXAGGERATION;
+
+/** Time constant of the camera move, real seconds. */
+const ZOOM_TAU = 0.42;
+
+/**
+ * How long the last frame is held when the flight ends at the moon, real
+ * seconds. Every lunar profile ends on a picture that is still moving — a
+ * landing's last event is the touchdown, an orbit's is a revolution, a
+ * return's is the burn that starts the camera pulling back — so without this
+ * the view cuts to the result screen mid-move. It is real time with the
+ * simulation stopped, so it shows nothing that had not already happened.
+ */
+const LUNAR_HOLD_S = 1.6;
+
+/**
+ * Below this much of either picture, that picture is not drawn at all. It is a
+ * cutoff rather than a fade to nothing because the two pictures are 150x apart
+ * in scale: the planet-centred furniture at the close-up's scale is a set of
+ * paths tens of thousands of pixels across, and drawing them at alpha 0.01
+ * costs the same as drawing them at 1.
+ */
+const FRAME_CUTOFF = 0.02;
 
 /**
  * Smallest a body may be drawn, px. In the cislunar frame the planet is 2 px
@@ -210,6 +335,16 @@ const CRAFT_HALF_W = 2.8;
 const FLASH_S = 1.2;
 /** Radius a burn flash expands to, px. */
 const FLASH_PX = 26;
+/**
+ * How long the picture stays wide after arriving at the moon, real seconds,
+ * before the camera starts moving (see THE CLOSE-UP in the header). One burn
+ * flash, which is why it is that constant rather than a number of its own: the
+ * capture is an event in the cislunar picture and reads as one there — a ring
+ * expanding beside a moon at the end of a five-day arc — and a camera that
+ * starts moving on the same frame throws that away. The same dwell runs before
+ * the camera pulls back out after the burn for home.
+ */
+export const LUNAR_DWELL_S = FLASH_S;
 /** Stars in the field. */
 const STAR_COUNT = 120;
 /**
@@ -422,6 +557,7 @@ export function playOrbital(canvas, outcome, opts = {}) {
   let h = 0;
   let cx = 0;
   let cy = 0;
+  let half = 1;
   let pxPerM = 1;
   let stars = [];
 
@@ -448,6 +584,9 @@ export function playOrbital(canvas, outcome, opts = {}) {
   let emitted = 0;
   let burnsApplied = 0;
   let skipped = false;
+  // The beat held at the end of a flight that finished at the moon (finish()).
+  let holding = false;
+  let holdLeft = 0;
 
   // What has actually happened, in playback time. Nothing here is set from
   // the outcome ahead of the instant it occurs.
@@ -474,6 +613,28 @@ export function playOrbital(canvas, outcome, opts = {}) {
   let trailFrom = t0;
   let trailTo = null;
 
+  // THE CLOSE-UP (see the header). `zoom` is how far the camera has moved from
+  // the planet-centred picture to the moon-centred one, 0..1; it eases toward
+  // whichever of the two the vehicle's CURRENT state asks for, and never
+  // before `dwellUntil`, which is the beat the arrival and the departure are
+  // each given at the wide scale first. Real seconds throughout: the camera is
+  // the one thing here that is not on the simulation's clock.
+  let zoom = 0;
+  let dwellUntil = 0;
+  /** The lunar orbit the ladder is priced against, and its rate of turn. */
+  const rLLO = R_MOON + LLO_ALT;
+  const lunarOmega = TWO_PI / LLO_PERIOD;
+  /** Half-width the close-up fits to: the drawn orbit, plus room to label it. */
+  const lunarFit = drawLunar(rLLO) * LUNAR_FIT_SLACK;
+  // Where on that orbit the vehicle is, in the moon's frame. `lunarRef` is the
+  // point a coast is measured from (set by the capture, and again when an
+  // ascent finishes); `powered` is a descent or an ascent under way, which is
+  // the only time the vehicle is not on the ring. Both are set by burns that
+  // have happened.
+  let lunarRef = null;              // { t, theta }
+  let powered = null;               // { t, theta, span, kind }
+  let touchdownTheta = 0;
+
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const cssW = canvas.clientWidth || 300;
@@ -488,11 +649,37 @@ export function playOrbital(canvas, outcome, opts = {}) {
     w = cssW;
     h = cssH;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    cx = w / 2;
-    cy = h / 2;
-    const half = Math.max(1, Math.min(w, h) / 2 - FIT_MARGIN_PX);
-    pxPerM = half / fit;
+    half = Math.max(1, Math.min(w, h) / 2 - FIT_MARGIN_PX);
     if (changed || stars.length === 0) stars = makeStars(STAR_COUNT, w, h);
+  }
+
+  /**
+   * Point the camera, which is what `pxPerM` and the planet's screen position
+   * are between them: `cx, cy` is where the world origin lands, so a `zoom` of
+   * 0 puts it in the middle of the canvas and every frame draws exactly what it
+   * drew before this existed.
+   *
+   * The scale eases GEOMETRICALLY across the 150x between the two pictures — a
+   * linear one spends nine tenths of the move already at the moon — and the pan
+   * is derived from the scale rather than from `zoom` directly, so that the
+   * moon holds roughly still on screen while the picture opens around it. Pan
+   * linearly against a geometric zoom and the moon leaves the canvas at the
+   * halfway point and comes back.
+   */
+  function applyCamera() {
+    let camX = 0;
+    let camY = 0;
+    let camFit = fit;
+    if (cislunar && moon && zoom > 0) {
+      camFit = fit * ((lunarFit / fit) ** zoom);
+      const pan = (fit - camFit) / (fit - lunarFit);
+      const mp = stateAt(moon, simT);
+      camX = mp.x * pan;
+      camY = mp.y * pan;
+    }
+    pxPerM = half / camFit;
+    cx = w / 2 - camX * pxPerM;
+    cy = h / 2 + camY * pxPerM;
   }
 
   /** World metres (planet-centred) -> screen pixels, with y up. */
@@ -526,10 +713,12 @@ export function playOrbital(canvas, outcome, opts = {}) {
    * The planet: a disc lit from the upper left, its terminator implied by the
    * gradient rather than drawn as a line, with a thin atmosphere halo.
    */
-  function drawPlanet() {
+  function drawPlanet(alpha = 1) {
     // MIN_BODY_PX is a no-op in the stretched frame and the whole of the
     // planet in the cislunar one, where its true size is two pixels.
     const rp = Math.max(R * pxPerM, MIN_BODY_PX);
+    ctx.save();
+    ctx.globalAlpha = alpha;
     const g = ctx.createRadialGradient(
       cx - rp * 0.45, cy - rp * 0.5, rp * 0.05,
       cx, cy, rp,
@@ -543,8 +732,7 @@ export function playOrbital(canvas, outcome, opts = {}) {
     ctx.fillStyle = g;
     ctx.fill();
 
-    ctx.save();
-    ctx.globalAlpha = 0.35;
+    ctx.globalAlpha = 0.35 * alpha;
     ctx.strokeStyle = '#5aa0d6';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -615,7 +803,7 @@ export function playOrbital(canvas, outcome, opts = {}) {
    * Both ends come from the drawn orbit and the playback clock; nothing here
    * knows how the sequence ends (see the header).
    */
-  function drawTrail(orbit, fromT, toT, stroke) {
+  function drawTrail(orbit, fromT, toT, stroke, fade = 1) {
     if (!(orbit.a > 0) || !(toT > fromT)) return;
     // At most one revolution: a coast to the next periapsis is one, a Hohmann
     // leg is half. The clamp is for a degenerate orbit, not a live path.
@@ -629,7 +817,7 @@ export function playOrbital(canvas, outcome, opts = {}) {
     for (let i = 1; i <= TRAIL_STEPS; i += 1) {
       const u = i / TRAIL_STEPS;
       const pt = screenOf(stateAt(orbit, start + span * u));
-      ctx.globalAlpha = TRAIL_MIN_ALPHA + (TRAIL_MAX_ALPHA - TRAIL_MIN_ALPHA) * u;
+      ctx.globalAlpha = (TRAIL_MIN_ALPHA + (TRAIL_MAX_ALPHA - TRAIL_MIN_ALPHA) * u) * fade;
       ctx.beginPath();
       ctx.moveTo(prev.x, prev.y);
       ctx.lineTo(pt.x, pt.y);
@@ -786,7 +974,7 @@ export function playOrbital(canvas, outcome, opts = {}) {
    * markers on screen right now — a measurement off the picture, like the
    * separation line in the other frame, not a number read out of the outcome.
    */
-  function drawChrome(toMoon = null) {
+  function drawChrome(toMoon = null, altitude = null) {
     ctx.save();
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
@@ -801,14 +989,25 @@ export function playOrbital(canvas, outcome, opts = {}) {
       ctx.fillStyle = colors.muted;
       ctx.font = '10px "Courier New", monospace';
       ctx.fillText(`TO MOON ${formatFarRange(toMoon)}`, 6, 34);
+    } else if (Number.isFinite(altitude)) {
+      // The same measurement one body over, and quoted in the near-field
+      // format rather than the cislunar one: a descent finishes in metres.
+      ctx.fillStyle = colors.muted;
+      ctx.font = '10px "Courier New", monospace';
+      ctx.fillText(`ALTITUDE ${formatRange(Math.max(0, altitude))}`, 6, 34);
     }
 
     ctx.fillStyle = colors.muted;
     ctx.font = '9px "Courier New", monospace';
     ctx.textBaseline = 'bottom';
-    // Exactly one of the two is a lie in either frame, and this says which:
-    // the stretched frame's altitudes, the cislunar frame's bodies.
-    ctx.fillText(cislunar ? 'bodies not to scale' : `altitude ×${ALT_EXAGGERATION}`, 6, h - 6);
+    // Exactly one of the two is a lie in any of the three pictures, and this
+    // says which: the stretched frame's altitudes, the cislunar frame's
+    // bodies, and — the close-up being the cislunar frame's trade made over
+    // again about the moon — the close-up's altitudes.
+    const note = cislunar
+      ? (zoom > 0.5 ? `lunar altitude ×${LUNAR_ALT_EXAGGERATION}` : 'bodies not to scale')
+      : `altitude ×${ALT_EXAGGERATION}`;
+    ctx.fillText(note, 6, h - 6);
 
     // The word in the corner is only ever something that has already been read
     // out in the ticker.
@@ -817,14 +1016,16 @@ export function playOrbital(canvas, outcome, opts = {}) {
         : landingAborted ? 'LANDING ABORTED'
           : returning ? 'RETURNING'
             : atMoon === 'surface' ? 'LANDED'
-              : flewBy ? 'FLYBY' : null)
+              : atMoon === 'descent' ? 'DESCENT'
+                : atMoon === 'ascent' ? 'ASCENT'
+                  : flewBy ? 'FLYBY' : null)
       : (docked ? 'DOCKED' : dockFailed ? 'DOCKING ABORTED' : failed ? 'BURN FAILED' : null);
     if (word) {
       ctx.textAlign = 'right';
       ctx.textBaseline = 'top';
       ctx.font = 'bold 11px "Courier New", monospace';
       const good = cislunar
-        ? (word === 'LANDED' || word === 'RETURNING' || word === 'FLYBY')
+        ? word !== 'BURN FAILED' && word !== 'LANDING ABORTED'
         : word === 'DOCKED';
       ctx.fillStyle = good ? colors.accent : colors.fail;
       ctx.fillText(word, w - 6, 6);
@@ -878,60 +1079,199 @@ export function playOrbital(canvas, outcome, opts = {}) {
   }
 
   /**
-   * The cislunar frame: two bodies, the moon's circle, and whichever of the
-   * three lunar states the sequence has reached — coasting on a planet-centred
-   * ellipse of its own, ringed in lunar orbit, or sat on the limb.
+   * A point on a powered leg, as a fraction `u` of the way through it, in the
+   * moon's frame.
+   *
+   * Altitude goes as (1-u)^2 coming down and u^2 going up, so the vehicle
+   * reaches the surface with its rate of descent already at zero and leaves it
+   * with its rate of climb building from zero — a soft landing and a liftoff,
+   * rather than two collisions. The angle swept goes with the integral of the
+   * same factor, which is a descent that brakes as it falls and an ascent that
+   * accelerates as it climbs. A descent covers about 18 degrees of moon doing
+   * it; Apollo's covered 490 km of a 10 900 km circumference, which is 16.
+   *
+   * Nothing here is resolved anywhere else: the resolver prices the leg as one
+   * impulsive burn and says how long it takes (js/core/moon.js), and this is
+   * the only place that has an opinion about the shape of it, because this is
+   * the only place that draws it.
+   */
+  function poweredAt(leg, u) {
+    const c = Math.min(1, Math.max(0, u));
+    const down = leg.kind === 'descent';
+    const h = down ? (1 - c) * (1 - c) : c * c;
+    const swept = down ? c - (c * c) / 2 : (c * c) / 2;
+    return {
+      r: R_MOON + (rLLO - R_MOON) * h,
+      theta: leg.theta + lunarOmega * leg.span * swept,
+    };
+  }
+
+  /**
+   * Where the vehicle is in the MOON's frame at time `t`: its true distance
+   * from the moon's centre, and its angle round it. Three states, each of them
+   * entered by a burn or an event that has already happened — coasting the
+   * orbit the capture put it in, under power on a descent or an ascent, or
+   * sitting where the touchdown left it. Nothing rotates the moon, so the last
+   * of those does not move.
+   */
+  function lunarPoint(t) {
+    if (atMoon === 'surface') return { r: R_MOON, theta: touchdownTheta };
+    if (powered) {
+      const u = (t - powered.t) / powered.span;
+      return poweredAt(powered, landingAborted ? Math.min(u, ABORT_U) : u);
+    }
+    const ref = lunarRef ?? { t, theta: 0 };
+    return { r: rLLO, theta: ref.theta + lunarOmega * (t - ref.t) };
+  }
+
+  /**
+   * A point in the moon's frame as a planet-centred one, so that the frame's
+   * own `screenOf` draws it and the close-up needs no second projection.
+   *
+   * The moon's position is passed IN rather than sampled per point, because a
+   * path in the moon's frame is a path in the moon's frame: sampling the
+   * moon's own orbital motion along a twelve-minute descent would smear it
+   * across the thousand kilometres the moon travels while it happens.
+   */
+  function toWorld(p, mp) {
+    const rd = drawLunar(p.r);
+    return { x: mp.x + Math.cos(p.theta) * rd, y: mp.y + Math.sin(p.theta) * rd, r: 0 };
+  }
+
+  /** Which way home is, in the moon's frame: where a capture arrives. */
+  function homeTheta(t) {
+    const mp = stateAt(moon, t);
+    return Math.atan2(-mp.y, -mp.x);
+  }
+
+  /** Screen heading in the close-up, exactly as `headingAt` is for an orbit. */
+  function lunarHeading(t, mp) {
+    const dt = LLO_PERIOD / 512;
+    const a = screenOf(toWorld(lunarPoint(t - dt), mp));
+    const b = screenOf(toWorld(lunarPoint(t), mp));
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    if (!dx && !dy) return 0;
+    return Math.atan2(dy, dx);
+  }
+
+  /**
+   * The path flown since the current powered leg lit, fading out behind — the
+   * transfer's trail, in the moon's frame and over a quarter of an hour rather
+   * than five days. It survives the touchdown that ends it, so the descent is
+   * still drawn while the vehicle sits at the bottom of it, and it stops where
+   * an abort stopped the vehicle.
+   */
+  function drawLunarTrail(toT, mp, stroke, fade) {
+    if (!powered) return;
+    const flown = (toT - powered.t) / powered.span;
+    const uEnd = Math.min(landingAborted ? ABORT_U : 1, flown);
+    if (!(uEnd > 0)) return;
+    ctx.save();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    let prev = screenOf(toWorld(poweredAt(powered, 0), mp));
+    for (let i = 1; i <= TRAIL_STEPS; i += 1) {
+      const u = i / TRAIL_STEPS;
+      const pt = screenOf(toWorld(poweredAt(powered, uEnd * u), mp));
+      ctx.globalAlpha = (TRAIL_MIN_ALPHA + (TRAIL_MAX_ALPHA - TRAIL_MIN_ALPHA) * u) * fade;
+      ctx.beginPath();
+      ctx.moveTo(prev.x, prev.y);
+      ctx.lineTo(pt.x, pt.y);
+      ctx.stroke();
+      prev = pt;
+    }
+    ctx.restore();
+  }
+
+  /**
+   * A circle drawn around something already on screen, at a radius in pixels:
+   * the ring that stands for lunar orbit while the picture is still wide, and
+   * the lunar orbit itself once the camera has gone in.
+   */
+  function drawRing(pt, r, color, alpha, dash) {
+    if (!(r > 0) || !(alpha > 0)) return;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash(dash);
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, r, 0, TWO_PI);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * The cislunar frame, at whichever of its two scales the camera is between
+   * (see THE CLOSE-UP in the header): the two bodies and the transfer between
+   * them, or the moon, the orbit round it and the ground under that.
    *
    * The moon is drawn from the first frame; everything about the vehicle comes
-   * from a burn or an event that has already happened (see the header).
+   * from a burn or an event that has already happened.
    */
   function frameCislunar() {
     const mp = stateAt(moon, simT);
     const mpt = screenOf(mp);
-    // At the moon the vehicle IS the moon as far as this scale can tell: a
-    // 100 km lunar orbit is a third of a pixel across here.
-    const vp = stateAt(vehicle, simT);
-    const vpt = atMoon ? mpt : screenOf(vp);
+    // Planet-centred on a conic of its own, or somewhere in the moon's frame
+    // once a capture has put it there.
+    const here = atMoon ? lunarPoint(simT) : null;
+    const vp = here ? toWorld(here, mp) : stateAt(vehicle, simT);
+    const vpt = screenOf(vp);
 
     const track = failed ? colors.fail : colors.accent;
+    // How much of each of the two pictures is on screen. NOT `zoom` and
+    // `1 - zoom`: the camera crosses 150x of scale, so by a third of the way in
+    // the planet-centred furniture is already a set of arcs thousands of pixels
+    // wide with no shape left to read, and the lunar orbit on the way out is a
+    // ring the size of a marker. Each picture is faded over the half of the
+    // move that it means anything in, and both are cut below FRAME_CUTOFF.
+    const wide = Math.max(0, 1 - zoom * 2.4);
+    const near = Math.max(0, (zoom - 0.45) / 0.55);
 
     drawSpace();
-    drawPlanet();
-    drawOrbit(moon, colors.muted, [4, 4], 0.5);
-    // Where it is going, and then — over the top of it — how much of that it
-    // has actually flown. Two curves rather than one: see the header.
-    drawOrbit(vehicle, track, [3, 5], PROJECTION_ALPHA);
-    drawTrail(vehicle, trailFrom, trailTo ?? simT, track);
+    if (wide > FRAME_CUTOFF) {
+      drawPlanet(wide);
+      drawOrbit(moon, colors.muted, [4, 4], 0.5 * wide);
+      // Where it is going, and then — over the top of it — how much of that it
+      // has actually flown. Two curves rather than one: see the header.
+      drawOrbit(vehicle, track, [3, 5], PROJECTION_ALPHA * wide);
+      drawTrail(vehicle, trailFrom, trailTo ?? simT, track, wide);
+    }
     const rm = drawMoon(mpt);
     // Which side of the moon to put the vehicle on: the one facing home, which
     // is the only direction this frame has an opinion about. Its label goes a
-    // line ABOVE the moon's rather than beside it — at this scale the two
+    // line ABOVE the moon's rather than beside it — at the wide scale the two
     // markers are a few pixels apart, and no horizontal rule keeps two labels
     // off each other once the moon is near an edge and both flip the same way.
-    const dx = cx - mpt.x;
-    const dy = cy - mpt.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const moonSide = dx > 0 ? -1 : 1;
+    const moonSide = cx - mpt.x > 0 ? -1 : 1;
     drawLabel(mpt, colors.muted, 'MOON', rm + 7, moonSide);
 
     if (atMoon) {
       const color = failed || landingAborted ? colors.fail : colors.accent;
-      if (atMoon === 'orbit') {
-        ctx.save();
-        ctx.strokeStyle = color;
-        ctx.globalAlpha = 0.9;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(mpt.x, mpt.y, rm + 5, 0, TWO_PI);
-        ctx.stroke();
-        ctx.restore();
+      // The orbit it was captured into, at whichever scale can show it: a ring
+      // just clear of a ten-pixel marker while the picture is wide, and the
+      // orbit itself — true moon, stretched altitude — once the camera is in.
+      if (wide > FRAME_CUTOFF && atMoon !== 'surface') {
+        drawRing(mpt, rm + 5, color, 0.9 * wide, []);
       }
-      // On the ring in orbit, on the limb once landed.
-      const d = atMoon === 'surface' ? rm : rm + 5;
-      const pt = { x: mpt.x + (dx / len) * d, y: mpt.y + (dy / len) * d };
-      drawMarker(pt, color, null, atMoon === 'surface');
-      drawLabel({ x: mpt.x, y: mpt.y - rm - 11 }, color, 'VEHICLE', rm + 7, moonSide);
-      drawFlashes(mpt);
+      if (near > FRAME_CUTOFF) {
+        drawRing(mpt, drawLunar(rLLO) * pxPerM, colors.muted, 0.45 * near, [4, 4]);
+        drawLunarTrail(simT, mp, color, near);
+      }
+      // A craft under way, a dot once it is down. The label is the moon's own
+      // rule in reverse, for the same reason: at the wide scale the two are
+      // the same few pixels.
+      if (atMoon === 'surface') drawMarker(vpt, color, null, true);
+      else drawCraft(vpt, lunarHeading(simT, mp), color, null);
+      // In the close-up the vehicle is its own marker, a moon's radius clear of
+      // the moon's label, so its own goes beside it. While the picture is wide
+      // the two are the same few pixels and nothing horizontal separates them,
+      // so it goes a line above the moon instead.
+      if (near > 0.5) drawLabel(vpt, color, 'VEHICLE', 11, -moonSide);
+      else drawLabel({ x: mpt.x, y: mpt.y - rm - 11 }, color, 'VEHICLE', rm + 7, moonSide);
+      drawFlashes(vpt);
     } else {
       // A flyby's closest approach puts the craft ON the moon marker — the
       // transfer's apoapsis is where the moon is, which is what makes it a
@@ -950,12 +1290,18 @@ export function playOrbital(canvas, outcome, opts = {}) {
     // How far there is still to go, measured off the two positions on screen
     // exactly as the tier 3 frame's separation line is. It is the one number
     // that says "approaching" rather than "en route", and it says nothing
-    // about whether the vehicle gets there.
-    drawChrome(atMoon ? null : Math.hypot(mp.x - vp.x, mp.y - vp.y));
+    // about whether the vehicle gets there. At the moon it gives way to the
+    // altitude, which is the same measurement one body over and is what the
+    // descent is: a hundred kilometres counted down to nothing.
+    drawChrome(
+      here ? null : Math.hypot(mp.x - vp.x, mp.y - vp.y),
+      here ? here.r - R_MOON : null,
+    );
   }
 
   function frame() {
     resize();
+    applyCamera();
     if (cislunar) frameCislunar();
     else frameOrbital();
   }
@@ -1005,19 +1351,54 @@ export function playOrbital(canvas, outcome, opts = {}) {
         el.periapsis, el.apoapsis, Math.atan2(mp.y, mp.x) + Math.PI, 0.5, burn.t,
       );
       atMoon = null;
+      powered = null;
+      lunarRef = null;
       returning = true;
       trailFrom = burn.t;
       trailTo = null;
+      // The departure gets the same beat at the wide scale that the arrival
+      // got, and for the same reason: the burn is the event, and the camera
+      // pulling out over the top of it is not.
+      dwellUntil = realT + LUNAR_DWELL_S;
       return;
     }
-    // The capture puts it in lunar orbit and the ascent puts it back; whether
-    // the descent between them ended on the surface is the landing event's to
-    // say, not the burn's (the burn can succeed and the touchdown still fail).
-    if (burn.kind === 'loi' || burn.kind === 'ascent') {
+    // The capture puts it in lunar orbit, on the side of the moon it arrived
+    // from, which is the side facing home.
+    if (burn.kind === 'loi') {
       atMoon = 'orbit';
+      lunarRef = { t: burn.t, theta: homeTheta(burn.t) };
+      powered = null;
+      dwellUntil = realT + LUNAR_DWELL_S;
       // Arrived: the trail stops where the capture happened rather than
       // carrying on round the transfer the vehicle is no longer flying.
       if (trailTo === null) trailTo = burn.t;
+      return;
+    }
+    // The two legs with a length. Whether the descent between them ended on
+    // the surface is the landing event's to say, not the burn's — the burn can
+    // succeed and the touchdown still fail, and DESCENT_TIME separates them.
+    if (burn.kind === 'descent') {
+      powered = { t: burn.t, theta: lunarPoint(burn.t).theta, span: DESCENT_TIME, kind: 'descent' };
+      atMoon = 'descent';
+      return;
+    }
+    if (burn.kind === 'ascent') {
+      powered = { t: burn.t, theta: touchdownTheta, span: ASCENT_TIME, kind: 'ascent' };
+      atMoon = 'ascent';
+    }
+  }
+
+  /**
+   * The one lunar transition no burn and no event announces: the far end of an
+   * ascent, which is the vehicle back in the orbit it left. It is derived from
+   * the burn that started it and a constant, exactly as the descent's far end
+   * is, so it is not a look-ahead — it is the same arithmetic one frame later.
+   */
+  function settle(t) {
+    if (powered && powered.kind === 'ascent' && t >= powered.t + powered.span) {
+      lunarRef = { t: powered.t + powered.span, theta: poweredAt(powered, 1).theta };
+      powered = null;
+      atMoon = 'orbit';
     }
   }
 
@@ -1073,9 +1454,16 @@ export function playOrbital(canvas, outcome, opts = {}) {
       emitted += 1;
       if (ev.kind === 'approach') approachText = ev.text;
       // The touchdown, and the touchdown that did not happen: the vehicle
-      // reaches the surface on the frame the ticker says it did.
-      else if (ev.kind === 'landing') atMoon = 'surface';
-      else if (ev.kind === 'landing-failure') landingAborted = true;
+      // reaches the surface on the frame the ticker says it did, which is the
+      // far end of the descent it has spent the last DESCENT_TIME flying.
+      else if (ev.kind === 'landing') {
+        touchdownTheta = lunarPoint(ev.t).theta;
+        atMoon = 'surface';
+      } else if (ev.kind === 'landing-failure') {
+        // Waved off: the descent holds just short of the ground rather than
+        // finishing on a surface the vehicle never reached (ABORT_U).
+        landingAborted = true;
+      }
       // The pass. Nothing about the drawn orbit changes — the vehicle is still
       // coasting the transfer it departed on, which is the whole point of a
       // free return — so this only says the corner word out loud.
@@ -1090,10 +1478,35 @@ export function playOrbital(canvas, outcome, opts = {}) {
   }
 
   function finish() {
-    if (handle.done) return;
-    handle.done = true;
+    if (handle.done || holding) return;
     simT = finalT;
     flushTo(finalT);
+    settle(finalT);
+    // A flight that ends at the moon ends on a picture that is still moving:
+    // a landing's last event is the touchdown, an orbit's is a revolution, and
+    // a return's is the burn that starts the camera pulling back out. Hold the
+    // last frame for a beat rather than cutting to the result screen mid-move.
+    // Real time with the simulation stopped, so nothing that had not already
+    // happened is shown — and a tap skips it like everything else.
+    if (!skipped && cislunar && (atMoon || zoom > FRAME_CUTOFF)) {
+      holding = true;
+      holdLeft = LUNAR_HOLD_S;
+      dwellUntil = 0;
+      frame();
+      raf = requestAnimationFrame(tick);
+      return;
+    }
+    complete();
+  }
+
+  /** The end of playback proper: draw the last frame, let go, hand back. */
+  function complete() {
+    if (handle.done) return;
+    holding = false;
+    handle.done = true;
+    // A skip has no time to move the camera in, so it arrives where it would
+    // have arrived.
+    if (skipped && cislunar) zoom = atMoon ? 1 : 0;
     frame();
     detach();
     onDone();
@@ -1109,8 +1522,32 @@ export function playOrbital(canvas, outcome, opts = {}) {
    */
   function rateNow() {
     if (!cislunar) return rate;
-    const r = atMoon ? A_MOON : stateAt(vehicle, simT).r;
+    // At the moon the radius that scales the cislunar rate stops meaning
+    // anything — everything happens within a thousandth of it — so the three
+    // things the vehicle can be doing there set the rate instead. Each is
+    // something a burn or an event has already said (see LUNAR_RATE).
+    if (atMoon) {
+      const near = atMoon === 'surface' ? SURFACE_RATE
+        : atMoon === 'descent' || atMoon === 'ascent' ? LUNAR_BURN_RATE
+          : LUNAR_RATE;
+      return rate * (near / CISLUNAR_RATE);
+    }
+    const { r } = stateAt(vehicle, simT);
     return rate * Math.min(1, Math.max(CISLUNAR_MIN_FRAC, r / A_MOON));
+  }
+
+  /**
+   * Move the camera toward whichever picture the vehicle's CURRENT state asks
+   * for, once whatever dwell it was given has run out. Real time, an
+   * exponential ease, and a snap at the end so that `zoom` reaches its target
+   * exactly rather than approaching it for the rest of the flight.
+   */
+  function easeCamera(dt) {
+    if (!cislunar || realT < dwellUntil) return;
+    const target = atMoon ? 1 : 0;
+    if (zoom === target) return;
+    zoom += (target - zoom) * (1 - Math.exp(-dt / ZOOM_TAU));
+    if (Math.abs(target - zoom) < 0.002) zoom = target;
   }
 
   function tick(now) {
@@ -1119,12 +1556,23 @@ export function playOrbital(canvas, outcome, opts = {}) {
     const dt = Math.min((now - lastNow) / 1000, 0.1);
     lastNow = now;
     realT += dt;
+    // The hold at the end: real time runs, the simulation does not.
+    if (holding) {
+      holdLeft -= dt;
+      easeCamera(dt);
+      frame();
+      if (holdLeft <= 0) complete();
+      else raf = requestAnimationFrame(tick);
+      return;
+    }
     simT += dt * rateNow();
+    easeCamera(dt);
     if (simT >= finalT) {
       finish();
       return;
     }
     flushTo(simT);
+    settle(simT);
     frame();
     raf = requestAnimationFrame(tick);
   }
@@ -1133,7 +1581,8 @@ export function playOrbital(canvas, outcome, opts = {}) {
     if (stopped || handle.done) return;
     cancelAnimationFrame(raf);
     skipped = true;
-    finish();
+    if (holding) complete();
+    else finish();
   }
 
   function stop() {

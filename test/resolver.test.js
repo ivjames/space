@@ -50,7 +50,9 @@ import {
   phaseFor,
   velocityAt,
 } from '../js/core/orbit.js';
-import { A_MOON, LUNAR_STEPS, LLO_PERIOD, lunarLadder } from '../js/core/moon.js';
+import {
+  A_MOON, ASCENT_TIME, DESCENT_TIME, LUNAR_STEPS, LLO_PERIOD, lunarLadder,
+} from '../js/core/moon.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures. Defined here, not imported from js/data, so content changes cannot
@@ -1955,11 +1957,19 @@ test('the burns are scheduled on the transfer, and a return flight takes days', 
   assert.ok(Math.abs(coast - (1 - o.insertion.phase) * period) < 1e-6, `coast ${coast}s`);
   assert.ok(coast > 0 && coast <= period + 1e-6, 'a coast, never an instant burn');
   assert.ok(Math.abs(at.loi - (at.tli + ladder.tof)) < 1e-6);
-  // Descent a quarter of a lunar orbit after arrival; ascent a surface stay
-  // later; the return burn a quarter orbit after that.
+  // Descent a quarter of a lunar orbit after arrival; the ascent a surface
+  // stay after the TOUCHDOWN the descent takes DESCENT_TIME to reach; the
+  // return burn a quarter orbit after the ascent has finished.
   assert.ok(Math.abs(at.descent - (at.loi + LLO_PERIOD / 4)) < 1e-6);
-  assert.equal(at.ascent - at.descent, SURFACE_STAY);
-  assert.ok(Math.abs(at.tei - (at.ascent + LLO_PERIOD / 4)) < 1e-6);
+  assert.equal(at.ascent - at.descent, DESCENT_TIME + SURFACE_STAY);
+  assert.ok(Math.abs(at.tei - (at.ascent + ASCENT_TIME + LLO_PERIOD / 4)) < 1e-6);
+
+  // And the touchdown is announced where it happens, which is not where the
+  // burn that starts the descent is: twelve minutes of falling separate them,
+  // and that gap is the whole of what the map has to fly the vehicle down in.
+  const touchdown = o.timeline.find((e) => e.kind === 'landing');
+  assert.ok(touchdown, 'a return flight lands');
+  assert.equal(touchdown.t, at.descent + DESCENT_TIME);
 
   // The whole thing is a week of simulated seconds — five days out, a day on
   // the surface — and the timeline is still sorted and still ends on the 'end'
@@ -2099,6 +2109,21 @@ test('a vehicle with no heat shield gets home no further than lunar orbit', () =
   assert.match(o.readout, /^No heat shield aboard/);
   // Landing without one is still landing: the shield is only about the return.
   assert.equal(resolveLaunch(v, MOON_MISSION('land'), MOON_LOAD, makeRng(7)).success, true);
+
+  // And the flight does not end on the frame the ascent lights. The three
+  // pre-burn stops at `tei` — no shield, no restart, not enough delta-v — all
+  // break before the step pushes anything, so the ascent's own arrival at
+  // `stepTime.orbited` is the last thing on the timeline. Without it the map,
+  // which plays the timeline and stops at its last event, held the vehicle on
+  // the surface at the start of a climb this outcome says it completed.
+  const at = Object.fromEntries(o.lunar.burns.map((b) => [b.kind, b.t]));
+  const last = o.timeline.at(-1);
+  assert.equal(last.kind, 'end');
+  assert.equal(last.t, at.ascent + ASCENT_TIME, 'the timeline runs to the top of the climb');
+  assert.ok(
+    o.timeline.some((e) => e.kind === 'lunar-orbit' && e.t === at.ascent + ASCENT_TIME),
+    'the ascent arrives somewhere',
+  );
 });
 
 // ---------------------------------------------------------------------------
