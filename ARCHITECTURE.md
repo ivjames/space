@@ -1352,8 +1352,13 @@ the sequence's own `shortBy`, unfloored, as the orbital one already is.
 
 `SCHEMA_VERSION = 4` in `save.js:4` **and** the duplicated literal in
 `newGame` (`state.js:32`; the duplication is deliberate, see `state.js:12`).
-`migrations[3]` adds `best.lunarStep: 0` and back-fills history entries with
-`lunarStep: 0`, following the whole-literal rewrite the other three use.
+`migrations[3]` adds `best.lunarStep: -1` and back-fills history entries with
+`lunarStep: -1`, following the whole-literal rewrite the other three use. The
+field stores the resolver's `outcome.lunar.reached` untranslated, so it shares
+that value's `-1` sentinel for "nothing completed" — which is also the true
+statement about a save that predates this phase. Zero would not be: zero is
+`tli`'s own index, and a field defaulted to it reads as "reached TLI" on a fresh
+game, which a `flyby` goal would believe.
 `recordLaunch` raises `best.lunarStep` from `outcome.lunar.reached`.
 `tierGoalMet` gains a `{ moon }` arm reading `best.lunarStep` against the
 profile's required step — the fall-through at `state.js:310` silently
