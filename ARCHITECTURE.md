@@ -1194,3 +1194,287 @@ anomaly appears in a cheapest-reaching set.
   (including the escaped-failure hint), one per kind. An anomaly never
   changes `readoutKind`, which is still `'failure'` only for a terminal
   failure.
+
+# Phase 3 — tier 4, the Moon
+
+Additions to the phase 0, 1 and 2 contracts. Tiers 1 to 3 keep working
+unchanged; every existing test keeps passing.
+
+## What tier 4 is, and what it is not
+
+DESIGN.md §14 lists phase 3 as "profiles, survey, first resources, base
+equipment, **the clock**, manual haul, storage notification", and says in the
+same breath that phase 3 must not be split because "splitting it leaves half
+of a system visible with nothing to do".
+
+Both halves of that are respected by cutting the phase in a different place
+than the sentence implies. **Tier 4 here is the flight tier only**: the
+profiles ladder (flyby, orbit, land, return) and the destination that gives
+those profiles a meaning. Survey, resources, equipment, bases, the clock,
+offline accrual, haul and notifications are deferred **together**, as phase
+3b, because they are the system the doc is protecting — a survey shipped
+alone reveals two hidden numbers per site that nothing reads, which is
+exactly the half-a-system failure. A landing shipped without them is not
+half a system: it pays a contract, wins the tier, and reads as finished. The
+order inside the phase that DESIGN.md fixes (survey → land → equipment and
+production → storage and offline accrual → haul → notification) is preserved
+by 3b; only survey moves, from the front of the flight half to the front of
+the economy half, where the thing it feeds lives.
+
+So: **goal, land and return.** Four profiles with escalating payouts, one
+new destination, no resources.
+
+**The moon is not a second attractor.** The ascent integrator keeps its
+single central gravity term and its single planet-centred frame. A lunar
+flight is resolved the way a rendezvous already is — analytically, after
+insertion, as a sequence of burns the vehicle can or cannot afford — because
+that is the model the game already has and it is the one that produces
+"short by X m/s for return", which is what DESIGN.md §6 says the failure
+must read as. No patched conics, no sphere of influence, no hyperbolic
+elements. `orbitElements` (`resolver.js:330`) keeps its planet-centred
+altitude sentinels and is never asked about a translunar state vector.
+
+## js/core/moon.js — new, pure
+
+The moon's constants and the delta-v ladder derived from them. Pure: no DOM,
+no `Date.now`, no `Math.random`. It is a sibling of `orbit.js`, not a
+parameterisation of it: `orbit.js` keeps its module-level `MU`/`R` and its
+"there is exactly one planet" test (`test/orbit.test.js:33`) unchanged.
+
+```js
+export const R_MOON, MU_MOON, A_MOON   // radius, gravitational parameter,
+                                       //   orbital radius about the planet
+export const LLO_ALT                   // the low lunar orbit the ladder prices, m
+export const LANDING_LOSS              // gravity/steering loss factor on the
+                                       //   powered descent and ascent, ~1.15
+export function lunarLadder(parkPeriapsis, parkApoapsis)
+  // -> { tli, loi, descent, ascent, tei, tof }  all m/s, tof in s
+```
+
+Every number in the ladder is **computed, not looked up** (DESIGN.md §14.3):
+
+- `tli` — `hohmann(rPark, A_MOON).dv1`, the departure burn of a Hohmann
+  transfer from the achieved parking orbit to lunar distance. `tof` is that
+  transfer's `tof`.
+- `loi` — arrival hyperbolic speed against lunar circular speed. The excess
+  is `|v_transfer(A_MOON) - v_moon|` with `v_moon = sqrt(MU / A_MOON)`;
+  capture is `sqrt(vInf² + 2 MU_MOON / rLLO) - sqrt(MU_MOON / rLLO)`.
+- `descent`, `ascent` — `sqrt(MU_MOON / rLLO) * LANDING_LOSS` each. There is
+  no atmosphere, so the two are symmetric and the loss factor is the whole
+  difference from the ideal.
+- `tei` — equal to `loi` by the same symmetry. Entry at the planet is free:
+  the atmosphere does the braking, and a vehicle without a heat shield does
+  not get to spend delta-v instead (see `shield` below).
+
+The eccentricity-mismatch approximation `transferDeltaV` documents is not
+reused here; a lunar transfer departs from the parking orbit's own apsis, so
+the Hohmann pair is the honest price. Document the approximation that *is*
+made — impulsive burns, coplanar, the moon treated as a point the transfer
+apoapsis touches — in the module header, as `orbit.js:144` does for its own.
+
+## js/core/resolver.js — the lunar sequence
+
+**New requirement shape** (a mission has exactly one, as ever):
+
+```js
+{ moon: { profile: 'flyby' | 'orbit' | 'land' | 'return' } }
+```
+
+`requirementKind` (`:370`) gains a `'moon'` arm. `needsTarget` (`:381`) keeps
+its current meaning — "flies to a `state.objects` entry" — and a lunar
+mission is **not** one: the moon is not an object in `state.objects`, it is
+a constant. The predicate that gates the ascent cutoff and the analytic
+phase becomes "needs an insertion", true for both, and `needsTarget` narrows
+to what it always meant. A lunar mission's `cutoffAlt` is `ORBIT_MIN_ALT`:
+it parks in the lowest orbit it can reach, because every metre of altitude
+bought on the ascent is delta-v not spent on the transfer.
+
+**`dvAvailable` becomes the remaining stack, not the cutting stage.**
+Today it is Tsiolkovsky on `reserveProp`/`reserveMass` — what was left in the
+stage that was burning when `cutoff()` fired (`:1660-1663`). Tier 4 needs
+8 km/s past insertion, which no single stage carries, and the real answer is
+the one Apollo used: arrive in the parking orbit with stages still unfired.
+So the budget sums the cutting stage's reserve **plus every stage above it
+that has not been ignited**, each priced with the mass of everything above
+it, in order.
+
+This is a no-op for tiers 1 to 3, and that claim is a test, not a hope: a
+three-stage vehicle inserts on its last stage, so the sum has one term and
+equals today's number. `resolver.test.js` pins it, and the tier 3 gate
+measurements in `data.test.js` are the real check — if any of them move, the
+change was not a no-op and the contract is wrong.
+
+**New capability stats** (seeded in `CAPABILITY_STATS`, `vehicle.js:88`, so
+they are a data change once declared):
+
+| stat | set by | the resolver reads it as |
+|------|--------|--------------------------|
+| `lander` | structure | 0 blocks `descent`; the sequence stops at `stoppedAt: 'lander'` |
+| `shield` | structure | 0 blocks the return leg after `tei` |
+| `landerBonus` | reliability | added to the landing roll threshold, capped as `dockBonus` is |
+
+**`resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng)`** —
+a sibling of `resolveOrbitalSequence`, returning the same shape so the result
+screen and the map read one thing:
+
+```js
+{ burns, dvAvailable, dvUsed, shortBy, stoppedAt, reached, landed, readout }
+```
+
+`burns[].kind` is one of `'tli' | 'loi' | 'descent' | 'ascent' | 'tei'`;
+`reached` is the deepest step completed, as an index into
+`LUNAR_STEPS = ['tli', 'loi', 'descent', 'ascent', 'tei']`. Each step is
+`restartOk` then `spend(..., restAfter)` exactly as the orbital sequence
+does, so `relightCost` couples an underperforming relight to a later
+shortfall the same way, and `shortBy` is again *this step's cost plus
+everything the profile still needs after it* — that is what makes the tier's
+failure line "short by 640 m/s for return" rather than "short by 640 m/s",
+and the `restAfter` threading is where the "for return" comes from.
+
+Five restarts is the deepest profile's requirement (tli, loi, descent,
+ascent, tei), so `restarts` is a real gate again and the propulsion branch
+has something to sell.
+
+Burn times are the transfer's own: `tli` at `t0 + P/2`, `loi` at
+`tli.t + tof`, `descent` a quarter of a lunar period later, `ascent` and
+`tei` after a surface stay of `SURFACE_STAY` seconds. A `return` flight's
+timeline is days long, which the map plays back at its own rate and the
+result screen reports as mission elapsed time — the same simulated seconds
+every other flight already uses. Nothing in state or the UI learns about
+real time in this phase; that arrives with the clock, in 3b.
+
+**Success, shortfall, readout** — the three ladders at `:1696-1711`,
+`:1727-1766` and `:1770-1812` each gain a `'moon'` arm. Success is
+`reached >= LUNAR_STEPS.indexOf(requiredStep(profile))`. The shortfall is
+the sequence's own `shortBy`, unfloored, as the orbital one already is.
+
+## js/core/state.js, js/core/save.js — schema v4
+
+`SCHEMA_VERSION = 4` in `save.js:4` **and** the duplicated literal in
+`newGame` (`state.js:32`; the duplication is deliberate, see `state.js:12`).
+`migrations[3]` adds `best.lunarStep: 0` and back-fills history entries with
+`lunarStep: 0`, following the whole-literal rewrite the other three use.
+`recordLaunch` raises `best.lunarStep` from `outcome.lunar.reached`.
+`tierGoalMet` gains a `{ moon }` arm reading `best.lunarStep` against the
+profile's required step — the fall-through at `state.js:310` silently
+reports "never met" for an unknown shape, so this arm is not optional.
+
+`objects` is untouched: a lunar flight deploys nothing in phase 3.
+
+## js/core/tree.js, js/data/tree.js — tier 4
+
+Tier 4 nodes (`tier: 4`), 12 to 14, four branches. Costs step up from tier
+3's 25 000–62 500 the way tier 3 stepped up from tier 2's.
+
+- **propulsion**: a cryogenic departure stage (`addStage`, large propMass),
+  a deep-space engine (isp mul), multi-restart 3 (`restarts` add 2 — five
+  is what `return` needs), a descent throttle (top-stage propMass reserve).
+- **structure**: lander (`lander` set 1), an ascent stage (`addStage`,
+  small), a heat shield (`shield` set 1), lightweight cryogenic tankage
+  (dryMass reduction).
+- **guidance**: deep-space navigation (`nav` add 1), terrain-relative
+  landing (feeds the landing roll), entry guidance.
+- **reliability**: lunar engine qualification (final-stage reliability mul),
+  landing rehearsal (`landerBonus`), entry qualification.
+
+The cross-branch TWR rail (`js/data/tree.js:41`) extends unchanged: a stage
+added by structure requires the thrust that flies it. `data.test.js`'s
+ideal-full-tree delta-v bound (9 000–11 000 m/s, `:486`) moves with this
+tier and is re-pinned, not deleted — it exists to catch a tree that has
+quietly become a shop.
+
+## js/data/missions.js — tier 4 ladder
+
+Five rungs, all `tier: 4`, following tier 3's composition exactly:
+
+- `relay` — the income filler. Orbit-shaped at the `core` template's own
+  160 km, `deploys: { kind: 'satellite' }`, repeatable, **no
+  `minReputation`**. Tier 3's `satellite` exists because a tier 3 arrival's
+  board was the 400-fund floor and nothing else for a hundred launches
+  (`missions.js:339`); a tier 4 arrival is in the same position and gets the
+  same answer. Its requirement is capped at hardware a tier 3 winner owns by
+  construction, and `data.test.js` pins that, as it does for `satellite`.
+- `moon-flyby`, `moon-orbit`, `moon-land` — the escalating profiles.
+- `moon-return` — the goal.
+
+```js
+tierGoals[4] = { requirement: { moon: { profile: 'return' } },
+                 name: 'Land and return' };
+```
+
+`mission.profile` **stops being dead data** in this phase. It is written on
+every template today and read by nothing (`tools/gates.mjs`'s probe fixtures
+set it and `resolveLaunch` ignores it). It does not become a second dispatch
+axis — every switch in the codebase reads the requirement shape and that
+stays true — but `data.test.js` pins that a template's `profile` agrees with
+its requirement, so the annotation is either correct or it fails. Tier 4's
+values are `'flyby' | 'orbit' | 'land' | 'return'` on the lunar rungs and
+`'orbit'` on `relay`.
+
+**Gates.** `tools/gates.mjs`'s `MAX_TIER` goes to 4 and its subset
+enumeration keeps deriving gates for the altitude/downrange/orbit shapes —
+`relay`'s among them. The four lunar rungs are hand-authored and *measured*,
+the way the rendezvous and dock rungs are (`missions.js:404`): each must be
+flyable with exactly its `requiresNode` closure across every selectable
+loadout, and must stop being flyable when the node the rung is really about
+is removed. `data.test.js` checks both against the real resolver.
+
+## js/ui — what tier 4 adds
+
+- **Map view, a second frame.** The planet-centred frame with its ×6
+  altitude exaggeration cannot express a body 60 planetary radii away
+  (`map.js:235`, `:68`): the stretch is nonsense at that distance and a fit
+  that includes the moon collapses a parking orbit to a sub-pixel dot. So a
+  lunar outcome selects a **cislunar frame**: no altitude exaggeration, the
+  fit set by `A_MOON`, both bodies drawn at `max(true radius, MIN_BODY_PX)`
+  with the corner note saying the bodies are not to scale (it currently says
+  the altitudes are). The transfer is a planet-centred Hohmann ellipse, so
+  `drawOrbit`, `elementsFrom` and `positionAt` all still apply — no
+  hyperbola tracer is needed, which is the point of resolving the transfer
+  as a Hohmann pair. The lunar-orbit and surface steps are drawn at the moon
+  marker as a ring and a landed dot; the moon moves on its own circle.
+  The no-leak contract is unchanged and is the reason the moon's position is
+  drawable from frame one: it is a constant, like a target's orbit is state.
+- **Loadout**: no new control. The profile is the mission, not a choice, and
+  the window slider is meaningless without a phasing target.
+- **Result**: rows for the deepest step reached, delta-v used of available,
+  and the shortfall named with the step it stopped before ("short by 640 m/s
+  for the return burn"). Points-at: `stoppedAt: 'restarts'` → propulsion;
+  `'lander'` → structure; `'shield'` → structure; `'deltaV'` → propulsion
+  and structure.
+- **Tier flow**: tier 3 win → "Tier 4: The Moon" → contracts. Tier 4 win →
+  "Landed and returned in N launches". `TIER_NAMES`, `TIER_BLURB` and
+  `TIER_TEASER` (`screens.js:195`, `:202`, `:220`) each gain a `4:` entry,
+  and `winHtml`'s headline switch (`:823`) gains a `moon` arm — without it a
+  lunar win prints "Reached 100 km", because the switch falls through to the
+  altitude default.
+- HUD tier shows "T4".
+
+## UI hooks, additions (phase 3)
+
+- `[data-result="lunar-step"]`, `[data-result="lunar-shortfall"]`
+- the launch canvas stays `canvas#ascent` through both views; tap skips both
+
+## Balance, phase 3
+
+`tools/balance.mjs` gains tier 4: the cheapest prereq-valid set reaching each
+rung, the greedy player from the tier 3 end state through the goal (target
+15 to 60 launches, dry streak 4 or under), the remaining-stack delta-v budget
+at insertion for the cheapest set (must cover the profile's ladder with
+margin), and the TWR sweep extended to tier 4 sets. `data.test.js` asserts
+reachability of every tier 4 rung and greedy ≤ 80.
+
+The numbers above are the shape, not the answer. Tier 3's contract said
+200 km and shipped 160 km because the resolver disagreed with it
+(`js/data/tree.js:657`); the same applies here. What the tools measure wins,
+and what they measure gets written back into this file.
+
+## Deferred to phase 3b, together
+
+Survey (the orbital profile that reveals plentitude and quality), resources
+as anything other than the ledger `economy.js` already carries, equipment,
+surface bases, orbital depots, the clock, offline accrual, storage caps,
+manual haul, and the storage-full notification. `state.resources` and
+`cost.resources` stay as they are: a complete, unused foundation
+(`ARCHITECTURE.md:320`). Nothing in phase 3 credits a resource, and no tree
+node is priced in one.
