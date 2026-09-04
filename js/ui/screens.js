@@ -587,6 +587,17 @@ export function mountScreens(ctx) {
       : kind === 'rendezvous'
         ? `Within ${km(mission.requirement.rendezvous.within)} of ${targetName}`
         : `Target ${requirementText(mission?.requirement)}`;
+    // STEP 0.001, not 0.01. Both are inside PHASE_TOLERANCE_DEG (5 degrees)
+    // by a wide margin -- a 0.01 slider's worst half-notch is 1.8 degrees,
+    // so the coarse slider could never actually force a phasing burn, and
+    // this is not a balance change. It is a READOUT change: the readout is
+    // `Math.round(window * 360)`, so on a 0.01 slider the degrees jump in
+    // 3.6-degree steps (277, 281, 284...) while the hint below quotes the
+    // target's phase to the nearest degree. A core at 280.2 degrees reads as
+    // "is at 280" next to a slider that will not show 280 at all, which
+    // looks like a control that cannot be aimed at the number the game just
+    // named. At 0.001 the notch is 0.36 degrees and every whole degree the
+    // hint can print is reachable.
     const windowField = needsTarget(mission)
       ? `
           <div class="field">
@@ -595,7 +606,7 @@ export function mountScreens(ctx) {
               <span class="field-value" data-window-readout>${Math.round(view.window * 360)}°</span>
             </label>
             <input id="win" type="range" data-loadout="window"
-                   min="0" max="1" step="0.01" value="${view.window}">
+                   min="0" max="1" step="0.001" value="${view.window}">
             <p class="hint" data-window-hint>${escapeHtml(windowHintText(view.window, target))}</p>
             <p class="hint">Inserting level with the target costs nothing; an angle is paid off in phasing burns.</p>
           </div>`

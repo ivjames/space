@@ -385,14 +385,16 @@ export const missions = [
   //
   //   satellite   prop-9, guide-1: the tier 2 goal's own gate, since it is
   //               the tier 2 goal's own orbit -- owned by every tier 3
-  //               arrival who came up the ladder. HARMFUL NODE: prop-13
-  //               (the top-stage reserve tank, +30 kg of propellant on the
-  //               stage that has to circularise) bought before struct-10
-  //               (the lighter fairing) drops the ladder set from 127 848 m
-  //               periapsis to -365 703 m: no orbit at all. Every superset
-  //               of this gate that falls short carries prop-13, and
-  //               test/data.test.js pins that. It is a tree trap, not a
-  //               gate matter; it is called out in js/data/tree.js.
+  //               arrival who came up the ladder. This gate USED TO carry a
+  //               harmful-node exception: prop-13 (the top-stage reserve
+  //               tank, +30 kg of propellant on the stage that has to
+  //               circularise) bought before struct-10 (the lighter
+  //               fairing) dropped the ladder set from 127 848 m periapsis
+  //               to -365 703 m -- no orbit at all, in 36 supersets of this
+  //               gate. prop-13 now REQUIRES struct-10 (js/data/tree.js),
+  //               so that owned state cannot be reached and the exception
+  //               is gone: `node tools/gates.mjs` reports 0 falling
+  //               supersets here.
   //   core        prop-8, guide-1, struct-10: no vehicle without struct-10
   //               reaches 160 km (the best set without it tops out at
   //               146 175 m), so this gate is both the ladder's and the
@@ -400,14 +402,38 @@ export const missions = [
   //               its chain, prop-8 the third stage and its engine.
   //
   // The three target-shaped rungs (rendezvous, dock) are gated on the
-  // orbital sequence's own checks instead. Each gate below is read off
-  // js/core/resolver.js's actual checks, not the node blurbs:
+  // orbital sequence's own checks AND on the ascent hardware that leaves
+  // the sequence something to spend (THE RESERVE, below). Each gate is read
+  // off js/core/resolver.js's actual checks, not the node blurbs:
   //
   //   guide-1     via the guidance chain, everything below: an orbit needs
   //               a turn, and pitchProgram flies straight up unless
-  //               `guidance >= 1`. The ascent to the core's orbit needs the
-  //               core's own hardware too, and a core in orbit
-  //               (requiresObject) means the player bought it.
+  //               `guidance >= 1`.
+  //   prop-13     THE RESERVE. rdv-1, rdv-2, dock. The single node this
+  //               gate set was missing, and the reason a fully kitted
+  //               guidance branch still could not dock: `dvAvailable` is
+  //               Tsiolkovsky on what the TOP STAGE KEPT BACK at cutoff
+  //               (resolveLaunch, `reserveProp`), and the match step has to
+  //               buy `transferDeltaV(insertion, target)` out of it before
+  //               nav quality is consulted at all. It was tempting to read
+  //               "a core in orbit proves the ascent hardware" off
+  //               requiresObject and stop there -- ARCHITECTURE.md did --
+  //               but a core in orbit proves only that the vehicle REACHED
+  //               160 km, not that it arrived with propellant and on a
+  //               shape worth matching. Measured against the real resolver
+  //               over every prereq-valid node set and every loadout the
+  //               sliders can select: with prop-8/guide-1/struct-10 plus
+  //               the whole guidance chain but no prop-13, NO loadout
+  //               docks. The two failures are the eccentricity trap
+  //               (js/data/tree.js) from opposite ends -- either the ascent
+  //               stops short of the 160 km cutoff and burns to depletion
+  //               (reserve 0 m/s), or it clears the cutoff only on a
+  //               160 x 3 326 km ellipse that costs 1 562 m/s to match
+  //               against a 657 m/s reserve. With prop-13 the same gate
+  //               inserts at 162 x 177 km, matches for 10 m/s, and docks
+  //               with 455 m/s to spare. struct-10 is not listed
+  //               separately: prop-13 requires it, so the chain carries it
+  //               and a locked contract still reports each purchase once.
   //   prop-11     rdv-1, rdv-2, dock. resolveOrbitalSequence's match step
   //               stops for want of restarts when `restarts < 2`, before
   //               spending any delta-v at all; prop-10 alone sets restarts
@@ -417,9 +443,9 @@ export const missions = [
   //               (`!rcs && restartsLeft < 1`), never the match step's two,
   //               so prop-10 + prop-12 still stops at the first burn.
   //               prop-11's three restarts cover match (2) + approach (1)
-  //               exactly; the phasing pair costs a third restart only when
-  //               |phase error| > PHASE_TOLERANCE_DEG, which is a window-
-  //               slider matter, not a hardware one.
+  //               exactly, which leaves NOTHING for the phasing pair -- see
+  //               prop-12, which is what frees the restart that pays for
+  //               it.
   //   guide-3     rdv-1. closestApproach = NAV_APPROACH[nav] * (1 +
   //               |err|/30) / (rcs ? 2 : 1), and success is
   //               `closestApproach <= within`. NAV_APPROACH = [50000, 5000,
@@ -429,28 +455,42 @@ export const missions = [
   //               carried by the chain rather than listed twice.
   //   guide-4     rdv-2: within 500 m needs nav 2; nav 1 with rcs is
   //               2500 m, still five times too wide.
-  //   prop-12     rdv-1, rdv-2. THE MARGIN. nav 1 reaches exactly 5000 m
-  //               and nav 2 exactly 500 m only at ZERO phase error, and
-  //               zero is not a value the player can set: the launch
-  //               window slider (js/ui/screens.js) steps by 0.01 of an
-  //               orbit, 3.6 degrees, while a target's phase (phaseFor,
+  //   prop-12     rdv-1, rdv-2, dock. THE MARGIN, and on dock also THE
+  //               BAND. nav 1 reaches exactly 5000 m and nav 2 exactly
+  //               500 m only at ZERO phase error, and zero is not a value
+  //               the player can set: the launch window slider
+  //               (js/ui/screens.js) steps by 0.001 of an orbit, 0.36
+  //               degrees, while a target's phase (phaseFor,
   //               js/core/orbit.js) is a hash of its id -- the first core
-  //               sits at 0.778, so the nearest notch is 0.588 degrees off
-  //               and the radar closes to 5 098 m, never 5 000. Halving
-  //               the approach with rcs turns both rungs from a knife edge
-  //               into a band: at the slider's worst half-notch error of
-  //               1.8 degrees, nav 1 + rcs is 2 650 m and nav 2 + rcs is
-  //               265 m, both inside their rung with room for a sloppier
-  //               window (up to 30 degrees for rdv-1 and 30 for rdv-2).
+  //               sits at 0.7783654, so the nearest notch is 0.132 degrees
+  //               off and the radar closes to 5 022 m, never 5 000.
+  //               Halving the approach with rcs turns both rungs from a
+  //               knife edge into a band: at the slider's worst half-notch
+  //               error of 0.18 degrees, nav 1 + rcs is 2 515 m and nav 2 +
+  //               rcs is 252 m, both inside their rung with room for a
+  //               sloppier window (up to 30 degrees on either rung).
   //               test/data.test.js pins this against the resolver's own
   //               constants at that worst-case error.
+  //
+  //               On DOCK the buy is a different one, and it is not about
+  //               precision at all: outside PHASE_TOLERANCE_DEG the
+  //               sequence has to fly the phasing pair, and prop-11's
+  //               three restarts are already spent on match (2) and
+  //               approach (1). rcs waives the approach restart
+  //               (`!rcs && restartsLeft < 1`), which frees the one the
+  //               phasing burn needs. Without it the rung is flyable on a
+  //               three-notch window band and stops for want of restarts
+  //               everywhere else -- reporting a closest approach in the
+  //               hundreds of kilometres, which reads as a missed window
+  //               rather than an unaffordable burn. With it the whole
+  //               slider docks. rdv-1 and rdv-2 already gated on prop-12,
+  //               so dock was the one target rung that did not; measured,
+  //               not assumed.
   //   guide-5     dock: the dock step requires `closestApproach <=
-  //               DOCK_RANGE` (100 m). nav 2 + rcs is 250 m, so the star
-  //               tracker does not suffice even with thrusters; nav 3's
-  //               50 m does, with or without rcs (53 m at the slider's
-  //               worst half-notch, under 100 m up to a 30 degree phase
-  //               error). rcs is therefore a docking RELIABILITY buy
-  //               (DOCK_RELIABILITY_RCS) on this rung, not a gate.
+  //               DOCK_RANGE` (100 m). nav 2 + rcs is 252 m at the
+  //               slider's worst half-notch, so the star tracker does not
+  //               suffice even with thrusters; nav 3 does, at 25 m with
+  //               rcs and 50 m without.
   //   struct-module   dock: the module itself, carried up and left docked.
   //               It requires struct-9 (the docking adapter, which sets
   //               `docking` -- the dock step's `hasDockingAdapter` check),
@@ -497,7 +537,7 @@ export const missions = [
     profile: 'orbit',
     requirement: { rendezvous: { target: 'core', within: 5000 } },
     requiresObject: 'core',
-    requiresNode: ['prop-11', 'guide-3', 'prop-12'],
+    requiresNode: ['prop-11', 'guide-3', 'prop-12', 'prop-13'],
     payout: 26000,
     repGain: 6,
     repLoss: 4,
@@ -510,7 +550,7 @@ export const missions = [
     profile: 'orbit',
     requirement: { rendezvous: { target: 'core', within: 500 } },
     requiresObject: 'core',
-    requiresNode: ['prop-11', 'guide-4', 'prop-12'],
+    requiresNode: ['prop-11', 'guide-4', 'prop-12', 'prop-13'],
     payout: 36000,
     repGain: 7,
     repLoss: 5,
@@ -524,7 +564,7 @@ export const missions = [
     requirement: { dock: { target: 'core' } },
     deploys: { kind: 'module', name: 'Lab module' },
     requiresObject: 'core',
-    requiresNode: ['struct-module', 'prop-11', 'guide-5'],
+    requiresNode: ['struct-module', 'prop-11', 'guide-5', 'prop-12', 'prop-13'],
     payout: 55000,
     repGain: 10,
     repLoss: 6,

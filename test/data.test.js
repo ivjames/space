@@ -1168,14 +1168,20 @@ test('rendezvous and dock templates gate on the restarts and nav level the orbit
   // is the gate; closestApproach = NAV_APPROACH[nav] * (1 + |err|/30) /
   // (rcs ? 2 : 1) against `<= within`, so within 5000 needs nav 1
   // (guide-3), within 500 needs nav 2 (guide-4), and the dock step's
-  // DOCK_RANGE of 100 m needs nav 3 (guide-5; nav 2 + rcs is 250 m). The
-  // two rendezvous rungs also need rcs (prop-12): nav 1 and nav 2 meet
-  // their rung only at zero phase error, which the window slider cannot
-  // set (see the worst-case test below).
+  // DOCK_RANGE of 100 m needs nav 3 (guide-5; nav 2 + rcs is 252 m). All
+  // three rungs need rcs (prop-12): on the two rendezvous rungs nav 1 and
+  // nav 2 meet their rung only at zero phase error, which the window
+  // slider cannot set (see the worst-case test below); on dock it is the
+  // restart the phasing pair is paid out of, since prop-11's three are
+  // exactly match (2) + approach (1) and rcs waives the approach's. All
+  // three also need prop-13, the top-stage reserve the orbit-match burn
+  // comes out of, which carries struct-10 through its own chain -- see the
+  // flyability test below, which is the one that measures this rather than
+  // reading it off the resolver's constants.
   const expect = {
-    'rdv-1': ['prop-11', 'guide-3', 'prop-12'],
-    'rdv-2': ['prop-11', 'guide-4', 'prop-12'],
-    dock: ['prop-11', 'guide-5', 'struct-module', 'struct-9'],
+    'rdv-1': ['prop-11', 'guide-3', 'prop-12', 'prop-13', 'struct-10'],
+    'rdv-2': ['prop-11', 'guide-4', 'prop-12', 'prop-13', 'struct-10'],
+    dock: ['prop-11', 'guide-5', 'prop-12', 'prop-13', 'struct-10', 'struct-module', 'struct-9'],
   };
   for (const [id, needed] of Object.entries(expect)) {
     const m = missions.find((mm) => mm.id === id);
@@ -1187,16 +1193,17 @@ test('rendezvous and dock templates gate on the restarts and nav level the orbit
 });
 
 // A gate is only honest if the listed hardware can actually meet the rung
-// with the controls the player has. The launch window slider steps by 0.01
-// of an orbit (js/ui/screens.js, `step="0.01"`), so the phase error can be
-// as large as half a step, 1.8 degrees, and is never exactly zero (a
-// target's phase is phaseFor(id), a hash — the first core sits at 0.778).
+// with the controls the player has. The launch window slider steps by 0.001
+// of an orbit (js/ui/screens.js, `step="0.001"`), so the phase error can be
+// as large as half a step, 0.18 degrees, and is never exactly zero (a
+// target's phase is phaseFor(id), a hash — the first core sits at
+// 0.7783654).
 // resolveOrbitalSequence closes to NAV_APPROACH[nav] * (1 + |err|/30),
 // halved by rcs; at zero error nav 1 is exactly rdv-1's 5000 m and nav 2
 // exactly rdv-2's 500 m, so without rcs both rungs were drawable with
 // hardware that could never quite make them (Codex review, PR #5).
 test('every rendezvous/dock gate still meets its rung at the window slider\'s worst half-step phase error', () => {
-  const WINDOW_STEP = 0.01;
+  const WINDOW_STEP = 0.001;
   const worstErrDeg = (WINDOW_STEP / 2) * 360;
   for (const m of tier3Missions) {
     const rendezvous = m.requirement.rendezvous ?? m.requirement.dock;
@@ -1212,6 +1219,85 @@ test('every rendezvous/dock gate still meets its rung at the window slider\'s wo
       `${m.id}: with exactly its gated hardware (nav ${nav}${rcs ? ' + rcs' : ''}) the approach at a ${worstErrDeg} degree phase error is ${closest} m, over its ${within} m`,
     );
     assert.ok((vehicle.restarts ?? 0) >= 2, `${m.id}: gated hardware must carry the match burn's two restarts`);
+  }
+});
+
+// The test the gates were missing, and the reason `dock` shipped ungated on
+// its reserve tank: the check above reads the resolver's CONSTANTS (nav,
+// restarts, DOCK_RANGE) and never flies anything, so it cannot see that a
+// vehicle satisfying every one of them still has no propellant left to
+// match orbits with. `closestApproach` is only consulted after the match
+// step has been bought out of `dvAvailable` — Tsiolkovsky on what the top
+// stage kept back at cutoff — so a gate that lists perfect optics and no
+// tank gates a rung nobody can fly.
+//
+// This flies it. For each target-shaped rung, build the vehicle from
+// EXACTLY its `requiresNode` closure and sweep every loadout the sliders
+// can select (fuelFraction and turn at their own steps, window at the notch
+// nearest the target's phase, which is the one a player reads off the
+// hint). The rung must be reachable. Then drop prop-13 alone and it must
+// not be: that is what pins the tank as load-bearing rather than incidental
+// (measured: without it the ascent either stops short of the 160 km cutoff
+// and burns to depletion, or clears it only on a 160 x 3 326 km ellipse
+// costing 1 562 m/s to match against a 657 m/s reserve).
+test('every target-shaped tier 3 rung is actually flyable with exactly its gated hardware, and stops being so without prop-13', () => {
+  const coreMission = missions.find((m) => m.id === 'core');
+  const target = {
+    id: 'core-1',
+    kind: 'core',
+    name: 'Station core',
+    periapsis: coreMission.requirement.orbit.periapsis,
+    apoapsis: coreMission.requirement.orbit.periapsis,
+    phase: phaseFor('core-1'),
+    dockedTo: null,
+  };
+  // The sliders: js/ui/screens.js. window step 0.001, fuelFraction 0.05
+  // from 0.5, turn 0.05 (TURN_STEPS). The player picks the window notch
+  // nearest the phase the hint quotes.
+  const WINDOW = Math.round(target.phase * 1000) / 1000;
+  const FUEL_STEPS = Array.from({ length: 11 }, (_, i) => 0.5 + i * 0.05);
+
+  // A dock attempt that loses its reliability roll is not a hardware
+  // failure, so "reached the rung" means the sequence got close enough to
+  // try, not that this seed's roll came up.
+  function reaches(m, vehicle) {
+    for (const fuelFraction of FUEL_STEPS) {
+      for (const turn of TURN_STEPS) {
+        const outcome = resolveLaunch(
+          forceReliability(vehicle), m, { fuelFraction, turn, window: WINDOW }, makeRng(SEED), { target },
+        );
+        if (m.requirement.dock !== undefined) {
+          if (outcome.docked === true || outcome.orbital?.stoppedAt === 'dock-failure') return true;
+        } else if (typeof outcome.closestApproach === 'number'
+          && outcome.closestApproach <= m.requirement.rendezvous.within) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  const targetRungs = tier3Missions.filter(
+    (m) => m.requirement.rendezvous !== undefined || m.requirement.dock !== undefined,
+  );
+  assert.equal(targetRungs.length, 3, 'expected rdv-1, rdv-2 and dock');
+
+  for (const m of targetRungs) {
+    const gated = [...prerequisiteClosure(requiredNodeIds(m))];
+    assert.ok(
+      gated.includes('prop-13'),
+      `${m.id}: the orbit-match burn is paid out of the top-stage reserve, so prop-13 belongs in its gate`,
+    );
+    assert.ok(
+      reaches(m, buildVehicle(baseVehicle, collectEffects(fullTree, { owned: gated }))),
+      `${m.id}: no selectable loadout reaches the rung with exactly its gated hardware [${gated.join(', ')}]`,
+    );
+
+    const withoutTank = gated.filter((id) => id !== 'prop-13');
+    assert.ok(
+      !reaches(m, buildVehicle(baseVehicle, collectEffects(fullTree, { owned: withoutTank }))),
+      `${m.id}: the rung is reachable without prop-13, so gating on the reserve tank is no longer justified — re-derive the gate`,
+    );
   }
 });
 
@@ -1597,14 +1683,17 @@ test('a greedy player reaches the tier 3 goal (dock) in at most 80 tier 3 launch
 // with the new answer in the message: run `node tools/gates.mjs` and copy
 // it across. It also pins the documented exceptions: a superset of a gate
 // that still falls short must carry a node the mission's note names as
-// harmful (prop-7 on the tier 2 orbit rungs, prop-13 on satellite), and
-// nothing else may.
+// harmful (prop-7 on the tier 2 orbit rungs), and nothing else may.
+// prop-13 used to be on that list for satellite; it now requires struct-10
+// (js/data/tree.js), which makes the harmful purchase order unreachable
+// rather than merely documented, so it is deliberately NOT listed here —
+// reintroducing the trap fails this test instead of being waved through.
 // =========================================================================
 
 test('every altitude/downrange/orbit mission gates on the generators of its cheapest reaching set (tools/gates.mjs), and every exception is a documented harmful node', async () => {
   const { deriveGates } = await import('../tools/gates.mjs');
   const { gates } = deriveGates(21);
-  const HARMFUL = new Set(['prop-7', 'prop-13']);
+  const HARMFUL = new Set(['prop-7']);
   let checked = 0;
   for (const m of missions) {
     const g = gates.get(m.id);

@@ -750,17 +750,27 @@ export const nodes = [
     name: 'Top-stage propellant reserve',
     desc: 'A bigger propellant reserve held back on the top stage for the rendezvous burns.',
     cost: { funds: 32500 },
-    requires: ['prop-10'],
-    // TRAP, documented rather than fixed here: bought before struct-10 (the
-    // lighter fairing), the extra 35 kg on the stage that has to circularise
-    // drops the tier 2 goal set from 127 848 m periapsis to -365 703 m -- no
-    // orbit at all, and with struct-7 added still only 83 669 m. `node
-    // tools/gates.mjs` lists every such set under satellite's "falls short"
-    // and test/data.test.js pins that prop-13 is the only tier 3 node that
-    // does this. The contract gates cannot express "not this node", so the
-    // ladder tab will say satellite is available to a player who owns this
-    // and cannot fly it. Rebalancing prop-13 (or making it require
-    // struct-10) is the fix; it is out of the gating change's scope.
+    // struct-10 is a PREREQUISITE, not a sibling, and that is the whole
+    // point of it being here: bought before the lighter fairing, the extra
+    // 35 kg on the stage that has to circularise dropped the tier 2 goal set
+    // from 127 848 m periapsis to -365 703 m -- no orbit at all, and with
+    // struct-7 added still only 83 669 m. That made prop-13 a TRAP: the
+    // contract gates cannot express "not this node", so the ladder tab told
+    // a player who owned it that satellite was available and the vehicle
+    // could not fly it (36 of satellite's supersets fell short, every one of
+    // them carrying prop-13 without struct-10 -- `node tools/gates.mjs`
+    // listed them). Requiring the fairing makes that set of owned states
+    // unreachable rather than merely documented, and the fairing's -4 kg on
+    // the same stage very nearly cancels this node's +5 kg of dry mass, so
+    // what the pair adds is the 30 kg of propellant. The trap is impossible
+    // to buy into; test/data.test.js's harmful-node list no longer names
+    // prop-13, so a regression that reintroduces it fails there.
+    //
+    // The tank is also NOT optional above this line: it is what the three
+    // target-shaped rungs are gated on (js/data/missions.js, THE RESERVE),
+    // because the orbit-match burn has to come out of what the top stage
+    // keeps back at cutoff.
+    requires: ['prop-10', 'struct-10'],
     effects: [
       { stat: 'stages.2.propMass', op: 'add', value: 30 },
       { stat: 'stages.2.dryMass', op: 'add', value: 5 },
