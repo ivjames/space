@@ -1,11 +1,17 @@
 // Versioned save/load, migrations, storage adapter. Pure. See
 // ARCHITECTURE.md.
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 // migrations[v] transforms a save at version v into version v + 1's shape
 // (the version field itself is stamped by deserialize, not by the
-// migration function). migrations[0] is the "pre-schema" case: a save from
+// migration function). Each one is FROZEN once the next is written: its
+// job is to produce the shape of version v + 1 as that version actually
+// was, and teaching an old migration about a later phase's fields would
+// make the chain skip a step it is meant to walk — deserialize runs them
+// in order, so every field arrives at the migration that introduced it.
+//
+// migrations[0] is the "pre-schema" case: a save from
 // before versioning existed, treated as version 0 and back-filled with
 // every field newGame() would have set (at v1's shape — migrations[1] then
 // carries it the rest of the way to v2, same as any real v1 save).
@@ -112,6 +118,72 @@ export const migrations = {
     history: (s.history ?? []).map((entry) => ({
       closestApproach: null,
       docked: false,
+      ...entry,
+    })),
+    objects: s.objects ?? [],
+  }),
+  // migrations[3] is phase 3's schema bump (ARCHITECTURE.md, "state.js,
+  // save.js — schema v4"): `best` grows `lunarStep`, the deepest rung of
+  // the lunar ladder any flight has ever completed, and history entries
+  // gain the same field. Nothing else moves — a lunar flight deploys
+  // nothing, so `objects` is untouched here, and the phase's other new
+  // numbers (the delta-v ladder, the capability stats) are all derived at
+  // resolve time from the tree rather than persisted.
+  //
+  // -1 is the back-fill value for both, because -1 is what newGame() now
+  // starts a fresh game at and what the resolver reports for a flight that
+  // completed no step of the ladder. A pre-phase-3 save cannot have flown
+  // to the moon — there were no lunar missions to fly — so "nothing
+  // completed" is the true statement about every one of its rows, and -1
+  // is how the rest of the codebase spells it. 0 would be a false
+  // statement rather than a neutral one: 0 is `tli`, the first real rung,
+  // so back-filling 0 would credit every phase 2 save with a translunar
+  // injection it never made and hand a `{ moon: { profile: 'flyby' } }`
+  // goal to a player who has never left orbit. See state.js's newGame doc
+  // block for why -1 rather than null — the field carries the resolver's
+  // own step index, and a null there would have to be special-cased by
+  // every reader.
+  //
+  // Written as a whole-object literal, like the three above: a migration
+  // that spread `s` would silently carry forward any junk an older save
+  // had picked up, and — worse — would stop being a written-down statement
+  // of what v4 IS. The `?? default` on every field is the other half of
+  // that: this function has to produce a complete v4 save out of anything
+  // that claims to be a v3 one, including one an older bug left a field
+  // short.
+  3: (s) => ({
+    version: 4,
+    seed: s.seed ?? 0,
+    draws: s.draws ?? 0,
+    funds: s.funds ?? 0,
+    reputation: s.reputation ?? 0,
+    resources: {
+      water: 0,
+      fuel: 0,
+      oxidizer: 0,
+      metals: 0,
+      ...(s.resources ?? {}),
+    },
+    owned: s.owned ?? [],
+    tier: s.tier ?? 1,
+    launches: s.launches ?? { 1: 0 },
+    best: {
+      maxAltitude: s.best?.maxAltitude ?? 0,
+      maxDownrange: s.best?.maxDownrange ?? 0,
+      bestPeriapsis: s.best?.bestPeriapsis ?? null,
+      bestClosestApproach: s.best?.bestClosestApproach ?? null,
+      docked: s.best?.docked ?? false,
+      lunarStep: s.best?.lunarStep ?? -1,
+      wins: s.best?.wins ?? {},
+    },
+    contracts: s.contracts ?? [],
+    // Defaults first, `...entry` last — the back-fill idiom the two
+    // migrations above use, and the order is the whole point: an entry
+    // that already carries `lunarStep` (which a v3 save's cannot, but a
+    // hand-repaired or partly-migrated one might) keeps its own value
+    // rather than having it overwritten by the default.
+    history: (s.history ?? []).map((entry) => ({
+      lunarStep: -1,
       ...entry,
     })),
     objects: s.objects ?? [],

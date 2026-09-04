@@ -19,9 +19,9 @@ import { missions, tierGoals } from '../js/data/missions.js';
 
 const vehicleModulePath = fileURLToPath(new URL('../js/core/vehicle.js', import.meta.url));
 
-test('newGame returns the documented schema at version 3', () => {
+test('newGame returns the documented schema at version 4', () => {
   const state = newGame(42);
-  assert.equal(state.version, 3);
+  assert.equal(state.version, 4);
   assert.equal(state.seed, 42);
   assert.equal(state.draws, 0);
   assert.equal(state.funds, 0);
@@ -36,6 +36,7 @@ test('newGame returns the documented schema at version 3', () => {
     bestPeriapsis: null,
     bestClosestApproach: null,
     docked: false,
+    lunarStep: -1,
     wins: {},
   });
   assert.deepEqual(state.contracts, []);
@@ -387,6 +388,152 @@ test('tierGoalMet handles a { rendezvous } requirement: true once best.bestClose
 
   const close = { ...newGame(1), tier: 3, best: { ...newGame(1).best, bestClosestApproach: 12 } };
   assert.equal(tierGoalMet(close, goals), true);
+});
+
+// =========================================================================
+// Phase 3 (ARCHITECTURE.md, "Phase 3 -- tier 4, the Moon"):
+// best.lunarStep, the history entry's lunarStep, and tierGoalMet's { moon }
+// shape. Every outcome below is hand-written rather than resolver-produced,
+// as the rest of this file is: state.js's contract is with the SHAPE of an
+// outcome, and a fixture that has to be flown is a test of the resolver.
+// =========================================================================
+
+test('recordLaunch raises best.lunarStep from outcome.lunar.reached', () => {
+  const state = newGame(1);
+  assert.equal(state.best.lunarStep, -1, 'a fresh game has completed no step');
+
+  // A lunar flight that completed nothing reports reached: -1, which is
+  // the floor already -- max(-1, -1) leaves it exactly where it was.
+  const nothing = recordLaunch(state, { id: 'moon-flyby' }, { success: false, maxAltitude: 1, lunar: { reached: -1 }, readout: 'x' });
+  assert.equal(nothing.best.lunarStep, -1);
+
+  // 0 is the index of 'tli' in the ladder -- the first rung, not "nothing".
+  const flyby = recordLaunch(nothing, { id: 'moon-flyby' }, { success: true, maxAltitude: 1, lunar: { reached: 0 }, readout: 'x' });
+  assert.equal(flyby.best.lunarStep, 0);
+
+  const orbit = recordLaunch(flyby, { id: 'moon-orbit' }, { success: true, maxAltitude: 1, lunar: { reached: 1 }, readout: 'x' });
+  assert.equal(orbit.best.lunarStep, 1);
+
+  const landed = recordLaunch(orbit, { id: 'moon-land' }, { success: true, maxAltitude: 1, lunar: { reached: 2 }, readout: 'x' });
+  assert.equal(landed.best.lunarStep, 2);
+
+  // A shallower flight afterwards must not lower the running best, and
+  // neither may one that got nowhere at all.
+  const shortfall = recordLaunch(landed, { id: 'moon-land' }, { success: false, maxAltitude: 1, lunar: { reached: 0 }, readout: 'x' });
+  assert.equal(shortfall.best.lunarStep, 2);
+  const scrubbed = recordLaunch(landed, { id: 'moon-land' }, { success: false, maxAltitude: 1, lunar: { reached: -1 }, readout: 'x' });
+  assert.equal(scrubbed.best.lunarStep, 2);
+  assert.equal(landed.best.lunarStep, 2); // original untouched
+});
+
+test('recordLaunch leaves best.lunarStep untouched for an outcome with no lunar block (pre-phase-3 outcome)', () => {
+  const state = { ...newGame(1), best: { ...newGame(1).best, lunarStep: 3 } };
+  // The shape every tier 1-3 outcome has: no `lunar` at all. maxOrKeep's
+  // non-finite guard is what has to hold here -- an absent field must not
+  // be coerced to 0 and clobber a real result.
+  const next = recordLaunch(state, { id: 'sound-1' }, { success: true, maxAltitude: 9000, readout: 'x' });
+  assert.equal(next.best.lunarStep, 3);
+
+  // A `lunar` block that somehow carries no `reached` is the same case.
+  const empty = recordLaunch(state, { id: 'moon-flyby' }, { success: false, maxAltitude: 1, lunar: {}, readout: 'x' });
+  assert.equal(empty.best.lunarStep, 3);
+  assert.equal(state.best.lunarStep, 3); // original untouched
+
+  // And on a state still at the -1 floor, a pre-phase-3 outcome must leave
+  // it at -1 rather than nudging it up to 0.
+  const fresh = recordLaunch(newGame(1), { id: 'sound-1' }, { success: true, maxAltitude: 9000, readout: 'x' });
+  assert.equal(fresh.best.lunarStep, -1);
+});
+
+test('recordLaunch history entries carry lunarStep (-1 when the outcome has no lunar block)', () => {
+  const state = newGame(1);
+  const withField = recordLaunch(state, { id: 'moon-land' }, { success: true, maxAltitude: 1, lunar: { reached: 2 }, readout: 'x' });
+  assert.equal(withField.history.at(-1).lunarStep, 2);
+
+  // -1, not null and not 0: the same value save.js's migrations[3]
+  // back-fills into an older save's rows, so a history list spells "no
+  // lunar step" one way. 0 would say this sounding rocket reached TLI.
+  const withoutField = recordLaunch(state, { id: 'sound-1' }, { success: true, maxAltitude: 1, readout: 'x' });
+  assert.equal(withoutField.history.at(-1).lunarStep, -1);
+  assert.deepEqual(state.history, []); // original untouched
+});
+
+test('tierGoalMet handles a { moon } requirement: best.lunarStep against the profile\'s step', () => {
+  // The real tier 4 goal's shape (js/data/missions.js tierGoals[4]), as an
+  // ad-hoc map so this test pins state.js's behaviour and not the data's.
+  const goals = { 4: { requirement: { moon: { profile: 'return' } } } };
+  const fresh = { ...newGame(1), tier: 4 };
+  assert.equal(fresh.best.lunarStep, -1);
+  assert.equal(tierGoalMet(fresh, goals), false);
+
+  // 'return' is 'tei', the last of the five rungs -- index 4. Everything
+  // short of it leaves the goal unmet, including a landing.
+  const landed = { ...newGame(1), tier: 4, best: { ...newGame(1).best, lunarStep: 2 } };
+  assert.equal(tierGoalMet(landed, goals), false);
+  const ascended = { ...newGame(1), tier: 4, best: { ...newGame(1).best, lunarStep: 3 } };
+  assert.equal(tierGoalMet(ascended, goals), false);
+  const returned = { ...newGame(1), tier: 4, best: { ...newGame(1).best, lunarStep: 4 } };
+  assert.equal(tierGoalMet(returned, goals), true);
+});
+
+test('tierGoalMet maps each lunar profile onto its own rung of the step order', () => {
+  // flyby -> tli (0), orbit -> loi (1), land -> descent (2), return -> tei
+  // (4). 'ascent' (3) is a step of the ladder that no profile stops at:
+  // a flight that has taken off from the surface is on its way home.
+  const at = (lunarStep) => ({ ...newGame(1), tier: 4, best: { ...newGame(1).best, lunarStep } });
+  const met = (profile, lunarStep) =>
+    tierGoalMet(at(lunarStep), { 4: { requirement: { moon: { profile } } } });
+
+  assert.equal(met('flyby', -1), false);
+  assert.equal(met('flyby', 0), true);
+  assert.equal(met('orbit', 0), false);
+  assert.equal(met('orbit', 1), true);
+  assert.equal(met('land', 1), false);
+  assert.equal(met('land', 2), true);
+  assert.equal(met('return', 3), false);
+  assert.equal(met('return', 4), true);
+});
+
+test('tierGoalMet does not meet a { moon: { profile: flyby } } goal on a fresh game', () => {
+  // The sharpest case in the whole arm, and the reason best.lunarStep's
+  // floor is -1 rather than 0: 'tli' is index 0, so a floor of 0 would
+  // have reported the easiest lunar goal as already met before anything
+  // had ever been launched. -1 is the resolver's own "nothing completed"
+  // sentinel, so the comparison is honest at the bottom of the ladder as
+  // well as the top.
+  const goals = { 4: { requirement: { moon: { profile: 'flyby' } } } };
+  const fresh = { ...newGame(1), tier: 4 };
+  assert.equal(tierGoalMet(fresh, goals), false);
+
+  // Nor after a launch that went nowhere near the moon...
+  const sounding = recordLaunch(fresh, { id: 'sound-1' }, { success: true, maxAltitude: 90000, readout: 'x' });
+  assert.equal(tierGoalMet(sounding, goals), false);
+
+  // ...nor after a lunar attempt that completed no step of the ladder.
+  const scrubbed = recordLaunch(fresh, { id: 'moon-flyby' }, { success: false, maxAltitude: 1, lunar: { reached: -1 }, readout: 'x' });
+  assert.equal(tierGoalMet(scrubbed, goals), false);
+
+  // Only an actual translunar injection meets it.
+  const injected = recordLaunch(fresh, { id: 'moon-flyby' }, { success: true, maxAltitude: 1, lunar: { reached: 0 }, readout: 'x' });
+  assert.equal(tierGoalMet(injected, goals), true);
+});
+
+test('tierGoalMet reports a { moon } requirement with an unknown profile as unmet, not met', () => {
+  // indexOf on an unmapped profile is -1, and `lunarStep >= -1` would be
+  // true for every state ever -- an unrecognised requirement has to read as
+  // "never met", the way the fall-through at the end of tierGoalMet does.
+  const goals = { 4: { requirement: { moon: { profile: 'survey' } } } };
+  const deep = { ...newGame(1), tier: 4, best: { ...newGame(1).best, lunarStep: 4 } };
+  assert.equal(tierGoalMet(deep, goals), false);
+});
+
+test('tierGoalMet still answers the tier 1-3 shapes with a lunarStep in state', () => {
+  // The phase 3 arm is an addition, not a reordering: a state carrying a
+  // deep lunarStep must not satisfy an altitude/orbit/rendezvous goal it
+  // has not actually met.
+  const state = { ...newGame(1), best: { ...newGame(1).best, lunarStep: 4 } };
+  assert.equal(tierGoalMet(state, { 1: { requirement: { altitude: 100000 } } }), false);
+  assert.equal(tierGoalMet({ ...state, tier: 3 }, { 3: { requirement: { rendezvous: { target: 'core', within: 5000 } } } }), false);
 });
 
 // deriveVehicle depends on js/core/vehicle.js, owned by another agent and
