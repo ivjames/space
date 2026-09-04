@@ -31,6 +31,24 @@
 //     and the landed dot when the `landing` event says so, which is the frame
 //     the ticker prints it on.
 //
+// THE FLOWN PATH, in the cislunar frame. A closed ellipse drawn the instant the
+// TLI lights is a route diagram: the whole way to the moon is on screen before
+// the vehicle has gone anywhere, and the only thing that moves after that is a
+// 4 px ring sliding along a line that was already there. So the vehicle's orbit
+// is drawn TWICE — once faint and dashed for the whole conic, which is where it
+// is going and is the same information the single curve used to carry, and once
+// bright over the arc it has actually flown since the burn that put it on that
+// conic, fading out behind it. The bright arc is the only part that grows, and
+// growing is what "approaching" looks like. It reads the drawn orbit and the
+// playback clock and nothing else — strictly less than the closed curve it
+// replaces, so the contract above is unaffected — and it is exactly the trail
+// js/ui/ascent.js draws behind the rocket, on a curve instead of a line.
+//
+// It is a trail rather than a second orbit, so it stops when the vehicle does:
+// once a capture has put the vehicle AT the moon there is no planet-centred
+// motion left to trace, and the arc holds at the arrival point until a
+// departure burn starts a new one.
+//
 // It never reads `orbital.closestApproach`, `orbital.docked`,
 // `orbital.stoppedAt`, `orbital.dvUsed`, `lunar.reached`, `lunar.landed`,
 // `lunar.stoppedAt`, `lunar.shortBy`, `lunar.dvUsed`, `outcome.success`,
@@ -167,6 +185,25 @@ const FIT_MARGIN_PX = 34;
 const FIT_SLACK = 1.06;
 /** Segments used to trace one orbit. */
 const ORBIT_STEPS = 128;
+/**
+ * Segments used to trace the flown arc. Fewer than a whole orbit's because the
+ * arc is at most one revolution (a coast to the next periapsis) and usually
+ * half of one (a Hohmann leg), and because each segment is its own stroke —
+ * the alpha ramps along it, which one path cannot do.
+ */
+const TRAIL_STEPS = 48;
+/**
+ * Alpha at the oldest end of the flown arc, and at the newest. The floor sits
+ * ABOVE PROJECTION_ALPHA on purpose: the faintest part of what has been flown
+ * still has to read as brighter than what has not.
+ */
+const TRAIL_MIN_ALPHA = 0.38;
+const TRAIL_MAX_ALPHA = 1;
+/** Alpha the unflown remainder of the vehicle's own conic is drawn at. */
+const PROJECTION_ALPHA = 0.2;
+/** Nose-to-tail length of the craft glyph, px, and its half-width. */
+const CRAFT_LEN = 9;
+const CRAFT_HALF_W = 2.8;
 /** How long a burn flash lasts, in real seconds. */
 const FLASH_S = 1.2;
 /** Radius a burn flash expands to, px. */
@@ -207,6 +244,18 @@ function formatRange(m) {
   if (m < 1000) return `${Math.round(m)} m`;
   if (m < 10000) return `${(m / 1000).toFixed(1)} km`;
   return `${Math.round(m / 1000)} km`;
+}
+
+/**
+ * "842 km" / "384 400 km" — cislunar distances, which are five and six digits
+ * of kilometres where `formatRange` above is quoting metres and tens of
+ * kilometres. Grouped in threes so the closing range is readable as it counts
+ * down; never metres, because a metre is a hundred-thousandth of a pixel here.
+ */
+export function formatFarRange(m) {
+  if (!Number.isFinite(m)) return '—';
+  const km = Math.round(m / 1000);
+  return `${String(km).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')} km`;
 }
 
 /**
@@ -412,6 +461,13 @@ export function playOrbital(canvas, outcome, opts = {}) {
   let atMoon = null;
   let landingAborted = false;
   let returning = false;
+  // The flown arc's two ends, in SIM time. It starts at the burn that put the
+  // vehicle on the conic it is drawn on — t0 for the parking orbit the ascent
+  // left it in — and runs to now, except while the vehicle is at the moon,
+  // where there is no planet-centred motion left to trace and the arc holds at
+  // the instant it arrived.
+  let trailFrom = t0;
+  let trailTo = null;
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -543,6 +599,88 @@ export function playOrbital(canvas, outcome, opts = {}) {
   }
 
   /**
+   * The arc of `orbit` actually flown between two times, brightest at the
+   * near end. Walked in TIME rather than in true anomaly (which is what
+   * drawOrbit does) because the two ends of it are two instants — the burn
+   * that put the vehicle on this conic, and now — and because stepping a
+   * transfer ellipse evenly in time puts most of the samples where the vehicle
+   * spends most of its coast, which is out at the far end where the picture
+   * needs them.
+   *
+   * Both ends come from the drawn orbit and the playback clock; nothing here
+   * knows how the sequence ends (see the header).
+   */
+  function drawTrail(orbit, fromT, toT, stroke) {
+    if (!(orbit.a > 0) || !(toT > fromT)) return;
+    // At most one revolution: a coast to the next periapsis is one, a Hohmann
+    // leg is half. The clamp is for a degenerate orbit, not a live path.
+    const span = Math.min(toT - fromT, orbit.period > 0 ? orbit.period : toT - fromT);
+    const start = toT - span;
+    ctx.save();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    let prev = screenOf(stateAt(orbit, start));
+    for (let i = 1; i <= TRAIL_STEPS; i += 1) {
+      const u = i / TRAIL_STEPS;
+      const pt = screenOf(stateAt(orbit, start + span * u));
+      ctx.globalAlpha = TRAIL_MIN_ALPHA + (TRAIL_MAX_ALPHA - TRAIL_MIN_ALPHA) * u;
+      ctx.beginPath();
+      ctx.moveTo(prev.x, prev.y);
+      ctx.lineTo(pt.x, pt.y);
+      ctx.stroke();
+      prev = pt;
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Which way the vehicle is pointing, in SCREEN radians: the direction it
+   * moved over the last sliver of its own period. Screen rather than world
+   * because the y axis is flipped on the way out, and a glyph rotated by a
+   * world angle would fly backwards down the left half of every orbit.
+   */
+  function headingAt(orbit, t) {
+    const dt = orbit.period > 0 ? orbit.period / 2048 : 1;
+    const a = screenOf(stateAt(orbit, t - dt));
+    const b = screenOf(stateAt(orbit, t));
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    if (!dx && !dy) return 0;
+    return Math.atan2(dy, dx);
+  }
+
+  /**
+   * The vehicle as a craft rather than as a ring: a hull pointed along its
+   * heading. Nine pixels of it, which is as much as a frame fitted to lunar
+   * distance can spare and enough to say which way it is going — and which way
+   * it is going is the whole of what a transfer looks like from out here. The
+   * ring marker stays the tier 3 frame's, where two craft on near-identical
+   * orbits have no heading worth telling apart.
+   */
+  function drawCraft(pt, angle, color, label) {
+    const L = CRAFT_LEN;
+    const W = CRAFT_HALF_W;
+    ctx.save();
+    ctx.translate(pt.x, pt.y);
+    ctx.rotate(angle);
+    ctx.fillStyle = color;
+    // A dart: nose at +x, swept back to two tips, with the tail notched in
+    // between. One filled path — an outlined engine bell drawn over the top of
+    // it turns to mush at nine pixels.
+    ctx.beginPath();
+    ctx.moveTo(L * 0.5, 0);
+    ctx.lineTo(-L * 0.5, W);
+    ctx.lineTo(-L * 0.28, 0);
+    ctx.lineTo(-L * 0.5, -W);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    // Clear of the nose, which reaches half the hull's length ahead of `pt`.
+    if (label) drawLabel(pt, color, label, L * 0.5 + 8);
+  }
+
+  /**
    * A label beside a marker. The craft travel right round the view, so a label
    * pinned to one side runs off the edge for half of every orbit: it flips to
    * whichever side it fits on. `gap` clears whatever it is labelling — 11 px
@@ -636,8 +774,14 @@ export function playOrbital(canvas, outcome, opts = {}) {
     }
   }
 
-  /** Clock, the exaggeration note, and whatever has already happened. */
-  function drawChrome() {
+  /**
+   * Clock, the exaggeration note, and whatever has already happened.
+   *
+   * `toMoon`, when the cislunar frame passes one, is the gap between the two
+   * markers on screen right now — a measurement off the picture, like the
+   * separation line in the other frame, not a number read out of the outcome.
+   */
+  function drawChrome(toMoon = null) {
     ctx.save();
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
@@ -647,6 +791,12 @@ export function playOrbital(canvas, outcome, opts = {}) {
     ctx.fillStyle = colors.accent;
     ctx.font = 'bold 10px "Courier New", monospace';
     ctx.fillText(cislunar ? 'CISLUNAR PHASE' : 'ORBITAL PHASE', 6, 20);
+
+    if (Number.isFinite(toMoon)) {
+      ctx.fillStyle = colors.muted;
+      ctx.font = '10px "Courier New", monospace';
+      ctx.fillText(`TO MOON ${formatFarRange(toMoon)}`, 6, 34);
+    }
 
     ctx.fillStyle = colors.muted;
     ctx.font = '9px "Courier New", monospace';
@@ -732,12 +882,18 @@ export function playOrbital(canvas, outcome, opts = {}) {
     const mpt = screenOf(mp);
     // At the moon the vehicle IS the moon as far as this scale can tell: a
     // 100 km lunar orbit is a third of a pixel across here.
-    const vpt = atMoon ? mpt : screenOf(stateAt(vehicle, simT));
+    const vp = stateAt(vehicle, simT);
+    const vpt = atMoon ? mpt : screenOf(vp);
+
+    const track = failed ? colors.fail : colors.accent;
 
     drawSpace();
     drawPlanet();
     drawOrbit(moon, colors.muted, [4, 4], 0.5);
-    drawOrbit(vehicle, failed ? colors.fail : colors.accent, [], 0.95);
+    // Where it is going, and then — over the top of it — how much of that it
+    // has actually flown. Two curves rather than one: see the header.
+    drawOrbit(vehicle, track, [3, 5], PROJECTION_ALPHA);
+    drawTrail(vehicle, trailFrom, trailTo ?? simT, track);
     const rm = drawMoon(mpt);
     // Which side of the moon to put the vehicle on: the one facing home, which
     // is the only direction this frame has an opinion about. Its label goes a
@@ -769,11 +925,15 @@ export function playOrbital(canvas, outcome, opts = {}) {
       drawLabel({ x: mpt.x, y: mpt.y - rm - 11 }, color, 'VEHICLE', rm + 7, moonSide);
       drawFlashes(mpt);
     } else {
-      drawMarker(vpt, failed ? colors.fail : colors.accent, 'VEHICLE', false);
+      drawCraft(vpt, headingAt(vehicle, simT), track, 'VEHICLE');
       drawFlashes(vpt);
     }
 
-    drawChrome();
+    // How far there is still to go, measured off the two positions on screen
+    // exactly as the tier 3 frame's separation line is. It is the one number
+    // that says "approaching" rather than "en route", and it says nothing
+    // about whether the vehicle gets there.
+    drawChrome(atMoon ? null : Math.hypot(mp.x - vp.x, mp.y - vp.y));
   }
 
   function frame() {
@@ -817,6 +977,8 @@ export function playOrbital(canvas, outcome, opts = {}) {
       const p = stateAt(vehicle, burn.t);
       vehicle = makeOrbit(el.periapsis, el.apoapsis, Math.atan2(p.y, p.x), 0, burn.t);
       atMoon = null;
+      trailFrom = burn.t;
+      trailTo = null;
       return;
     }
     if (burn.kind === 'tei' && el) {
@@ -826,12 +988,19 @@ export function playOrbital(canvas, outcome, opts = {}) {
       );
       atMoon = null;
       returning = true;
+      trailFrom = burn.t;
+      trailTo = null;
       return;
     }
     // The capture puts it in lunar orbit and the ascent puts it back; whether
     // the descent between them ended on the surface is the landing event's to
     // say, not the burn's (the burn can succeed and the touchdown still fail).
-    if (burn.kind === 'loi' || burn.kind === 'ascent') atMoon = 'orbit';
+    if (burn.kind === 'loi' || burn.kind === 'ascent') {
+      atMoon = 'orbit';
+      // Arrived: the trail stops where the capture happened rather than
+      // carrying on round the transfer the vehicle is no longer flying.
+      if (trailTo === null) trailTo = burn.t;
+    }
   }
 
   function applyBurn(burn) {
