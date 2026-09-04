@@ -1352,6 +1352,20 @@ after insertion**, `loi` at `tli.t + tof`, `descent` a quarter of a lunar
 period later, `ascent` and `tei` after a surface stay of `SURFACE_STAY`
 seconds.
 
+**A flyby's arrival is an event, not a step.** `flyby` is the one profile
+whose ladder ends with a burn made at the PLANET: it rounds the moon on the
+transfer the injection bought and makes no burn there, which is what makes it
+the cheapest rung. So a successful flyby's last timeline entry was the
+injection — five days and 380 000 km short of the moon — and the map, which
+plays the timeline and stops at its last event, stopped with the vehicle drawn
+in the parking orbit it was in the act of leaving. Every other profile reaches
+the moon for free, because every other profile's last burn is made there. The
+sequence therefore emits a `flyby` event at `stepTime.loi` — the arrival time
+the schedule already computes, and the one the map already places the moon at
+— once the injection has been flown. It spends nothing, uses no restart, does
+not move `reached` and does not touch success, which is still `tli`'s: it is
+the moment the mission is about, and the flight ends on it.
+
 **The departure burn must happen where it is priced, and getting that wrong is
 silent.** `lunarLadder` charges the transfer from the parking orbit's
 periapsis, because that is the efficient place to leave from and it is the

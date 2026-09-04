@@ -29,7 +29,9 @@
 //     on screen. On a lunar flight the same rule carries the vehicle to the
 //     moon and onto the surface: the ring is drawn when the `loi` burn happens
 //     and the landed dot when the `landing` event says so, which is the frame
-//     the ticker prints it on.
+//     the ticker prints it on. A `flyby` makes no burn at the moon at all, so
+//     its arrival is an event and nothing else: the `flyby` event is the
+//     closest approach, and it is the last thing on a flyby's timeline.
 //
 // THE FLOWN PATH, in the cislunar frame. A closed ellipse drawn the instant the
 // TLI lights is a route diagram: the whole way to the moon is on screen before
@@ -461,6 +463,9 @@ export function playOrbital(canvas, outcome, opts = {}) {
   let atMoon = null;
   let landingAborted = false;
   let returning = false;
+  // A flyby has rounded the moon: the `flyby` event, which is the arrival a
+  // profile that makes no burn there has instead of a capture.
+  let flewBy = false;
   // The flown arc's two ends, in SIM time. It starts at the burn that put the
   // vehicle on the conic it is drawn on — t0 for the parking orbit the ascent
   // left it in — and runs to now, except while the vehicle is at the moon,
@@ -811,13 +816,16 @@ export function playOrbital(canvas, outcome, opts = {}) {
       ? (failed ? 'BURN FAILED'
         : landingAborted ? 'LANDING ABORTED'
           : returning ? 'RETURNING'
-            : atMoon === 'surface' ? 'LANDED' : null)
+            : atMoon === 'surface' ? 'LANDED'
+              : flewBy ? 'FLYBY' : null)
       : (docked ? 'DOCKED' : dockFailed ? 'DOCKING ABORTED' : failed ? 'BURN FAILED' : null);
     if (word) {
       ctx.textAlign = 'right';
       ctx.textBaseline = 'top';
       ctx.font = 'bold 11px "Courier New", monospace';
-      const good = cislunar ? (word === 'LANDED' || word === 'RETURNING') : word === 'DOCKED';
+      const good = cislunar
+        ? (word === 'LANDED' || word === 'RETURNING' || word === 'FLYBY')
+        : word === 'DOCKED';
       ctx.fillStyle = good ? colors.accent : colors.fail;
       ctx.fillText(word, w - 6, 6);
     }
@@ -925,7 +933,17 @@ export function playOrbital(canvas, outcome, opts = {}) {
       drawLabel({ x: mpt.x, y: mpt.y - rm - 11 }, color, 'VEHICLE', rm + 7, moonSide);
       drawFlashes(mpt);
     } else {
-      drawCraft(vpt, headingAt(vehicle, simT), track, 'VEHICLE');
+      // A flyby's closest approach puts the craft ON the moon marker — the
+      // transfer's apoapsis is where the moon is, which is what makes it a
+      // flyby — so once the two are within a marker of each other the craft's
+      // label goes a line above, exactly as the captured vehicle's does, and
+      // the two stop printing over one another. Measured off the two screen
+      // positions, like everything else in this frame, not off the outcome.
+      const crowded = Math.hypot(vpt.x - mpt.x, vpt.y - mpt.y) < rm + CRAFT_LEN;
+      drawCraft(vpt, headingAt(vehicle, simT), track, crowded ? null : 'VEHICLE');
+      if (crowded) {
+        drawLabel({ x: mpt.x, y: mpt.y - rm - 11 }, track, 'VEHICLE', rm + 7, moonSide);
+      }
       drawFlashes(vpt);
     }
 
@@ -1058,6 +1076,10 @@ export function playOrbital(canvas, outcome, opts = {}) {
       // reaches the surface on the frame the ticker says it did.
       else if (ev.kind === 'landing') atMoon = 'surface';
       else if (ev.kind === 'landing-failure') landingAborted = true;
+      // The pass. Nothing about the drawn orbit changes — the vehicle is still
+      // coasting the transfer it departed on, which is the whole point of a
+      // free return — so this only says the corner word out loud.
+      else if (ev.kind === 'flyby') flewBy = true;
       try {
         onEvent(ev);
       } catch (err) {

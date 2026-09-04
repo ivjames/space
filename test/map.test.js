@@ -47,6 +47,13 @@ function stubContext(record) {
     },
     fillText(text) {
       const s = String(text);
+      // drawChrome draws the clock first and the range two lines later, so the
+      // range belongs to the frame the clock has just closed.
+      if (s.startsWith('TO MOON')) {
+        const last = record.frames.at(-1);
+        if (last) last.toMoon = s;
+        return;
+      }
       if (!s.startsWith('T+')) return;
       record.frames.push({ clock: s, trail: record.trail });
       record.trail = 0;
@@ -150,6 +157,36 @@ function lunarOutcome() {
 }
 
 /**
+ * A flyby outcome: one burn, made at the planet, and the pass the resolver
+ * emits as an event because there is no burn at the moon to carry the picture
+ * there (js/core/resolver.js).
+ */
+function flybyOutcome() {
+  const alt = 80000;
+  const t0 = 500;
+  const phase = 0.31;
+  const r = radiusOf(alt);
+  const period = elementsFrom(r, r).period;
+  const s = lunarSchedule(t0, period, lunarLadder(r, r), phase);
+  const transfer = { periapsis: alt, apoapsis: A_MOON - R };
+  return {
+    steps: s,
+    outcome: {
+      insertion: { t: t0, periapsis: alt, apoapsis: alt, phase },
+      lunar: {
+        profile: 'flyby',
+        burns: [{ t: s.tli, kind: 'tli', dv: 3100, ok: true, elements: transfer }],
+      },
+      timeline: [
+        { t: s.tli, kind: 'burn', text: 'Translunar injection burn.' },
+        { t: s.loi, kind: 'flyby', text: 'Closest approach: rounding the moon.' },
+        { t: s.loi, kind: 'end', text: 'Lunar flyby.' },
+      ],
+    },
+  };
+}
+
+/**
  * Simulated seconds per real second AT LUNAR DISTANCE, for these tests. Well
  * under CISLUNAR_RATE so that the frames either side of the arrival are both
  * sampled: the map runs at the full rate once the vehicle is at the moon (the
@@ -191,6 +228,54 @@ test('playOrbital: the flown arc grows across the transfer and stops at the moon
       if (coast[i] < coast[i - 1] - 0.5) drops += 1;
     }
     assert.ok(drops <= 1, `arc shortened ${drops} times; at most the TLI restart`);
+  });
+});
+
+test('playOrbital: a flyby is flown all the way to the moon', async () => {
+  // The regression this is about is a picture, so it is asserted as one: the
+  // range to the moon drawn in the corner starts at most of a lunar distance
+  // and finishes at nothing, which is the flight the mission was paid for. It
+  // used to finish in the parking orbit, because the timeline ended with the
+  // injection burn and the playback stops at the last event.
+  const { playOrbital } = await import('../js/ui/map.js');
+  withBrowser((canvas, pump, record) => {
+    const { outcome } = flybyOutcome();
+    const seen = [];
+    // The departure is the frame the coast starts on: before it the range is
+    // the moon's own motion around a vehicle going nowhere.
+    let departedAt = -1;
+    const handle = playOrbital(canvas, outcome, {
+      speed: TEST_RATE,
+      onEvent: (ev) => {
+        seen.push(ev);
+        if (ev.kind === 'burn') departedAt = record.frames.length;
+      },
+    });
+    pump(20000);
+    handle.stop();
+
+    assert.deepEqual(seen.map((e) => e.kind), ['burn', 'flyby', 'end']);
+    assert.ok(departedAt > 0, `departure seen at frame ${departedAt}`);
+    const ranged = record.frames.filter((f) => f.toMoon);
+    assert.ok(ranged.length > 20, `frames with a range: ${ranged.length}`);
+    // Out of the parking orbit it is the better part of a lunar distance...
+    assert.match(ranged[0].toMoon, /^TO MOON 3\d\d \d\d\d km$/);
+    // ...and at the pass the two are one point, which is what this frame can
+    // say about a flyby and what the whole coast was for.
+    assert.equal(ranged.at(-1).toMoon, 'TO MOON 0 km');
+    // In between the range only closes: the coast flies AT the moon, because
+    // the transfer's apoapsis is where the moon is.
+    const km = (f) => Number(f.toMoon.replace(/\D/g, ''));
+    const coasting = record.frames.slice(departedAt).filter((f) => f.toMoon);
+    assert.ok(coasting.length > 10, `frames on the coast: ${coasting.length}`);
+    for (let i = 1; i < coasting.length; i += 1) {
+      assert.ok(km(coasting[i]) <= km(coasting[i - 1]), `range grew at frame ${i}`);
+    }
+
+    // And the arc is still growing on the last frame — nothing holds it, the
+    // way a capture holds the landing flight's.
+    const coast = record.frames.map((f) => f.trail).filter((v) => v > 0);
+    assert.ok(coast.at(-1) > 0, 'the flown arc reaches the moon');
   });
 });
 
