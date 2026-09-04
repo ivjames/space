@@ -873,4 +873,431 @@ export const nodes = [
     requires: ['rel-7', 'struct-9'],
     effects: [{ stat: 'dockBonus', op: 'add', value: 0.05 }],
   },
+
+  // ---------------------------------------------------------------------
+  // TIER 4 -- the Moon. See ARCHITECTURE.md, "Phase 3 -- tier 4, the Moon".
+  //
+  // Balanced against the REAL phase 3 resolver (js/core/resolver.js's lunar
+  // phase + js/core/moon.js's ladder), the same way every tier above is
+  // balanced against its own resolver phase. `node tools/balance.mjs`'s
+  // TIER 4 section drives `resolveLaunch` against each lunar profile
+  // (reliability forced to 1), scanning `turn` in 0.05 steps; re-run it
+  // after touching any cost or effect here.
+  //
+  // WHAT THE TIER HAS TO BUY, in one number. A `return` flight spends the
+  // whole lunar ladder after insertion -- tli, loi, descent, ascent, tei --
+  // and js/core/moon.js prices that at 8 536 m/s from a 180 km CIRCULAR
+  // parking orbit. That is NOT the number to size against. The orbit a real
+  // ascent reaches is eccentric (the cutoff fires the instant periapsis
+  // crosses ORBIT_MIN_ALT, leaving apoapsis anywhere from a few hundred to
+  // several thousand km) and the departure burn is charged at periapsis,
+  // where the vehicle is already moving fastest, so the flown price of
+  // `return` is nearer 8 100 m/s from an 80 x 1 800 km parking orbit -- and
+  // lower still from the wilder ellipses this tree can reach (8 352 m/s at
+  // 80 x 300 km, 6 700 at 80 x 7 000 km). Measured, not assumed:
+  // `lunarLadder` was asked for each, and the tree is sized against the
+  // flown number rather than the quoted one.
+  //
+  // WHICH MEANS THE TIER IS A LAUNCH VEHICLE, not an attachment. The tier 3
+  // stack carries 10 934 m/s of ideal delta-v and arrives in its parking
+  // orbit with 430-800 m/s left in the top stage -- a fifth of what the
+  // CHEAPEST lunar profile (flyby: one 2 900 m/s burn) needs and a
+  // twentieth of `return`. No attachment fixes that. The only way to arrive
+  // with 8 km/s aboard is to arrive with stages still unfired, and the only
+  // way to lift those stages is a bigger launcher: struct-11 is an 18x
+  // booster stretch with the engines to fly it, and every other node in the
+  // tier hangs off it. This is the tier that turns a satellite launcher into
+  // a moon rocket, and it is priced like one.
+  //
+  // SIX MEASURED FACTS ABOUT THE PHASE 3 RESOLVER, each of which moved this
+  // design away from ARCHITECTURE.md's sketch, and each checked against
+  // resolveLaunch rather than reasoned about:
+  //
+  //   1. AN `addStage` NODE MUST LIVE IN THE STRUCTURE BRANCH.
+  //      ARCHITECTURE.md puts the cryogenic departure stage in PROPULSION.
+  //      It cannot go there. js/core/tree.js's collectEffects hoists every
+  //      `addStage` effect ahead of every other effect *in branch order*,
+  //      and propulsion sorts before structure -- so a propulsion
+  //      `addStage` would append its stage BEFORE struct-4's and
+  //      struct-6's, making the departure stage index 1 and renumbering
+  //      `stages.1.*` and `stages.2.*` in every tier 2 and tier 3 effect
+  //      that targets them. The hoist exists precisely so propulsion can
+  //      upgrade a stage STRUCTURE adds (see collectEffects's own comment);
+  //      reversing the relationship breaks two tiers. Both new stages are
+  //      therefore structure nodes and propulsion sells their engine --
+  //      which is the division of labour struct-6/prop-8 already has.
+  //   2. A THRUST-ONLY NODE IS A TRAP HERE, so the core stretch and its
+  //      engines are ONE purchase. The rail below normally splits them: buy
+  //      the thrust, then the mass. Measured, the split does not survive
+  //      this tier's scale. On the tier 3 stack, uprating all three core
+  //      stages' thrust with no mass added drops the best reachable
+  //      periapsis from 184 627 m to 121 009 m at x2 and to -1 683 466 m at
+  //      the x10 this tier needs: at that thrust-to-weight the vehicle
+  //      clears the pitch program's fixed pitch-over altitudes before it
+  //      has any horizontal speed and flies an enormous lob instead of an
+  //      orbit. `node tools/gates.mjs` reported it as 24 supersets of
+  //      `relay`'s gate falling short, all of them carrying the thrust node
+  //      without the mass node -- i.e. a player who bought the engines
+  //      first would lose the tier's only income until they could afford
+  //      the core, six figures later. Data cannot express "not this node",
+  //      and the trap is not a trade-off worth documenting, so the two are
+  //      one node and the failing supersets are gone (0 now). Same
+  //      resolution as prop-13's, arrived at the same way: make the harmful
+  //      owned state unreachable rather than merely written down.
+  //   3. STAGES ABOVE THE INSERTION STAGE NEVER IGNITE IN THE ASCENT. The
+  //      cutoff fires on whichever stage is burning when periapsis crosses
+  //      ORBIT_MIN_ALT, and for every set below the ascent finishes on
+  //      stage 3 (the enlarged third stage) with the departure and ascent
+  //      stages untouched. That is what makes `dvAvailable` -- the cutting
+  //      stage's reserve plus every unfired stage above it -- come out at
+  //      6 800-9 300 m/s instead of a few hundred. It also means
+  //      `stages.3.reliability` is read by nothing at all, and
+  //      `stages.4.reliability` only by the lunar sequence, which rolls
+  //      every restart against `stages[stages.length - 1]`. So there is no
+  //      node here selling departure-stage reliability: it would be a stat
+  //      nothing rolls. rel-10 sells the ascent stage's, which is the one
+  //      that IS rolled.
+  //   4. A MOON ROCKET CARRYING A 5 kg PAYLOAD IS ALREADY A FLYBY VEHICLE.
+  //      The lunar stack (departure stage + ascent stage) masses ~92 kg
+  //      against the game's 5 kg payload, so the same core that can barely
+  //      insert the full stack inserts a BARE payload with 6 800 m/s left
+  //      over, on an ellipse whose apoapsis is in the tens of thousands of
+  //      km -- which makes its departure burn cheaper as well. Measured:
+  //      struct-11 + guide-1 alone flies `flyby` on all 21 turn notches. So
+  //      js/data/missions.js gates the flyby rung on the CORE, not on the
+  //      departure stage; the departure stage earns its place as the thing
+  //      the lander and the ascent stage bolt to. Gating flyby on hardware
+  //      the resolver does not need would have been a gate the data
+  //      invented.
+  //   5. `restarts` IS A REAL LADDER RUNG AGAIN. The profiles need 1, 2, 3
+  //      and 5 restarts (LUNAR_PROFILES: one per step), and tier 3 leaves
+  //      the player with 3. So `moon-orbit` genuinely gates on prop-11 --
+  //      with one restart the sequence stops in front of the lunar orbit
+  //      insertion burn having spent nothing, whatever the budget -- and
+  //      `moon-return` gates on prop-17, the fifth relight, without which
+  //      the crew lifts off the surface and stays in lunar orbit. Neither
+  //      is a delta-v gate, which is why neither ever shows up in a
+  //      cheapest-reaching set the way a propellant node does.
+  //   6. THE LAST 286 m/s IS prop-15. With the shield, the ascent stage and
+  //      five restarts but WITHOUT the descent propellant reserve, the best
+  //      loadout in the whole sweep lands, lifts off, and stops 286 m/s
+  //      short of the trans-earth injection -- `reached 3, short 286`. That
+  //      is the shape prop-9 has at the top of tier 2 (the small margin
+  //      node that crosses the last gap to the goal), and it is deliberate:
+  //      the goal rung should cost one more purchase than the rung below
+  //      it, not fall out of the tree for free.
+  //
+  // FOUR BRANCHES, FOURTEEN NODES:
+  //
+  //   propulsion (4): prop-14 is the cryogenic deep-space engine that turns
+  //     the departure stage from a storable into a cryogenic one (isp 330
+  //     -> 462) and is what makes `return` affordable at all; prop-15 is
+  //     the descent propellant reserve, the margin node of fact 6; prop-16
+  //     and prop-17 are the fourth and fifth relights, one node each,
+  //     because four of them strand the crew in lunar orbit and the ladder
+  //     should be able to say so (fact 5).
+  //   structure (5): struct-11 is the lunar-class launch vehicle -- an 18x
+  //     booster stretch, upper stages to match, and the engines that fly
+  //     them, all in one purchase (fact 2); struct-12 the cryogenic
+  //     departure stage; struct-13 the lander (`lander` set 1); struct-14
+  //     the ascent stage; struct-15 the heat shield (`shield` set 1).
+  //     struct-13 and struct-15 carry NO mass, deliberately: they are
+  //     hardware gates the resolver reads off the vehicle, exactly as
+  //     struct-9's docking adapter is, and the mass of the hardware is
+  //     already in the stage each rides on.
+  //   guidance (2): guide-6 (deep-space navigation) and guide-7
+  //     (terrain-relative landing). ARCHITECTURE.md asks for a third,
+  //     "entry guidance" -- there is nothing for it to do. Entry at the
+  //     planet is free in js/core/moon.js (the atmosphere does the braking,
+  //     and a vehicle without a shield does not get to spend delta-v
+  //     instead), so entry is not a rung, not a roll, and not a number any
+  //     guidance stat could sharpen. A node for it would have been a second
+  //     struct-module with nothing to gate. Two honest nodes beat three
+  //     with a passenger.
+  //   reliability (3): rel-9 requalifies the insertion stage (which now
+  //     flies a 3-tonne stack to orbit instead of a 330 kg one), rel-10
+  //     qualifies the ascent-stage engine -- the one every lunar restart is
+  //     rolled against, per fact 3 -- and rel-11 is landing rehearsal
+  //     (`landerBonus`, which the resolver adds to the landing roll's
+  //     threshold and caps at LANDING_RELIABILITY_MAX; the capping is the
+  //     resolver's job, not data's, exactly as with rel-8's dockBonus).
+  //
+  // THE CROSS-BRANCH TWR RAIL, as it applies here. Its subject is a stage
+  // ADDED by structure, and it holds for both: struct-12 (the departure
+  // stage) requires struct-11, which is where the thrust that lifts it
+  // lives, and struct-14 (the ascent stage) requires prop-14, the departure
+  // stage's engine, which is what flies it. What the rail does NOT do here
+  // is separate struct-11's own mass from its own thrust -- fact 2 is why,
+  // and the reason is the rail's own reason turned around: the split it
+  // normally prevents a soft-lock with would create a worse one.
+  // Measured over every prereq-valid combination across all four tiers by
+  // `node tools/balance.mjs`'s GOAL 4 report and test/data.test.js's
+  // bounded version: no combination drops liftoff TWR below 1.05 or an
+  // upper stage below 0.5 at ignition.
+  //
+  // Every tier 4 node's prerequisites are tier 4 or tier 3, never a bare
+  // tier 1 or tier 2 node -- the same rule tier 3 follows, one tier along.
+  //
+  // LADDER (js/data/missions.js). Measured, one to three new purchases per
+  // rung, and each rung verified BOTH ways (flyable with exactly this
+  // closure over every selectable loadout, and not flyable without the node
+  // the rung is about):
+  //
+  //   relay        no lunar hardware at all: a 160 km orbit, flyable by
+  //                whatever won tier 3. The tier's income filler.
+  //   moon-flyby   struct-11 + guide-1        the launch vehicle (fact 4)
+  //   moon-orbit   + prop-11                  the second restart (fact 5)
+  //   moon-land    + struct-13                the lander
+  //   moon-return  + struct-15, prop-17, prop-15
+  //                                           the shield, the fifth
+  //                                           restart, and the last 286 m/s
+  //
+  // COSTS. Tier 3's twelve nodes cost 473 500 funds; tier 4's fourteen cost
+  // 1 665 000, a 3.5x step where tier 3's step from tier 2 (299 500) was
+  // 1.6x. The bigger jump is deliberate and is set by the GREEDY SIMULATION
+  // rather than by symmetry: tier 4 payouts are three to four times tier
+  // 3's (js/data/missions.js), so at tier 3's cost ratio the whole tree
+  // would fall to a player in well under ten launches -- far under
+  // ARCHITECTURE.md's 15-60 target. `node tools/balance.mjs`'s tier 4
+  // greedy report is the number that fixed these, exactly as it fixed tier
+  // 2's: from the tier 3 end state it now takes 18 tier 4 launches to land
+  // and return, with a longest dry streak of 2.
+  {
+    id: 'prop-14',
+    branch: 'propulsion',
+    level: 14,
+    tier: 4,
+    name: 'Cryogenic deep-space engine',
+    desc: 'Replaces the departure stage\'s storable engine with a cryogenic one: far more efficient, and the difference between reaching the moon and coming home from it.',
+    cost: { funds: 145000 },
+    // Targets a stage STRUCTURE adds (struct-12), which is exactly the
+    // cross-branch pattern collectEffects's addStage hoist exists for --
+    // prop-8 does the same to struct-6's third stage one tier down.
+    requires: ['struct-12'],
+    effects: [{ stat: 'stages.3.isp', op: 'mul', value: 1.4 }],
+  },
+  {
+    id: 'prop-15',
+    branch: 'propulsion',
+    level: 15,
+    tier: 4,
+    name: 'Descent propellant reserve',
+    desc: 'Stretched departure-stage tanks holding back the propellant the powered descent spends, so landing does not eat the fuel for the trip home.',
+    cost: { funds: 95000 },
+    requires: ['prop-14'],
+    effects: [
+      { stat: 'stages.3.propMass', op: 'add', value: 52 },
+      { stat: 'stages.3.dryMass', op: 'add', value: 2 },
+    ],
+  },
+  {
+    id: 'prop-16',
+    branch: 'propulsion',
+    level: 16,
+    tier: 4,
+    name: 'Cryogenic restart system',
+    desc: 'A fourth relight for the top of the stack: enough to land and lift off again.',
+    cost: { funds: 85000 },
+    // prop-11 is where restarts stand at 3 (prop-10 sets 1, prop-11 adds
+    // 2), so this branch's tier 4 pair continues that chain rather than
+    // restarting it. Four relights fly tli, loi, descent and ascent -- the
+    // whole mission except the way home, which is prop-17's job.
+    requires: ['prop-11', 'prop-14'],
+    effects: [{ stat: 'restarts', op: 'add', value: 1 }],
+  },
+  {
+    id: 'prop-17',
+    branch: 'propulsion',
+    level: 17,
+    tier: 4,
+    name: 'Boiloff and ullage control',
+    desc: 'Insulation and settling thrusters that keep the cryogenic stage lightable after days in space: the fifth relight, and the one that comes home.',
+    cost: { funds: 90000 },
+    requires: ['prop-16'],
+    effects: [{ stat: 'restarts', op: 'add', value: 1 }],
+  },
+
+  {
+    id: 'struct-11',
+    branch: 'structure',
+    level: 12,
+    tier: 4,
+    name: 'Lunar-class launch vehicle',
+    desc: 'Rebuilds the three core stages around the lunar mission: eighteen times the booster propellant, upper stages to match, and the engines to fly them.',
+    cost: { funds: 240000 },
+    // THE SPINE OF THE TIER, and the one node that carries both its own
+    // mass and its own thrust -- fact 2 above has the measurement and the
+    // reason. 2 250 kg of booster propellant on the tier 3 booster's
+    // engines would leave liftoff TWR at 0.09 (a vehicle that cannot leave
+    // the pad, the soft-lock DESIGN.md 7 forbids); the same engines without
+    // the propellant fly a lob instead of an orbit and cost the player the
+    // tier's income. Neither half is purchasable alone.
+    //
+    // prop-13 is the other prerequisite so the structure branch's top still
+    // sits on the propulsion branch's top, the way struct-6 sits on prop-6.
+    requires: ['struct-10', 'prop-13'],
+    effects: [
+      { stat: 'stages.0.thrust', op: 'mul', value: 10 },
+      { stat: 'stages.1.thrust', op: 'mul', value: 10 },
+      { stat: 'stages.2.thrust', op: 'mul', value: 10 },
+      { stat: 'stages.0.propMass', op: 'mul', value: 18 },
+      { stat: 'stages.0.dryMass', op: 'mul', value: 4 },
+      { stat: 'stages.1.propMass', op: 'mul', value: 5 },
+      { stat: 'stages.1.dryMass', op: 'mul', value: 2.5 },
+      { stat: 'stages.2.propMass', op: 'mul', value: 3 },
+      { stat: 'stages.2.dryMass', op: 'mul', value: 1.8 },
+    ],
+  },
+  {
+    id: 'struct-12',
+    branch: 'structure',
+    level: 13,
+    tier: 4,
+    name: 'Cryogenic departure stage',
+    desc: 'A fourth stage that rides to orbit unfired and then makes the burn that leaves it.',
+    cost: { funds: 150000 },
+    requires: ['struct-11'],
+    // Storable propellant and a modest engine as bought; prop-14 is what
+    // makes it cryogenic. Sized so the stage is worth having with the
+    // engine it comes with and transformative with prop-14's -- see fact 6.
+    effects: [
+      {
+        addStage: {
+          dryMass: 6,
+          propMass: 16,
+          thrust: 900,
+          isp: 330,
+          reliability: 0.86,
+        },
+      },
+    ],
+  },
+  {
+    id: 'struct-13',
+    branch: 'structure',
+    level: 14,
+    tier: 4,
+    name: 'Lunar lander',
+    desc: 'Landing legs, a throttleable descent engine and a radar altimeter: the hardware a powered descent needs.',
+    cost: { funds: 140000 },
+    requires: ['struct-12'],
+    // No mass, on purpose, and for the same reason struct-9's docking
+    // adapter carries none: what the resolver reads is the STAT (`lander`,
+    // without which resolveLunarSequence stops at `stoppedAt: 'lander'`
+    // having spent nothing), and the mass of the thing is already in the
+    // departure stage it rides on. A dry-mass add here would double-count
+    // it, and would also drag a pure mission gate into tools/gates.mjs's
+    // trajectory enumeration, where it does not belong.
+    effects: [{ stat: 'lander', op: 'set', value: 1 }],
+  },
+  {
+    id: 'struct-14',
+    branch: 'structure',
+    level: 15,
+    tier: 4,
+    name: 'Ascent stage',
+    desc: 'A small stage left on top of the lander, carrying just enough propellant to get off the surface and start home.',
+    cost: { funds: 120000 },
+    // The cross-branch TWR rail: this stage rides on the departure stage,
+    // and prop-14 is the engine that flies it.
+    requires: ['struct-13', 'prop-14'],
+    effects: [
+      {
+        addStage: {
+          dryMass: 2.5,
+          propMass: 11,
+          thrust: 200,
+          isp: 320,
+          reliability: 0.9,
+        },
+      },
+    ],
+  },
+  {
+    id: 'struct-15',
+    branch: 'structure',
+    level: 16,
+    tier: 4,
+    name: 'Ablative heat shield',
+    desc: 'The shield that survives entry at translunar speed. Without one the flight has no way home and stops in lunar orbit.',
+    cost: { funds: 110000 },
+    requires: ['struct-14'],
+    // Massless for the same reason struct-13 is. The resolver puts this
+    // gate IN FRONT of the trans-earth injection burn (js/core/resolver.js),
+    // so a shieldless vehicle never raises `best.lunarStep` to "returned".
+    effects: [{ stat: 'shield', op: 'set', value: 1 }],
+  },
+
+  {
+    id: 'guide-6',
+    branch: 'guidance',
+    level: 6,
+    tier: 4,
+    name: 'Deep-space navigation',
+    desc: 'Star sightings against the planet\'s limb, and a flight computer that almost never drops its program.',
+    cost: { funds: 100000 },
+    requires: ['guide-5'],
+    // The honest effect is `guidanceReliability`: the guidance roll fires
+    // on every guided flight (ARCHITECTURE.md, "Anomalies") and a lunar
+    // ascent is a guided flight, so 0.98 -> 0.995 is a real cut in the
+    // flights that wander off program. The `nav` add is INERT and kept for
+    // the same reason guide-2 keeps its `guidance` add: the orbital
+    // sequence clamps nav to NAV_APPROACH's range (0..3) and the lunar
+    // sequence never reads it at all, so this raises a number the stats
+    // panel shows and nothing else. Said plainly rather than dressed up.
+    effects: [
+      { stat: 'nav', op: 'add', value: 1 },
+      { stat: 'guidanceReliability', op: 'set', value: 0.995 },
+    ],
+  },
+  {
+    id: 'guide-7',
+    branch: 'guidance',
+    level: 7,
+    tier: 4,
+    name: 'Terrain-relative landing',
+    desc: 'The descent computer matches what it sees against a map and picks its own spot, instead of taking whatever is underneath.',
+    cost: { funds: 115000 },
+    requires: ['guide-6', 'struct-13'],
+    effects: [{ stat: 'landerBonus', op: 'add', value: 0.04 }],
+  },
+
+  {
+    id: 'rel-9',
+    branch: 'reliability',
+    level: 11,
+    tier: 4,
+    name: 'Insertion-stage requalification',
+    desc: 'Requalifies the third-stage engine for the far heavier stack it now flies to orbit.',
+    cost: { funds: 80000 },
+    requires: ['rel-8', 'struct-11'],
+    effects: [{ stat: 'stages.2.reliability', op: 'mul', value: 1.01 }],
+  },
+  {
+    id: 'rel-10',
+    branch: 'reliability',
+    level: 12,
+    tier: 4,
+    name: 'Lunar engine qualification',
+    desc: 'Qualification firings for the topmost engine, the one every burn of the lunar sequence is rolled against.',
+    cost: { funds: 90000 },
+    // struct-14 is a prerequisite because this targets the stage it adds,
+    // and because the description is only true once that stage exists:
+    // resolveLunarSequence rolls every restart against
+    // `stages[stages.length - 1]`, which is the ascent stage on a complete
+    // lunar stack.
+    requires: ['rel-9', 'struct-14'],
+    effects: [{ stat: 'stages.4.reliability', op: 'mul', value: 1.08 }],
+  },
+  {
+    id: 'rel-11',
+    branch: 'reliability',
+    level: 13,
+    tier: 4,
+    name: 'Landing rehearsal',
+    desc: 'Practice descents flown against a simulator and a free-flying training vehicle, sharpening the last hundred metres.',
+    cost: { funds: 105000 },
+    requires: ['rel-10'],
+    effects: [{ stat: 'landerBonus', op: 'add', value: 0.05 }],
+  },
 ];

@@ -11,9 +11,9 @@
 // cannot fly along that path.
 //
 // This file computes that. For every prereq-valid set of TRAJECTORY-
-// AFFECTING nodes (a node whose effects touch anything but reliability,
-// guidanceReliability, restarts, nav, docking, rcs or dockBonus -- those
-// never move the vehicle), it flies the derived vehicle at full fuel with
+// AFFECTING nodes (a node whose effects touch anything but the stats INERT
+// names below -- those never move the vehicle), it flies the derived vehicle
+// at full fuel with
 // reliability forced to 1 across the turn range and records the best
 // altitude (vertical), downrange and periapsis it reaches. From that table
 // it reports, per mission:
@@ -49,8 +49,31 @@ import { buildVehicle } from '../js/core/vehicle.js';
 import { resolveLaunch } from '../js/core/resolver.js';
 import { baseVehicle } from '../js/data/components.js';
 
-export const MAX_TIER = 3;
-const INERT = /reliability|restarts|^nav$|^docking$|^rcs$|^dockBonus$/;
+export const MAX_TIER = 4;
+// A node is INERT when nothing it does can move the vehicle along its ascent:
+// the metrics this file measures are altitude, downrange and periapsis, all of
+// them read off a trajectory. Reliability and guidanceReliability are forced to
+// 1 here; `restarts`, `nav`, `docking`, `rcs` and `dockBonus` are read only by
+// the ANALYTIC phase after insertion, which no probe below ever runs.
+//
+// Phase 3's three new stats join them, and on the same test rather than by
+// analogy. `lander` and `shield` are hardware GATES: resolveLunarSequence reads
+// them as "may this step be flown at all" and stops in front of the descent or
+// the trans-earth injection without them. They set no mass -- js/data/tree.js's
+// struct-13 and struct-15 carry the stat and nothing else, deliberately, with
+// the mass of the hardware already in the stages it rides on -- so a vehicle
+// that owns them flies the identical ascent to one that does not. `landerBonus`
+// is a probability added to the landing roll, which happens a quarter of a
+// lunar orbit past anything this table measures. All three are inert HERE and
+// load-bearing in js/data/missions.js's hand-authored lunar gates, which is
+// exactly where the split puts them: trajectory nodes are enumerated, gate
+// nodes are measured against the resolver by test/data.test.js.
+//
+// What is NOT here is as deliberate: tier 4's two `addStage` nodes and its
+// propellant/thrust/isp nodes all change the mass or the push of a stack the
+// booster has to lift, so they are trajectory nodes and are enumerated, even
+// though the stages they add never ignite before insertion.
+const INERT = /reliability|restarts|^nav$|^docking$|^rcs$|^dockBonus$|^lander$|^shield$|^landerBonus$/;
 
 const tree = loadTree(nodes);
 const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -119,16 +142,48 @@ export function generators(set) {
   return set.filter((id) => !set.some((other) => other !== id && closure([other]).has(id)));
 }
 
-/** Every prereq-valid set of trajectory nodes, with its metrics and cost. */
+// trajectoryNodes in an order where every node's prerequisites come first.
+// `nodes` is authored tier by tier but not topologically (prop-13 precedes the
+// struct-10 it requires), and the enumeration below needs the stronger order to
+// prune: it only ever extends a set with a node whose prerequisites are already
+// satisfied, which is sound exactly when every trajectory node in a node's
+// prerequisite closure sits earlier in this list.
+const orderedTrajectory = (() => {
+  const out = [];
+  const seen = new Set();
+  const visit = (id) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    for (const r of byId.get(id).requires ?? []) visit(r);
+    if (trajectoryNodes.includes(id)) out.push(id);
+  };
+  for (const id of trajectoryNodes) visit(id);
+  return out;
+})();
+
+/**
+ * Every prereq-valid set of trajectory nodes, with its metrics and cost.
+ *
+ * PRUNED, not filtered at the leaves. The naive form walked all 2^N branches
+ * and tested validity at the bottom; at tier 3 that was 2^21 and merely slow,
+ * at tier 4 it is 2^27 and does not finish. Prerequisites chain hard enough
+ * that the pruned walk visits only the valid sets themselves (a few hundred),
+ * and it enumerates exactly the same ones -- `valid(owned)` is still asserted
+ * on each, so a bug in the ordering above shows up as a missing set rather than
+ * a wrong one.
+ */
 export function buildTable(steps = 21) {
   const sets = [];
   (function grow(idx, owned) {
-    if (idx === trajectoryNodes.length) {
+    if (idx === orderedTrajectory.length) {
       if (valid(owned)) sets.push(owned);
       return;
     }
     grow(idx + 1, owned);
-    grow(idx + 1, [...owned, trajectoryNodes[idx]]);
+    const id = orderedTrajectory[idx];
+    if ((byId.get(id).requires ?? []).every((r) => satisfied(r, owned))) {
+      grow(idx + 1, [...owned, id]);
+    }
   })(0, []);
   return sets.map((owned) => ({
     owned,
@@ -138,18 +193,27 @@ export function buildTable(steps = 21) {
 }
 
 /**
- * The rule applied to one mission against a table: null for a rendezvous /
- * dock mission, otherwise { gate, cheapest, supersets, failing, hidden,
- * necessary, reaching }.
+ * The rule applied to one mission against a table: null for a rendezvous,
+ * dock or MOON mission, otherwise { gate, cheapest, supersets, failing,
+ * hidden, necessary, reaching }.
  *
  * A target-shaped rung is not derived here because its metric is not a
  * number this table holds: it needs the target, the window slider and the
  * whole orbital sequence, and its gate is the union of the sequence's own
  * hardware checks (restarts, nav, rcs, the adapter, the module) with the
- * ascent hardware that leaves a reserve to spend (prop-13). Those gates are
- * authored in js/data/missions.js against the resolver and MEASURED by
- * test/data.test.js, which flies each rung with exactly its gated hardware
- * over every selectable loadout -- read that test before changing one.
+ * ascent hardware that leaves a reserve to spend (prop-13).
+ *
+ * A LUNAR rung (phase 3) is not derived for the same reason and falls out
+ * through the same door: `meets` knows nothing about a `moon` requirement, so
+ * it returns null and so does this. Its metric is not altitude, downrange or
+ * periapsis but how far up js/core/moon.js's ladder the remaining stack can
+ * climb after insertion, which depends on the hardware gates (`lander`,
+ * `shield`), on `restarts`, and on the eccentricity of the parking orbit the
+ * ascent happened to reach. Those gates are authored in js/data/missions.js
+ * against the resolver and MEASURED by test/data.test.js, which flies each
+ * rung with exactly its gated hardware over every selectable loadout and
+ * again with the node the rung is about removed -- read that test before
+ * changing one.
  */
 export function deriveGate(mission, table) {
   const req = mission.requirement;

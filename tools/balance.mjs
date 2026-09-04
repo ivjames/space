@@ -28,6 +28,18 @@
 //   - a greedy player's tier 2 launch count, continuing from a greedy tier
 //     1 end state
 //
+// Tier 4 reports (ARCHITECTURE.md, "Balance, phase 3") — only when
+// resolveLaunch's outcome carries a `lunar` field for a `moon` requirement,
+// guarded the same way:
+//   - the cheapest prereq-valid set reaching each lunar rung (EXHAUSTIVE over
+//     the tier 4 additions, which is affordable because the tier chains hard)
+//   - the remaining-stack delta-v budget at insertion for each of those sets,
+//     against the ladder js/core/moon.js prices from the orbit each flight
+//     actually reached
+//   - the TWR safety rail across every prereq-valid combination of all four
+//     tiers
+//   - a greedy player's tier 4 launch count from the tier 3 end state
+//
 // Determinism: reliability is forced to 1 on a deep copy of the vehicle
 // before every resolve. The resolver has no reliability-override option, and
 // nothing here depends on the rng beyond that (a reliability-1 vehicle flies
@@ -841,5 +853,441 @@ if (!tier2Greedy.reached) {
     if (m.minReputation === undefined) continue;
     const firstCross = tier2Greedy.reputationCurve.find((r) => r.reputation >= m.minReputation);
     console.log(`    ${m.id}: minReputation ${m.minReputation} -> first crossed at tier 2 launch ${firstCross ? firstCross.tier2Launch : 'NEVER'}`);
+  }
+}
+
+// =============================================================================
+// TIER 4 — the Moon (ARCHITECTURE.md, "Balance, phase 3"). Only runs against a
+// resolver whose Outcome actually carries a `lunar` field for a `moon`
+// requirement — the tell for a phase 3 resolver, probed once and cheaply, the
+// same guard shape the tier 2 section above uses for `periapsis`.
+//
+// Four reports, in ARCHITECTURE.md's own order:
+//   - the cheapest prereq-valid set reaching each lunar rung (cumulative, the
+//     way the tier 2 ladder is walked: each rung buys on top of the last)
+//   - the remaining-stack delta-v budget at insertion for each of those sets,
+//     against the ladder js/core/moon.js prices from the orbit it actually
+//     reached — the "must cover the profile's ladder with margin" check
+//   - the TWR safety rail, extended to every prereq-valid combination across
+//     all four tiers
+//   - a greedy player from the tier 3 end state through the tier 4 goal
+//     (target: 15-60 tier 4 launches, longest dry streak 4 or under)
+// =============================================================================
+
+const { lunarLadder, LUNAR_STEPS } = await import(core('moon.js'));
+const { LUNAR_PROFILES, requiredLunarStep } = await import(core('resolver.js'));
+
+const R_EARTH_BAL = 6.371e6;
+
+const PHASE3_RESOLVER = (() => {
+  try {
+    const outcome = resolveLaunch(
+      forceReliability(buildVehicle(baseVehicle, [])),
+      { requirement: { moon: { profile: 'flyby' } } },
+      { fuelFraction: 1, turn: 0 },
+      makeRng(SEED),
+      {},
+    );
+    return 'lunar' in outcome;
+  } catch {
+    return false;
+  }
+})();
+
+if (!PHASE3_RESOLVER) {
+  console.log('\ntier 4 balance needs the phase 3 resolver');
+  process.exit(0);
+}
+
+// Every node, all four tiers: unlike the tier 2 section (which deliberately
+// sweeps tier 1 + 2 only, because a tier 2 goal has to be flyable by a tier 2
+// vehicle), a lunar flight is the top of the tree and there is nothing above it
+// to exclude.
+const lunarTree = loadTree(nodes);
+const lunarIds = nodes.map((n) => n.id);
+const tier4Missions = missions.filter((m) => m.tier === 4);
+const lunarMissions = tier4Missions.filter((m) => m.requirement.moon !== undefined);
+
+function lunarVehicle(owned) {
+  return buildVehicle(baseVehicle, collectEffects(lunarTree, { owned }));
+}
+
+/**
+ * Best outcome of a lunar mission over the turn slider, ranked the way a player
+ * reading the result screen would: a flight that flew the profile beats one
+ * that did not, then deeper is better, then a smaller shortfall.
+ *
+ * `turn` is the only loadout control a lunar mission has (there is no window
+ * slider without a phasing target, and the profile is the mission), so this
+ * sweep IS the player's whole decision space at full tanks.
+ */
+function bestLunar(vehicle, mission, steps = TURN_STEPS) {
+  let best = null;
+  for (const turn of steps) {
+    const outcome = resolveLaunch(
+      forceReliability(vehicle), mission, { fuelFraction: 1, turn }, makeRng(SEED), {},
+    );
+    const l = outcome.lunar;
+    const score = (outcome.success ? 1e12 : 0)
+      + (l ? l.reached * 1e6 - Math.min(l.shortBy ?? 0, 1e5) : -1e9);
+    if (!best || score > best.score) best = { score, turn, outcome };
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// The cheapest prereq-valid set reaching each lunar rung. EXHAUSTIVE, unlike
+// the tier 2 ladder above, and it has to be: the tier 2 chain buys one node at
+// a time and works because every node on its path individually raises
+// periapsis, while tier 4's path has plateaus a greedy walk cannot cross.
+// struct-12 (the departure stage) bought alone is 22 kg of dead weight with
+// nothing to land and nothing to come home in, so it LOWERS every metric; and
+// `moon-return` needs the shield, the fifth relight and the descent reserve
+// together, none of which improves the outcome without the other two. A
+// one-node-at-a-time search reports the goal as unreachable by the whole tree,
+// which is simply wrong.
+//
+// It is affordable because the tier is chain-heavy: the fourteen tier 4 nodes
+// admit only 220 prereq-valid subsets on top of a tier 3 winner's owned set.
+// And ONE sweep answers all four rungs. A `return` flight walks the whole
+// ladder in order and stops at the first step it cannot fly, so the deepest
+// step it completes -- `lunar.reached`, an index into LUNAR_STEPS -- is exactly
+// how far up any profile this vehicle could get; a profile is flyable when its
+// `requiredLunarStep` is at or below it. That holds for the hardware gates too
+// (no lander stops the return flight in front of the descent, which is
+// precisely where an `orbit` profile has already finished).
+const RETURN_MISSION = missions.find((m) => m.id === 'moon-return');
+const tier4Nodes = nodes.filter((n) => (n.tier ?? 1) === 4).map((n) => n.id);
+
+// The tier 3 end state a tier 4 player actually arrives with: winning tier 3
+// means docking, and `dock`'s gate closure is what docking proves they own.
+// Everything tier 4 costs is measured on top of that, not from zero.
+function closureOf(ids) {
+  const seen = new Set();
+  const stack = [...ids];
+  while (stack.length) {
+    const id = stack.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const r of lunarTree.byId.get(id).requires ?? []) stack.push(r);
+  }
+  return [...seen];
+}
+const dockMissionBal = missions.find((m) => m.id === 'dock');
+const tier3EndOwned = closureOf([].concat(dockMissionBal.requiresNode));
+const tier3EndCost = tier3EndOwned.reduce((sum, id) => sum + fundsCost(lunarTree.byId.get(id)), 0);
+
+// Topological order over the tier 4 nodes, so the enumeration below can prune
+// on "prerequisites already chosen" -- `nodes` is authored branch by branch and
+// prop-14 precedes the struct-12 it requires.
+const tier4Ordered = (() => {
+  const out = [];
+  const seen = new Set();
+  const visit = (id) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    for (const r of lunarTree.byId.get(id).requires ?? []) visit(r);
+    if (tier4Nodes.includes(id)) out.push(id);
+  };
+  for (const id of tier4Nodes) visit(id);
+  return out;
+})();
+
+const tier4Sets = [];
+(function grow(i, owned) {
+  if (i === tier4Ordered.length) { tier4Sets.push([...owned]); return; }
+  grow(i + 1, owned);
+  const id = tier4Ordered[i];
+  const reqs = lunarTree.byId.get(id).requires ?? [];
+  if (reqs.every((r) => tier3EndOwned.includes(r) || owned.includes(r))) {
+    grow(i + 1, [...owned, id]);
+  }
+}(0, []));
+
+function deepestStep(owned) {
+  const vehicle = lunarVehicle(owned);
+  let best = -1;
+  let bestTurn = null;
+  for (const turn of TURN_STEPS) {
+    const outcome = resolveLaunch(
+      forceReliability(vehicle), RETURN_MISSION, { fuelFraction: 1, turn }, makeRng(SEED), {},
+    );
+    const reached = outcome.lunar ? outcome.lunar.reached : -1;
+    if (reached > best) { best = reached; bestTurn = turn; }
+  }
+  return { reached: best, turn: bestTurn };
+}
+
+console.log('\n=== Tier 4 mission ladder: cheapest prereq-valid set reaching each rung ===');
+console.log(`  tier 3 baseline (dock's gate closure): ${tier3EndOwned.length} node(s), ${tier3EndCost} funds`);
+console.log(`  ${tier4Sets.length} prereq-valid tier 4 additions enumerated`);
+const tier4Probed = tier4Sets.map((added) => ({
+  added,
+  cost: added.reduce((sum, id) => sum + fundsCost(lunarTree.byId.get(id)), 0),
+  ...deepestStep([...tier3EndOwned, ...added]),
+}));
+const lunarRungs = [];
+let prevAdded = [];
+for (const m of lunarMissions) {
+  const need = requiredLunarStep(m.requirement.moon.profile);
+  const reaching = tier4Probed.filter((row) => row.reached >= need);
+  if (reaching.length === 0) {
+    console.log(`  ${m.id} (${m.requirement.moon.profile}): UNREACHABLE by any tier 4 set`);
+    lunarRungs.push({ mission: m, owned: [...tier3EndOwned], reached: false });
+    continue;
+  }
+  const cheapest = reaching.reduce((a, r) => (r.cost < a.cost ? r : a));
+  const fresh = cheapest.added.filter((id) => !prevAdded.includes(id));
+  const dropped = prevAdded.filter((id) => !cheapest.added.includes(id));
+  lunarRungs.push({
+    mission: m, owned: [...tier3EndOwned, ...cheapest.added], added: cheapest.added,
+    cost: tier3EndCost + cheapest.cost, reached: true, turn: cheapest.turn,
+  });
+  console.log(
+    `  ${m.id.padEnd(11)} (${m.requirement.moon.profile.padEnd(6)}, needs step ${need} = ${LUNAR_STEPS[need]}): `
+    + `+${cheapest.cost} funds, +${cheapest.added.length} node(s) [${cheapest.added.join(', ') || 'none'}]`
+    + `${fresh.length ? `, new: ${fresh.join(', ')}` : ', new: none'}`
+    + `${dropped.length ? `  <-- NOT CUMULATIVE: drops ${dropped.join(', ')}` : ''}`,
+  );
+  prevAdded = cheapest.added;
+}
+// CUMULATIVE is the property that matters and the one asserted: each rung's
+// cheapest set must be a superset of the rung below it, or the ladder is not a
+// ladder -- a player who bought their way to `moon-land` must not find that
+// `moon-return`'s cheapest path goes somewhere else. The 1-3 new nodes per rung
+// that tier 2 holds to is NOT asserted here and does not hold: `moon-return`
+// costs six more nodes than `moon-land`, because coming home is a second
+// vehicle (an ascent stage, a shield, the engine and reserve that fly them, and
+// two more relights) rather than one more upgrade. Reported, not smoothed over
+// -- the greedy simulation below is where that wall is checked for being
+// crossable, and it crosses it in five launches.
+const lunarCumulative = (() => {
+  let prev = [];
+  return lunarRungs.every((r) => {
+    if (!r.reached) return false;
+    const dropped = prev.filter((id) => !r.added.includes(id));
+    prev = r.added;
+    return dropped.length === 0;
+  });
+})();
+console.log(`  the ladder is cumulative (no rung drops a node the rung below needs): ${lunarCumulative ? 'yes' : 'NO -- see above'}`);
+console.log('  new nodes per rung: '
+  + (() => { let prev = []; return lunarRungs.map((r) => { const f = (r.added ?? []).filter((id) => !prev.includes(id)).length; prev = r.added ?? []; return `${r.mission.id} +${f}`; }).join(', '); })());
+
+// ---------------------------------------------------------------------------
+// THE BUDGET AT INSERTION. ARCHITECTURE.md asks for "the remaining-stack
+// delta-v budget at insertion for the cheapest set (must cover the profile's
+// ladder with margin)". Two numbers per rung, both read off the same flight:
+// what the vehicle arrived with (`lunar.dvAvailable` — the cutting stage's
+// reserve plus every unfired stage above it) and what js/core/moon.js charges
+// for the profile FROM THE ORBIT IT ACTUALLY REACHED, which is the number that
+// matters and is not the one ARCHITECTURE.md quotes. The quoted 8 536 m/s is
+// the ladder from a 180 km CIRCULAR parking orbit; a real ascent cuts off the
+// instant periapsis crosses ORBIT_MIN_ALT and arrives on an ellipse, and the
+// departure burn is charged at periapsis, so the flown price is lower — and
+// the more eccentric the parking orbit, the lower it goes.
+console.log('\n=== Tier 4: remaining-stack delta-v at insertion vs the profile\'s ladder ===');
+console.log(`  reference: lunarLadder from a 180 km CIRCULAR parking orbit `
+  + `= ${Math.round(LUNAR_STEPS.reduce((s, k) => s + lunarLadder(R_EARTH_BAL + 180000, R_EARTH_BAL + 180000)[k], 0))} m/s `
+  + '(ARCHITECTURE.md\'s quoted number, and NOT what anything below flies)');
+function budgetRow(mission, owned) {
+  const vehicle = lunarVehicle(owned);
+  const steps = LUNAR_PROFILES[mission.requirement.moon.profile];
+  const rows = [];
+  for (const turn of TURN_STEPS) {
+    const outcome = resolveLaunch(
+      forceReliability(vehicle), mission, { fuelFraction: 1, turn }, makeRng(SEED), {},
+    );
+    const l = outcome.lunar;
+    const ins = outcome.insertion;
+    if (!l || !ins) continue;
+    const ladder = lunarLadder(R_EARTH_BAL + ins.periapsis, R_EARTH_BAL + ins.apoapsis);
+    const needed = steps.reduce((sum, k) => sum + ladder[k], 0);
+    rows.push({
+      turn, ins, ladder, needed, budget: l.dvAvailable, margin: l.dvAvailable - needed,
+      flew: outcome.success === true,
+    });
+  }
+  return { rows, steps };
+}
+
+for (const rung of lunarRungs) {
+  const { rows, steps } = budgetRow(rung.mission, rung.owned);
+  const flew = rows.filter((r) => r.flew);
+  if (rows.length === 0) { console.log(`  ${rung.mission.id}: never inserted`); continue; }
+  // The widest margin is the notch a player settles on; the narrowest FLYING
+  // notch is how close the rung comes to failing on a loadout that still works.
+  const widest = flew.length ? flew.reduce((a, r) => (r.margin > a.margin ? r : a)) : null;
+  const tightest = flew.length ? flew.reduce((a, r) => (r.margin < a.margin ? r : a)) : null;
+  if (!widest) {
+    const nearest = rows.reduce((a, r) => (r.margin > a.margin ? r : a));
+    console.log(`  ${rung.mission.id.padEnd(11)} NEVER FLIES: best margin ${Math.round(nearest.margin)} m/s `
+      + `(budget ${Math.round(nearest.budget)}, ladder ${Math.round(nearest.needed)})`);
+    continue;
+  }
+  console.log(
+    `  ${rung.mission.id.padEnd(11)} ${flew.length}/${TURN_STEPS.length} notches fly it`
+    + `  | widest: turn ${widest.turn.toFixed(2)}, parking ${Math.round(widest.ins.periapsis / 1000)} x `
+    + `${Math.round(widest.ins.apoapsis / 1000)} km, budget ${Math.round(widest.budget)} m/s, `
+    + `ladder ${Math.round(widest.needed)} m/s, margin +${Math.round(widest.margin)} m/s`
+    + `  | tightest flying: +${Math.round(tightest.margin)} m/s`,
+  );
+  console.log(`      ladder at the widest notch: ${steps.map((k) => `${k} ${Math.round(widest.ladder[k])}`).join(', ')}`);
+}
+
+// ---------------------------------------------------------------------------
+// GOAL 4, extended: the TWR safety rail across ALL FOUR tiers. Same BFS as the
+// tier 1+2 sweep above (one purchase at a time, deduplicated by sorted owned
+// set), now over 53 nodes — still tractable because prerequisites chain hard.
+// This is the rail's real test at tier 4: struct-11 multiplies booster
+// propellant by 18 and it carries its own engines precisely so no reachable
+// owned state can put that mass on the tier 3 booster's thrust.
+console.log('\n=== GOAL 4 (tier 4): TWR safety rail, all four tiers ===');
+const lunarReachable = enumerateReachableSets(lunarTree, lunarIds);
+console.log(`  ${lunarReachable.length} prereq-valid owned combinations enumerated (BFS, deduplicated)`);
+let minLiftoff4 = Infinity;
+let minLiftoff4Owned = null;
+let minUpper4 = Infinity;
+let minUpper4Owned = null;
+let minUpper4Stage = null;
+let liftoff4Violations = 0;
+let upper4Violations = 0;
+for (const owned of lunarReachable) {
+  const v = lunarVehicle(owned);
+  const tw = stageTWRs(v, 1);
+  if (tw[0] < minLiftoff4) { minLiftoff4 = tw[0]; minLiftoff4Owned = owned; }
+  if (tw[0] < 1.05) liftoff4Violations += 1;
+  for (let i = 1; i < tw.length; i += 1) {
+    if (tw[i] < minUpper4) { minUpper4 = tw[i]; minUpper4Owned = owned; minUpper4Stage = i; }
+    if (tw[i] < 0.5) upper4Violations += 1;
+  }
+}
+console.log(`  min liftoff TWR: ${minLiftoff4.toFixed(3)} (owned=[${minLiftoff4Owned.join(',') || '(none)'}])`);
+console.log(`  liftoff TWR < 1.05 violations: ${liftoff4Violations}`);
+console.log(
+  `  min upper-stage TWR at ignition: ${minUpper4.toFixed(3)} (stage idx ${minUpper4Stage}, `
+  + `owned=[${minUpper4Owned ? minUpper4Owned.join(',') : '(none)'}])`,
+);
+console.log(`  upper-stage TWR < 0.5 violations: ${upper4Violations}`);
+console.log(`  result: ${liftoff4Violations === 0 && upper4Violations === 0 ? 'PASS -- no soft-lock found' : 'FAIL -- see violations above'}`);
+
+// ---------------------------------------------------------------------------
+// GOAL 3 (phase 3): economy. A greedy player from the tier 3 END STATE through
+// the tier 4 goal. The start state is the one a tier 3 winner really has: the
+// dock gate's closure owned, nothing banked, and reputation 85 — the gate
+// `dock` itself carries, so a player who has just docked is standing on it.
+//
+// Each launch: fly the best-paying tier <= 4 contract the vehicle can actually
+// complete (orbit-shaped rungs judged on the periapsis scan, lunar rungs on a
+// real resolveLaunch probe over the turn slider), credit funds and reputation
+// through the same clamped `credit` the game uses, then spend down on the
+// cheapest node that measurably improves the goal probe — deepest lunar step
+// first, then smallest shortfall — falling back to the cheapest affordable node
+// when nothing improves it. Reliability is forced to 1 as everywhere here, so
+// this player never loses a launch to a bad roll and never pays repLoss; that
+// is the conservative side for a "the gates are reachable" check.
+function greedyTier4LaunchesToGoal() {
+  const floorMission = missions.find((m) => m.floor);
+  const goalMission = missions.find((m) => m.id === 'moon-return');
+  const MAX_LAUNCHES = 300;
+  const DECISION_TURNS = Array.from({ length: 11 }, (_, i) => i * 0.1);
+
+  let state = {
+    owned: [...tier3EndOwned], funds: 0, resources: {}, reputation: 85, tier: 4, objects: [],
+  };
+  let launches = 0;
+  const curve = [];
+
+  const goalScore = (owned) => {
+    const best = bestLunar(lunarVehicle(owned), goalMission, DECISION_TURNS);
+    const l = best.outcome.lunar;
+    if (!l) return -1e9;
+    return (best.outcome.success ? 1e12 : 0) + l.reached * 1e6 - Math.min(l.shortBy ?? 0, 1e5);
+  };
+
+  let won = false;
+  while (!won && launches < MAX_LAUNCHES) {
+    const vehicle = lunarVehicle(state.owned);
+    const metrics = bestMetricsOverTurns(vehicle, 1);
+
+    let best = floorMission;
+    for (const m of missions) {
+      if ((m.tier ?? 1) > 4) continue;
+      if (m.minReputation !== undefined && state.reputation < m.minReputation) continue;
+      if (m.requiresNode && ![].concat(m.requiresNode).every((id) => state.owned.includes(id))) continue;
+      if (m.requiresObject && !state.objects.some((o) => o.kind === m.requiresObject)) continue;
+      if (m.requirement.rendezvous !== undefined || m.requirement.dock !== undefined) continue;
+      if (m.payout <= best.payout) continue;
+      if (m.requirement.moon !== undefined) {
+        if (bestLunar(vehicle, m, DECISION_TURNS).outcome.success) best = m;
+      } else if (metricFor(m.requirement, metrics) >= requiredValue(m.requirement)) {
+        best = m;
+      }
+    }
+
+    const turn = best.requirement.moon !== undefined
+      ? bestLunar(vehicle, best, DECISION_TURNS).turn
+      : (metrics.bestTurn ?? 0.3);
+    const outcome = resolveLaunch(
+      forceReliability(vehicle), best, { fuelFraction: 1, turn }, makeRng(SEED + launches), {},
+    );
+    state = credit(state, { funds: best.payout, reputation: best.repGain });
+    launches += 1;
+    const ownedBefore = state.owned.length;
+
+    for (;;) {
+      let pick = null;
+      const base = goalScore(state.owned);
+      for (const node of lunarTree.nodes) {
+        if (!canBuy(lunarTree, state, node.id)) continue;
+        const s = goalScore([...state.owned, node.id]);
+        if (s > base + 1 && (!pick || fundsCost(node) < fundsCost(pick))) pick = node;
+      }
+      if (!pick) {
+        for (const node of lunarTree.nodes) {
+          if (!canBuy(lunarTree, state, node.id)) continue;
+          if (!pick || fundsCost(node) < fundsCost(pick)) pick = node;
+        }
+      }
+      if (!pick) break;
+      state = buy(lunarTree, state, pick.id);
+    }
+
+    curve.push({
+      launch: launches, mission: best.id, success: outcome.success === true,
+      reputation: state.reputation, funds: state.funds,
+      bought: state.owned.length - ownedBefore, owned: state.owned.length,
+    });
+    if (best.id === goalMission.id && outcome.success) won = true;
+  }
+  return { won, launches, curve, finalOwned: state.owned };
+}
+
+console.log('\n=== Greedy player simulation, tier 4 (GOAL 3: economy) ===');
+const tier4Greedy = greedyTier4LaunchesToGoal();
+if (!tier4Greedy.won) {
+  console.log(`  did not reach the tier 4 goal (stopped after ${tier4Greedy.launches} tier 4 launches)`);
+} else {
+  console.log(`  tier 4 launches: ${tier4Greedy.launches} (target: 15-60, dry streak <= 4, per ARCHITECTURE.md)`);
+  console.log(`  nodes owned at the win: ${tier4Greedy.finalOwned.length} of ${lunarIds.length}`);
+  {
+    let streak = 0; let worst = 0; let prevMission = null;
+    for (const row of tier4Greedy.curve) {
+      const newRung = row.mission !== prevMission;
+      prevMission = row.mission;
+      streak = (row.bought > 0 || newRung) ? 0 : streak + 1;
+      if (streak > worst) worst = streak;
+    }
+    console.log(`  longest dry streak (no purchase, no new rung): ${worst} launches (keep <= 4)`);
+  }
+  console.log('\n  one row per launch:');
+  for (const r of tier4Greedy.curve) {
+    console.log(`    launch ${String(r.launch).padStart(2)}: ${r.mission.padEnd(11)} -> reputation ${String(r.reputation).padStart(3)}, funds ${String(r.funds).padStart(7)}, bought ${r.bought} (owned ${r.owned})`);
+  }
+  console.log('\n  reputation-gate reachability (must cross before the rung is bought):');
+  for (const m of tier4Missions) {
+    if (m.minReputation === undefined) continue;
+    const first = tier4Greedy.curve.find((r) => r.reputation >= m.minReputation);
+    console.log(`    ${m.id}: minReputation ${m.minReputation} -> first crossed at tier 4 launch ${first ? first.launch : 'NEVER'}`);
   }
 }

@@ -1383,22 +1383,51 @@ reports "never met" for an unknown shape, so this arm is not optional.
 Tier 4 nodes (`tier: 4`), 12 to 14, four branches. Costs step up from tier
 3's 25 000–62 500 the way tier 3 stepped up from tier 2's.
 
-- **propulsion**: a cryogenic departure stage (`addStage`, large propMass),
-  a deep-space engine (isp mul), multi-restart 3 (`restarts` add 2 — five
-  is what `return` needs), a descent throttle (top-stage propMass reserve).
-- **structure**: lander (`lander` set 1), an ascent stage (`addStage`,
-  small), a heat shield (`shield` set 1), lightweight cryogenic tankage
-  (dryMass reduction).
-- **guidance**: deep-space navigation (`nav` add 1), terrain-relative
-  landing (feeds the landing roll), entry guidance.
-- **reliability**: lunar engine qualification (final-stage reliability mul),
-  landing rehearsal (`landerBonus`), entry qualification.
+- **propulsion**: a cryogenic deep-space engine (isp mul), a descent
+  propellant reserve (top-stage propMass), and the fourth and fifth relights
+  (`restarts` add 1 each — five is what `return` needs).
+- **structure**: a lunar-class launch vehicle, the cryogenic departure stage
+  (`addStage`), the lander (`lander` set 1), the ascent stage (`addStage`),
+  the heat shield (`shield` set 1).
+- **guidance**: deep-space navigation, terrain-relative landing (feeds the
+  landing roll).
+- **reliability**: insertion-stage requalification, lunar engine
+  qualification, landing rehearsal (`landerBonus`).
+
+**Four things measurement established that the paragraph above originally got
+wrong.** They are recorded because each of them is a trap the next tier will
+walk into as well.
+
+1. **A stage-adding node must be a structure node.** `collectEffects` hoists
+   every `addStage` ahead of the stat effects, in *branch* order, and
+   propulsion sorts before structure. A departure stage sold by propulsion
+   therefore lands at stage index 1 and silently renumbers every
+   `stages.1.*` and `stages.2.*` effect in tiers 2 and 3. Both new stages are
+   structure; propulsion sells their engine. A test pins it.
+2. **Tier 4 is a launch vehicle, not an attachment.** The tier 3 stack reaches
+   orbit with 430 to 800 m/s left. Nothing bolted on top of it flies to the
+   moon; the tier's first structure node is an 18× booster stretch, and
+   everything else hangs off that.
+3. **Selling that thrust as its own node is a trap, so it carries its own
+   engines.** Uprating the tier 3 core's thrust alone *lowers* best periapsis
+   — 184 627 m at ×1 down to 121 009 m at ×2 — because a heavier-thrusting
+   core on the same propellant burns out sooner and steeper. `gates.mjs`
+   reports it precisely: 24 supersets of `relay`'s gate that fall short of
+   it. The cross-branch TWR rail still applies to the two stages structure
+   *adds*, but not inside the launch vehicle node.
+4. **Guidance has two nodes, not three.** "Entry guidance" has no resolver
+   hook: entry is free and `shield` is a hardware gate rather than a roll, so
+   a third node would gate nothing. `stages.3.reliability` is dead data for
+   the same reason — stages above the insertion stage never ignite during the
+   ascent, and the lunar sequence rolls only the topmost stage — so no node
+   sells it.
 
 The cross-branch TWR rail (`js/data/tree.js:41`) extends unchanged: a stage
 added by structure requires the thrust that flies it. `data.test.js`'s
-ideal-full-tree delta-v bound (9 000–11 000 m/s, `:486`) moves with this
-tier and is re-pinned, not deleted — it exists to catch a tree that has
-quietly become a shop.
+ideal-full-tree delta-v bound moves with this tier and is re-pinned, not
+deleted — it exists to catch a tree that has quietly become a shop. Tier 4
+takes it from 9 000–11 000 m/s to **17 500–19 500** (measured 18 530, over a
+five-stage 3 037 kg stack).
 
 ## js/data/missions.js — tier 4 ladder
 
@@ -1500,6 +1529,27 @@ rung, the greedy player from the tier 3 end state through the goal (target
 at insertion for the cheapest set (must cover the profile's ladder with
 margin), and the TWR sweep extended to tier 4 sets. `data.test.js` asserts
 reachability of every tier 4 rung and greedy ≤ 80.
+
+**Measured, once the tier was built.** Greedy reaches the goal in **18 tier 4
+launches** (target 15 to 60) with a longest dry streak of 2. Reputation crosses
+every gate on the first launch; the wait is hardware, which is the right way
+round. The TWR rail holds over 161 032 prereq-valid combinations across four
+tiers, minimum liftoff 1.186, minimum upper stage 0.971, no violations. Budget
+against ladder at insertion: flyby +3 964 m/s, orbit +3 142, land +1 295,
+return **+623 m/s at its widest and +37 at its tightest flying notch** — the
+goal rung flies on 12 of 21 turn notches, the other three on all 21. The
+measured gates are flyby `[struct-11, guide-1]`, orbit `+prop-11`, land
+`[struct-13, prop-11, guide-1]`, return `[struct-15, prop-17, prop-15,
+guide-1]`; `restarts` gates two rungs and delta-v gates none of them alone.
+
+Two consequences worth stating. The flyby rung gates on the launch vehicle
+rather than the departure stage, because a bare probe is 5 kg against the
+lunar stack's 92 and the core that barely inserts the stack inserts a probe
+with 6 800 m/s to spare. And the step from `land` to `return` is **six nodes**,
+not the one-to-three the tier 2 ladder holds itself to: coming home is a second
+vehicle, and pretending otherwise would mean pricing the return as a bolt-on.
+The greedy player crosses it in five launches, which is what makes it a wall to
+climb rather than one to stop at.
 
 The numbers above are the shape, not the answer. Tier 3's contract said
 200 km and shipped 160 km because the resolver disagreed with it
