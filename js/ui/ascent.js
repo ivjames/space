@@ -7,7 +7,10 @@
 // before the flight shows it. So during playback this module reads exactly
 // two things out of the outcome: the samples whose t <= the current sim time
 // (the point the rocket is at now, and the path it has already flown — that
-// path is the trail), and the timeline events whose t <= the current sim
+// path is the trail; the telemetry card reads that same sample's `dv`, the
+// delta-v aboard at that instant, which is a property of the state at t in
+// the way `vel` is and says nothing about the delta-v the mission needs or
+// the flight falls short by), and the timeline events whose t <= the current sim
 // time (to emit onEvent, to know which stages have ignited or burnt out, to
 // know that a stage has blown up, where, and whether the flight survived it,
 // and to mark an anomaly where it happened). It never reads outcome.failure,
@@ -146,6 +149,28 @@ const CLOUD_SLOTS = Math.round((CLOUD_BAND_END_M - CLOUD_BAND_START_M) / CLOUD_S
 
 /** Ground strip height, px. */
 const GROUND_H = 22;
+
+// ---- readout --------------------------------------------------------------
+// The live telemetry card in the top-left of the sky: two columns of three
+// rows — mission clock, altitude and speed on the left; stage, downrange and
+// the delta-v still aboard on the right. Sized to be read at arm's length on
+// a phone held at launch, which is bigger than it needs to be on a desktop;
+// it still leaves the top-right corner to the km tick labels on a 320px-wide
+// canvas, which is the narrowest this game is played at.
+/** Row pitch, px, and the type sizes within a row. */
+const READOUT_ROW_H = 24;
+const READOUT_LABEL_PX = 10;
+const READOUT_VALUE_PX = 16;
+/** Label column width and the width of one label+value column, px. */
+const READOUT_LABEL_W = 34;
+const READOUT_COL_W = 118;
+/** The card: corner offset, inner padding, and the rows it holds. */
+const READOUT_X = 2;
+const READOUT_Y = 2;
+const READOUT_INSET = 6;
+const READOUT_ROWS = 3;
+const READOUT_W = READOUT_COL_W * 2 + READOUT_INSET * 2;
+const READOUT_H = READOUT_ROW_H * READOUT_ROWS + READOUT_INSET * 2;
 /**
  * How far back the heading is measured, in simulated seconds. The sprite
  * points along the velocity direction, taken as the displacement from the
@@ -321,6 +346,20 @@ function formatAlt(m) {
   return `${Math.round(m)} m`;
 }
 
+/**
+ * Mission clock, simulated seconds -> MM:SS (HH:MM:SS past an hour).
+ *
+ * Exported for the tests: it is the one piece of the telemetry card that is
+ * pure and worth pinning, the rest being canvas calls.
+ */
+export function formatClock(s) {
+  const total = Number.isFinite(s) ? Math.max(0, Math.floor(s)) : 0;
+  const mm = String(Math.floor(total / 60) % 60).padStart(2, '0');
+  const ss = String(total % 60).padStart(2, '0');
+  const hh = Math.floor(total / 3600);
+  return hh > 0 ? `${hh}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 /** Index of the last sample at or before `t`; -1 when there is none. */
 function indexAt(samples, t) {
   if (samples.length === 0 || t < samples[0].t) return -1;
@@ -341,7 +380,7 @@ function indexAt(samples, t) {
  * at the current sim time" — nothing here looks ahead of `t`.
  */
 function sampleAt(samples, t) {
-  if (samples.length === 0) return { t, alt: 0, vel: 0, stage: 1, downrange: 0 };
+  if (samples.length === 0) return { t, alt: 0, vel: 0, stage: 1, downrange: 0, dv: 0 };
   if (t <= samples[0].t) return samples[0];
   const last = samples[samples.length - 1];
   if (t >= last.t) return last;
@@ -355,6 +394,7 @@ function sampleAt(samples, t) {
     alt: a.alt + (b.alt - a.alt) * f,
     vel: a.vel + (b.vel - a.vel) * f,
     downrange: (a.downrange ?? 0) + ((b.downrange ?? 0) - (a.downrange ?? 0)) * f,
+    dv: (a.dv ?? 0) + ((b.dv ?? 0) - (a.dv ?? 0)) * f,
     stage: a.stage,
   };
 }
@@ -797,7 +837,14 @@ export function playOutcome(canvas, outcome, opts = {}) {
         ctx.font = '10px "Courier New", monospace';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
-        ctx.fillText(`TARGET ${formatAlt(target.value)} DR`, Math.min(x + 4, w - 110), 6);
+        // Under the readout card, not beside it: the card owns the top-left
+        // band and this label is clamped into the same corner on a narrow
+        // canvas.
+        ctx.fillText(
+          `TARGET ${formatAlt(target.value)} DR`,
+          Math.min(x + 4, Math.max(w - 110, 6)),
+          READOUT_Y + READOUT_H + 6,
+        );
         return;
       }
       ctx.restore();
@@ -822,7 +869,11 @@ export function playOutcome(canvas, outcome, opts = {}) {
     const label = target.kind === 'orbit'
       ? `TARGET ORBIT ${formatAlt(target.value)}`
       : `TARGET ${formatAlt(target.value)}`;
-    ctx.fillText(label, 6, y - 3);
+    // The line itself runs the full width, so only its label has to dodge the
+    // readout card: while the target is high in the view the label sits to the
+    // right of the card instead of under it.
+    const clearsCard = y - 3 > READOUT_Y + READOUT_H;
+    ctx.fillText(label, clearsCard ? 6 : READOUT_X + READOUT_W + 8, y - 3);
   }
 
   /**
@@ -1454,8 +1505,18 @@ export function playOutcome(canvas, outcome, opts = {}) {
     for (const ev of passedFailures()) drawBang(ev);
   }
 
-  /** T+ clock, live altitude, speed and downrange in the top-left of the sky. */
-  function drawReadout(alt, vel, dr) {
+  /**
+   * The live telemetry card: mission clock, altitude and speed down the left
+   * column; stage, downrange and the delta-v still aboard down the right.
+   *
+   * Every number is the CURRENT state at sim time and nothing else — the
+   * interpolated sample (alt, vel, downrange, dv), the stage flying now, and
+   * the playback clock. `dv` is the resolver's per-sample delta-v remaining,
+   * which is a property of the mass and propellant aboard at that instant in
+   * exactly the way `vel` is a property of the velocity, so it says nothing
+   * about how the flight ends (see the no-leak contract at the top).
+   */
+  function drawReadout(alt, vel, dr, dv, stage) {
     ctx.save();
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
@@ -1467,27 +1528,32 @@ export function playOutcome(canvas, outcome, opts = {}) {
     if (sky.day > 0.03) {
       ctx.fillStyle = rgba([6, 14, 26], 0.5 * sky.day);
       ctx.beginPath();
-      if (ctx.roundRect) ctx.roundRect(2, 2, 132, 74, 6);
-      else ctx.rect(2, 2, 132, 74);
+      if (ctx.roundRect) ctx.roundRect(READOUT_X, READOUT_Y, READOUT_W, READOUT_H, 6);
+      else ctx.rect(READOUT_X, READOUT_Y, READOUT_W, READOUT_H);
       ctx.fill();
     }
     const labelCol = rgba(mix(rgbMuted, [206, 214, 224], sky.day), 1);
     const valueCol = rgba(rgbFg, 1);
-    ctx.fillStyle = labelCol;
-    ctx.font = '10px "Courier New", monospace';
-    ctx.fillText(`T+${Math.round(simT)}s`, 6, 6);
 
-    const line = (label, text, top) => {
-      ctx.font = '9px "Courier New", monospace';
+    // The label is the smaller type, so it is dropped to sit on the value's
+    // baseline rather than on its cap height.
+    const labelDrop = Math.round((READOUT_VALUE_PX - READOUT_LABEL_PX) * 0.75);
+    const cell = (col, row, label, text) => {
+      const x = READOUT_X + READOUT_INSET + col * READOUT_COL_W;
+      const top = READOUT_Y + READOUT_INSET + row * READOUT_ROW_H;
+      ctx.font = `${READOUT_LABEL_PX}px "Courier New", monospace`;
       ctx.fillStyle = labelCol;
-      ctx.fillText(label, 6, top + 3);
+      ctx.fillText(label, x, top + labelDrop);
+      ctx.font = `bold ${READOUT_VALUE_PX}px "Courier New", monospace`;
       ctx.fillStyle = valueCol;
-      ctx.font = 'bold 13px "Courier New", monospace';
-      ctx.fillText(text, 30, top);
+      ctx.fillText(text, x + READOUT_LABEL_W, top);
     };
-    line('ALT', formatAlt(alt), 20);
-    line('SPD', `${Math.round(vel)} m/s`, 38);
-    line('DR', formatAlt(dr), 56);
+    cell(0, 0, 'T+', formatClock(simT));
+    cell(0, 1, 'ALT', formatAlt(alt));
+    cell(0, 2, 'VEL', `${Math.round(vel)} m/s`);
+    cell(1, 0, 'STG', `${stage}/${fullStack.length}`);
+    cell(1, 1, 'DR', formatAlt(dr));
+    cell(1, 2, 'ΔV', `${Math.round(dv)} m/s`);
     ctx.restore();
   }
 
@@ -1526,7 +1592,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     }
     drawFailure(dr, alt);
     ctx.restore();
-    drawReadout(alt, s.vel ?? 0, dr);
+    drawReadout(alt, s.vel ?? 0, dr, Math.max(s.dv ?? 0, 0), stageAt(s));
   }
 
   function flushEventsTo(t) {

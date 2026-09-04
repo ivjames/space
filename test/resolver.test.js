@@ -1571,3 +1571,67 @@ test('a guidance failure is never escaped: abort coverage changes nothing about 
     assert.deepEqual(o, bare);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Sample delta-v remaining (`sample.dv`) — what the ascent view's telemetry
+// card shows live. It is the delta-v still ABOARD at that instant, which is
+// neither `deltaVAchieved` (spent) nor `deltaVRequired` (the budget).
+// ---------------------------------------------------------------------------
+
+test('the first sample carries the whole vehicle delta-v, and it only falls', () => {
+  const v = fixture();
+  const { samples } = resolveLaunch(v, MISSION_100KM, FULL, makeRng(1));
+  const full = totalDeltaV(v, 1);
+  // Stage 1 has just lit with a full load at its nominal isp (reliability 1,
+  // so no underperformance), so the sum is exactly the brochure figure.
+  assert.ok(Math.abs(samples[0].dv - full) < 1e-6, `${samples[0].dv} vs ${full}`);
+  for (let i = 1; i < samples.length; i += 1) {
+    assert.ok(samples[i].dv <= samples[i - 1].dv + 1e-9,
+      `dv rose at sample ${i}: ${samples[i - 1].dv} -> ${samples[i].dv}`);
+    assert.ok(samples[i].dv >= 0);
+  }
+  // The flight burns both stages to depletion, so it ends with nothing left.
+  assert.ok(samples.at(-1).dv < 1e-6, `ended with ${samples.at(-1).dv} m/s aboard`);
+});
+
+test('a lighter fuel load is less delta-v aboard from the first sample on', () => {
+  const v = fixture();
+  const full = resolveLaunch(v, MISSION_100KM, FULL, makeRng(1)).samples[0].dv;
+  const half = resolveLaunch(v, MISSION_100KM, { fuelFraction: 0.5 }, makeRng(1)).samples[0].dv;
+  assert.ok(half < full, `${half} is not below ${full}`);
+  assert.ok(Math.abs(half - totalDeltaV(v, 0.5)) < 1e-6);
+});
+
+test('a terminal failure leaves nothing to spend, whatever is in the tanks', () => {
+  // Stage 1 fails mid-burn with no abort system: the upper stage is still
+  // there, full, and is never going to light.
+  const o = resolveLaunch(fixture([FLAKY_STAGE_1]), MISSION_100KM, FULL,
+    scriptedRng(STAGE_1_MID_BURN_FAILURE));
+  assert.ok(o.failure && !o.failure.escaped);
+  const at = o.samples.filter((s) => s.t >= o.failure.t);
+  assert.ok(at.length > 0);
+  for (const s of at) assert.equal(s.dv, 0, `dv ${s.dv} at T+${s.t} after the failure`);
+});
+
+test('an escaped failure keeps the escaping stage delta-v, and drops the failed one', () => {
+  const v = fixture([FLAKY_STAGE_1, ESCAPE(1)]);
+  const o = resolveLaunch(v, MISSION_100KM, FULL, scriptedRng(STAGE_1_MID_BURN_FAILURE));
+  assert.equal(o.escapes, 1);
+  const abort = o.timeline.find((e) => e.kind === 'separation' && e.abort);
+  // Through the abort coast the stack still carries stage 2's full load: the
+  // stage has not lit, so what it has is its ideal delta-v.
+  const coasting = o.samples.find((s) => s.t > abort.t);
+  const stage2 = stageDeltaV(v, 1, 1);
+  assert.ok(Math.abs(coasting.dv - stage2) < 1e-6, `${coasting.dv} vs ${stage2}`);
+  // And the failed stage's own delta-v went down with it.
+  assert.ok(coasting.dv < o.samples[0].dv);
+});
+
+test('a vehicle that cannot lift off is short of thrust, not of delta-v', () => {
+  const overloaded = fixture([{ stat: 'stages.0.propMass', op: 'set', value: 9000 }]);
+  const o = resolveLaunch(overloaded, MISSION_100KM, FULL, makeRng(1));
+  assert.equal(o.samples.length, 1);
+  const full = totalDeltaV(overloaded, 1);
+  assert.ok(Math.abs(o.samples[0].dv - full) < 1e-6, `${o.samples[0].dv} vs ${full}`);
+  assert.ok(o.samples[0].dv > 0);
+});

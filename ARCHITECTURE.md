@@ -133,7 +133,17 @@ Outcome:
                             //   e.g. "Reached 62 km. Short by 410 m/s."
                             //   e.g. "Stage 2 ignition failure at T+142s."
   timeline: Event[],        // sorted by t
-  samples: Sample[]         // for the renderer: { t, alt, vel, mass, stage }
+  samples: Sample[]         // for the renderer: { t, alt, vel, mass, stage, dv }
+                            //   dv is the delta-v still ABOARD at that
+                            //   instant (m/s): what is in the flying stage's
+                            //   tank at the isp it is actually running, plus
+                            //   the ideal delta-v of every stage above it.
+                            //   0 once a terminal failure has happened. Like
+                            //   `vel` and `mass` it is a property of the
+                            //   state at `t`, so the renderer may show it
+                            //   live without breaking the no-leak contract.
+                            //   Not to be confused with `deltaVAchieved`
+                            //   (spent) or `deltaVRequired` (the budget)
 }
 // Event: { t, kind, stage?, alt?, text }
 //   kinds: 'liftoff' | 'burnout' | 'separation' | 'ignition' | 'failure'
@@ -339,7 +349,9 @@ export const tierGoals = { 1: { requirement: { altitude: 100000 }, name: 'Reach 
   once it has climbed that far — below it the pad is in view, above it the
   world scrolls down past the rocket. Altitude reads off the world, not a
   gauge: km tick lines and a dashed `TARGET n km` line drawn in world space,
-  plus a T+ clock, altitude and speed in the top-left corner. Failure is
+  plus a telemetry card in the top-left corner — two columns of three rows:
+  mission clock (`T+ MM:SS`), altitude and speed on the left; stage `n/N`,
+  downrange and the delta-v still aboard (`sample.dv`) on the right. Failure is
   shown at the moment it happens. The sprite is stage-accurate: it takes
   `opts.vehicle` and draws one segment per stage (sized by mass via the
   exported `stackGeometry`, each with its own nozzle), and at separation the
@@ -516,7 +528,8 @@ confirmed, text like "Orbit: 112 × 340 km."), `'impact'`. Readouts:
 - failure readouts as in phase 0.
 
 **Samples** gain `x` and `y` (world position, m) and `downrange` (m), so the
-renderer can follow horizontally and draw a trajectory.
+renderer can follow horizontally and draw a trajectory, and `dv` (m/s, the
+delta-v still aboard) so the telemetry card can show it live.
 
 ## js/core/tree.js, js/data/tree.js — tiers in the tree
 
