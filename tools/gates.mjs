@@ -22,9 +22,12 @@
 //   supersets   prereq-valid sets that satisfy the gate
 //   failing     supersets that still fall short -- a node that makes the
 //               vehicle worse for the shape (the stage 2 high-flow injector
-//               on an orbit contract, the top-stage reserve tank before the
-//               lighter fairing). Data cannot express "not this node", so
-//               these are documented at the mission and pinned by test.
+//               on an orbit contract). Data cannot express "not this node",
+//               so these are documented at the mission and pinned by test.
+//               The other way to retire one is to make the harmful node
+//               REQUIRE the node that offsets it, which is why prop-13
+//               requires struct-10 and satellite has no failing supersets
+//               any more.
 //   hidden      reaching sets the gate does not admit: a different path to
 //               the same capability. The ladder tab still names the
 //               missing purchase, so the player is pointed at the path.
@@ -59,8 +62,8 @@ export const trajectoryNodes = nodes.filter((n) => (n.tier ?? 1) <= MAX_TIER && 
 export const inertNodes = nodes.filter((n) => (n.tier ?? 1) <= MAX_TIER && !trajectoryNode(n)).map((n) => n.id);
 
 // An inert prerequisite changes nothing in flight, so it is treated as owned
-// for free -- but ITS prerequisites still have to hold (prop-13 needs
-// prop-10, which needs prop-9: no third stage, no reserve tank on it).
+// for free -- but ITS prerequisites still have to hold (prop-11 needs
+// prop-10, which needs prop-9: no third stage, no relights on it).
 export function satisfied(id, owned) {
   if (owned.includes(id)) return true;
   if (!inertNodes.includes(id)) return false;
@@ -136,8 +139,17 @@ export function buildTable(steps = 21) {
 
 /**
  * The rule applied to one mission against a table: null for a rendezvous /
- * dock mission (the orbital sequence's own checks gate those), otherwise
- * { gate, cheapest, supersets, failing, hidden, necessary, reaching }.
+ * dock mission, otherwise { gate, cheapest, supersets, failing, hidden,
+ * necessary, reaching }.
+ *
+ * A target-shaped rung is not derived here because its metric is not a
+ * number this table holds: it needs the target, the window slider and the
+ * whole orbital sequence, and its gate is the union of the sequence's own
+ * hardware checks (restarts, nav, rcs, the adapter, the module) with the
+ * ascent hardware that leaves a reserve to spend (prop-13). Those gates are
+ * authored in js/data/missions.js against the resolver and MEASURED by
+ * test/data.test.js, which flies each rung with exactly its gated hardware
+ * over every selectable loadout -- read that test before changing one.
  */
 export function deriveGate(mission, table) {
   const req = mission.requirement;

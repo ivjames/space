@@ -271,13 +271,23 @@ reliability forced to 1, the turn range swept) and `test/data.test.js`
 pins each template's list to it. A rung reachable by some other path stays
 hidden until that purchase; the ladder tab names it. A node that makes the
 vehicle worse for a shape can leave a superset of a gate short of the rung
-(prop-7 on orbit-low, prop-13 on satellite); data cannot say "not this
-node", so each such exception is named at the template and pinned by test.
+(prop-7 on orbit-low); data cannot say "not this node", so each such
+exception is named at the template and pinned by test. Where a node is
+harmful only in some purchase orders, making it *require* the node that
+offsets it retires the exception outright — prop-13 requires struct-10 for
+exactly this reason, and satellite has no falling supersets as a result.
+
 For a rendezvous or dock template the gate is the hardware the orbital
-sequence's own checks refuse to run without (restarts, nav level, the
-docking adapter, the station module), read off `js/core/resolver.js` and
-documented per node in `js/data/missions.js`; a core in orbit already
-proves the ascent hardware.
+sequence's own checks refuse to run without (restarts, nav level, rcs, the
+docking adapter, the station module) **plus the ascent hardware that leaves
+the sequence a reserve to spend** (prop-13, and struct-10 through its
+chain). `requiresObject: 'core'` does *not* stand in for the second half:
+a core in orbit proves the vehicle reached 160 km, not that it arrived
+with propellant held back and on a shape worth matching, and the orbit
+match is charged before nav quality is consulted at all. Both halves are
+read off `js/core/resolver.js`, measured against it over every
+prereq-valid node set and every selectable loadout, and documented per
+node in `js/data/missions.js`.
 
 ## js/core/state.js
 
@@ -948,27 +958,35 @@ contract stays tier 1's. Under the gating rule ("js/core/contracts.js"),
 `satellite` carries the tier 2 goal's gate (`prop-9`, `guide-1`: it is the
 tier 2 goal's orbit) and `core` needs `struct-10` on top of `prop-8` and
 `guide-1` — no vehicle without the lighter fairing reaches 160 km. The
-target-shaped rungs follow the orbital sequence's own checks: `rdv-1`
-needs `['prop-11', 'guide-3', 'prop-12']` and `rdv-2` `['prop-11',
-'guide-4', 'prop-12']` — the match step stops at `restarts < 2`, which
-only prop-11 lifts (rcs waives the approach restart, never the match's);
-`NAV_APPROACH[nav]` against `closestApproach <= within` makes nav 1 the
-floor for 5 km and nav 2 for 500 m; and rcs (prop-12) is what gives those
-floors a margin, because nav 1 and nav 2 meet their rung only at zero
-phase error and the window slider steps by 0.01 of an orbit (3.6°), so
-the error is never zero — halved by rcs, both rungs hold at the slider's
-worst half-step of 1.8°. `dock` needs `['struct-module', 'prop-11',
-'guide-5']` — the dock step wants `closestApproach <= DOCK_RANGE` (100 m),
-which nav 3's 50 m meets with margin and nav 2 + rcs's 250 m does not, and
-struct-module's prerequisite chain carries the docking adapter (struct-9).
-guide-1 and prop-10 arrive through those chains too, so each missing
-purchase is reported once. A gate must hold at that worst-case slider
-error, not just at zero; `data.test.js` checks each one against the
-resolver's constants.
+target-shaped rungs follow the orbital sequence's own checks *and* the
+reserve rule above: `rdv-1` needs `['prop-11', 'guide-3', 'prop-12',
+'prop-13']` and `rdv-2` `['prop-11', 'guide-4', 'prop-12', 'prop-13']` —
+the match step stops at `restarts < 2`, which only prop-11 lifts (rcs
+waives the approach restart, never the match's); `NAV_APPROACH[nav]`
+against `closestApproach <= within` makes nav 1 the floor for 5 km and
+nav 2 for 500 m; rcs (prop-12) is what gives those floors a margin,
+because nav 1 and nav 2 meet their rung only at zero phase error and the
+window slider steps by 0.001 of an orbit (0.36°), so the error is never
+zero — halved by rcs, both rungs hold at the slider's worst half-step of
+0.18°; and prop-13 is the top-stage reserve the match burn is paid out
+of, without which no loadout reaches any of the three rungs. `dock` needs
+`['struct-module', 'prop-11', 'guide-5', 'prop-12', 'prop-13']` — the
+dock step wants `closestApproach <= DOCK_RANGE` (100 m), which nav 3's
+50 m meets with margin and nav 2 + rcs's 252 m does not; struct-module's
+prerequisite chain carries the docking adapter (struct-9); and prop-12 is
+a gate here for a second reason, the phasing pair. prop-11's three
+restarts are exactly match (2) + approach (1), so outside
+`PHASE_TOLERANCE_DEG` the phasing burn has no restart left unless rcs
+waives the approach's — without it dock is flyable on a three-notch
+window band and stops for want of restarts on every other notch. guide-1,
+prop-10 and struct-10 arrive through those chains, so each missing
+purchase is reported once. A gate must hold at the worst-case slider
+error, not just at zero, and must be flyable with exactly the hardware it
+lists; `data.test.js` checks both against the resolver.
 
 ## js/ui — what tier 3 adds
 
-- **Loadout**: `window` slider `[data-loadout="window"]` 0..1 step 0.01,
+- **Loadout**: `window` slider `[data-loadout="window"]` 0..1 step 0.001,
   shown for rendezvous/dock missions, labelled as a launch window with the
   value shown in degrees of orbit (value × 360). Persisted in `view`. The
   vehicle stats block shows restarts, nav, docking, rcs when non-zero, and
