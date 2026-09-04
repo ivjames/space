@@ -1355,6 +1355,21 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
       events.push({ t: stepTime.touchdown, kind: 'landing', text: 'Touchdown on the moon.' });
     }
 
+    if (step === 'ascent') {
+      // The far end of the climb, at `stepTime.orbited`, for the same reason
+      // the touchdown is announced at the far end of the descent: the moment
+      // the step is ABOUT is the moment it arrives, not the moment it lights.
+      //
+      // It is also the thing that keeps the ascent on screen. A `return` that
+      // climbs back to orbit and then cannot make the burn home — no shield,
+      // no restart, or not enough delta-v — stops before `tei` pushes anything
+      // at all, so without this the last event on its timeline is the ascent
+      // burn's own instant. The map plays the timeline and stops at its last
+      // event, so it stopped with the vehicle still on the surface at the
+      // start of a climb it had already completed, and `reached` said it had.
+      events.push({ t: stepTime.orbited, kind: 'lunar-orbit', text: 'Back in lunar orbit.' });
+    }
+
     reached = LUNAR_STEPS.indexOf(step);
   }
 

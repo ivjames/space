@@ -2109,6 +2109,21 @@ test('a vehicle with no heat shield gets home no further than lunar orbit', () =
   assert.match(o.readout, /^No heat shield aboard/);
   // Landing without one is still landing: the shield is only about the return.
   assert.equal(resolveLaunch(v, MOON_MISSION('land'), MOON_LOAD, makeRng(7)).success, true);
+
+  // And the flight does not end on the frame the ascent lights. The three
+  // pre-burn stops at `tei` — no shield, no restart, not enough delta-v — all
+  // break before the step pushes anything, so the ascent's own arrival at
+  // `stepTime.orbited` is the last thing on the timeline. Without it the map,
+  // which plays the timeline and stops at its last event, held the vehicle on
+  // the surface at the start of a climb this outcome says it completed.
+  const at = Object.fromEntries(o.lunar.burns.map((b) => [b.kind, b.t]));
+  const last = o.timeline.at(-1);
+  assert.equal(last.kind, 'end');
+  assert.equal(last.t, at.ascent + ASCENT_TIME, 'the timeline runs to the top of the climb');
+  assert.ok(
+    o.timeline.some((e) => e.kind === 'lunar-orbit' && e.t === at.ascent + ASCENT_TIME),
+    'the ascent arrives somewhere',
+  );
 });
 
 // ---------------------------------------------------------------------------

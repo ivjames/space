@@ -1375,6 +1375,13 @@ success. Only `orbit` gets it: `land` and `return` have their own reasons to
 still be there afterwards, and two hours added to a flight that is about to
 descend would delay the descent to say what the descent says better.
 
+A completed `ascent` emits the same event at `stepTime.orbited`, and that one
+is not decoration: a `return` that climbs back to orbit and then cannot make
+the burn home — no shield, no restart, not enough delta-v — breaks before `tei`
+pushes anything, so without it the last entry on that flight's timeline is the
+ascent burn's own instant, and the map stopped with the vehicle on the surface
+at the start of a climb `reached` says it finished.
+
 **A flyby's arrival is an event, not a step.** `flyby` is the one profile
 whose ladder ends with a burn made at the PLANET: it rounds the moon on the
 transfer the injection bought and makes no burn there, which is what makes it
