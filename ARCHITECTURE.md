@@ -874,7 +874,7 @@ phasing arc alone; after approach, the computed value.
 ```js
 {
   ...phase 0 and 1 fields,
-  insertion: { t, periapsis, apoapsis } | null,
+  insertion: { t, periapsis, apoapsis, phase } | null,
   orbital: null | {
     target: { id, periapsis, apoapsis, phase },
     dvAvailable, dvUsed, phaseErrorDeg,
@@ -1347,9 +1347,36 @@ Five restarts is the deepest profile's requirement (tli, loi, descent,
 ascent, tei), so `restarts` is a real gate again and the propulsion branch
 has something to sell.
 
-Burn times are the transfer's own: `tli` at `t0 + P/2`, `loi` at
-`tli.t + tof`, `descent` a quarter of a lunar period later, `ascent` and
-`tei` after a surface stay of `SURFACE_STAY` seconds. A `return` flight's
+Burn times are the transfer's own: `tli` **at the next periapsis passage
+after insertion**, `loi` at `tli.t + tof`, `descent` a quarter of a lunar
+period later, `ascent` and `tei` after a surface stay of `SURFACE_STAY`
+seconds.
+
+**The departure burn must happen where it is priced, and getting that wrong is
+silent.** `lunarLadder` charges the transfer from the parking orbit's
+periapsis, because that is the efficient place to leave from and it is the
+Oberth discount the whole tier is sized against. An earlier draft of this
+contract scheduled the burn half a parking orbit after insertion — "the vehicle
+coasts to the far side and leaves from there" — which is apoapsis, the worst
+place to leave from. On an 80 km × 4 381 km parking orbit that charged 2 234 m/s
+for a burn that costs 3 218 m/s: 983 m/s of delta-v the vehicle never had, and
+every lunar mission reading as affordable when it was not. Nothing failed; the
+numbers were simply wrong in the direction that lets a flight succeed.
+
+Half a period is not the fix either, because **insertion does not happen at
+periapsis**: the cutoff fires when the achieved orbit's periapsis crosses
+`ORBIT_MIN_ALT`, which happens partway up the ascent with the vehicle still
+climbing — measured at 284 to 385 km on an orbit whose periapsis is 80 km. So
+the resolver records the orbit phase at cutoff (mean anomaly over 2π since
+periapsis, `orbitPhase`, the inverse of `orbit.js`'s `positionAt`) on
+`insertion`, and the schedule coasts `(1 - phase)` of a period to the next
+periapsis. The map reads the same field for the same reason, so the drawn
+departure point is the periapsis the burn was priced at.
+
+The invariant that keeps them together is a test rather than a comment: on a
+genuinely eccentric parking orbit, the vehicle's radius at the scheduled
+departure equals the parking orbit's periapsis radius, and the delta-v charged
+equals the vis-viva cost of departing from there. A `return` flight's
 timeline is days long, which the map plays back at its own rate and the
 result screen reports as mission elapsed time — the same simulated seconds
 every other flight already uses. Nothing in state or the UI learns about

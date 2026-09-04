@@ -210,28 +210,52 @@ export const SURFACE_STAY = 86400;
 /**
  * When each step of a lunar flight happens, s.
  *
- * Derived from the parking orbit and the ladder alone — no burn, no outcome,
- * nothing the flight discovered. That is what lets the map view call it: the
- * cislunar frame has to place the moon where the transfer will arrive from the
- * FIRST frame, before any burn has been played back, and reading the burn times
+ * Derived from the insertion and the ladder alone — no burn, nothing the
+ * sequence AFTER insertion discovered. That is what lets the map view call it:
+ * the cislunar frame has to place the moon where the transfer will arrive from
+ * the FIRST frame, before any burn has been played back, and reading burn times
  * off the outcome to do that would break the no-leak contract the map keeps
  * (js/ui/map.js). Both callers derive the schedule instead of sharing it, which
  * is why it is one exported function rather than two agreeing copies: a change
  * to the departure time that only the resolver knew about would leave the map
  * flashing the capture burn beside the moon rather than at it.
  *
- * Departure is half a parking orbit after insertion — the vehicle coasts to
- * the far side and leaves from there. Capture is one transfer time of flight
- * later. Descent and the burn home each sit a quarter of a low lunar orbit
- * after arriving, which is the shortest wait that is not zero.
+ * DEPARTURE IS AT THE NEXT PERIAPSIS PASSAGE, which is what `phase` is for.
+ * `lunarLadder` prices TLI as a burn made at the parking orbit's PERIAPSIS —
+ * that is the Oberth-efficient place to leave from, it is what a real mission
+ * does, and on an eccentric parking orbit it is hundreds of m/s cheaper than
+ * anywhere else — so the schedule has to put the burn where the price says it
+ * is. It cannot: the two apsides say what the orbit is, not where on it the
+ * vehicle is, and insertion cutoff fires the instant the achieved orbit's
+ * periapsis crosses the threshold, which on a real ascent is a few hundred km
+ * up and still climbing. So the caller passes the orbit PHASE at t0 (mean
+ * anomaly / 2pi since periapsis, js/core/orbit.js's convention) and the wait is
+ * the rest of that orbit: `(1 - phase) * parkPeriod`.
+ *
+ * THE BUG THIS REPLACED, because it is worth naming: departure used to be half
+ * a parking orbit after insertion, described as coasting "to the far side" and
+ * leaving from there. The far side is APOAPSIS — the single worst place to
+ * depart from, and the one the price is not quoted at. On an 80 x 4 381 km
+ * parking orbit that scheduled a 3 218 m/s burn and charged 2 234 m/s for it,
+ * so a lunar mission was marked affordable, and flown, on 983 m/s the vehicle
+ * did not have. A phase of 0 (already at periapsis) therefore waits a FULL
+ * period rather than burning at t0: a burn at the instant of insertion is not
+ * a coast, and the map has to have something to draw.
+ *
+ * Capture is one transfer time of flight later. Descent and the burn home each
+ * sit a quarter of a low lunar orbit after arriving, which is the shortest wait
+ * that is not zero.
  *
  * @param {number} t0 insertion time, s
  * @param {number} parkPeriod period of the achieved parking orbit, s
  * @param {{tof: number}} ladder from `lunarLadder`
+ * @param {number} [phase=0] orbit fraction since periapsis at t0, 0..1
+ *   (values outside wrap; a non-finite one is treated as 0)
  * @returns {{tli: number, loi: number, descent: number, ascent: number, tei: number}}
  */
-export function lunarSchedule(t0, parkPeriod, ladder) {
-  const tli = t0 + parkPeriod / 2;
+export function lunarSchedule(t0, parkPeriod, ladder, phase = 0) {
+  const p = Number.isFinite(phase) ? ((phase % 1) + 1) % 1 : 0;
+  const tli = t0 + (1 - p) * parkPeriod;
   const loi = tli + ladder.tof;
   const descent = loi + LLO_PERIOD / 4;
   const ascent = descent + SURFACE_STAY;

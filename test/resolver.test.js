@@ -12,6 +12,7 @@ import {
   requiredDeltaV,
   pitchProgram,
   orbitElements,
+  orbitPhase,
   LOSS_ALLOWANCE,
   ORBIT_LOSS_ALLOWANCE,
   ORBIT_MIN_ALT,
@@ -42,12 +43,14 @@ import {
 } from '../js/core/resolver.js';
 import {
   elementsFrom,
+  positionAt,
   radiusOf,
   transferDeltaV,
   phasingDeltaV,
   phaseFor,
+  velocityAt,
 } from '../js/core/orbit.js';
-import { LUNAR_STEPS, LLO_PERIOD, lunarLadder } from '../js/core/moon.js';
+import { A_MOON, LUNAR_STEPS, LLO_PERIOD, lunarLadder } from '../js/core/moon.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures. Defined here, not imported from js/data, so content changes cannot
@@ -533,6 +536,64 @@ test('orbitElements: eccentric, escaping and straight-up cases', () => {
   assert.equal(vertical.h, 0);
   assert.equal(vertical.periapsis, -R_EARTH);
   assert.ok(vertical.apoapsis > 0 && vertical.apoapsis < 100000);
+});
+
+// ---------------------------------------------------------------------------
+// orbitPhase — the inverse of js/core/orbit.js's positionAt, so it is tested
+// against it: every phase that goes into positionAt has to come back out of
+// orbitPhase. That round trip is the whole guarantee, because the phase's only
+// job is to be the number the schedule and the map feed BACK into positionAt.
+// ---------------------------------------------------------------------------
+
+test('orbitPhase round-trips positionAt, on both sides of the orbit', () => {
+  const rp = R_EARTH + 80000;
+  const ra = R_EARTH + 4381000;      // the eccentric parking orbit tier 4 flies
+  const { a, e } = elementsFrom(rp, ra);
+  assert.ok(e > 0.2, `this test needs a genuinely eccentric orbit, got e ${e}`);
+
+  for (let i = 0; i < 64; i += 1) {
+    const phase = i / 64;
+    const p = positionAt(rp, ra, 0, phase, 0);
+    // The velocity is differentiated out of positionAt rather than written as
+    // a second formula, so the round trip is against orbit.js and nothing
+    // else: a centred difference over a millisecond on an orbit this size is
+    // good to well under the tolerance below.
+    const dt = 0.001;
+    const ahead = positionAt(rp, ra, 0, phase, dt);
+    const behind = positionAt(rp, ra, 0, phase, -dt);
+    const v = { x: (ahead.x - behind.x) / (2 * dt), y: (ahead.y - behind.y) / (2 * dt) };
+
+    const back = orbitPhase({ x: p.x, y: p.y }, v);
+    const err = Math.min(Math.abs(back - phase), 1 - Math.abs(back - phase));
+    assert.ok(err < 1e-6, `phase ${phase} came back as ${back}`);
+    // And the half-orbit trap that made this function necessary: the sign of
+    // r.v puts the answer on the right side. Climbing is the first half of the
+    // orbit, falling the second.
+    const climbing = p.x * v.x + p.y * v.y > 0;
+    if (phase > 1e-9 && phase < 0.5) assert.ok(climbing, `phase ${phase} should be climbing`);
+    if (phase > 0.5) assert.ok(!climbing, `phase ${phase} should be falling`);
+  }
+
+  // The two apsides by hand, since they are the two the schedule cares about.
+  const vp = Math.sqrt(MU * (2 / rp - 1 / a));
+  const va = Math.sqrt(MU * (2 / ra - 1 / a));
+  assert.ok(orbitPhase({ x: rp, y: 0 }, { x: 0, y: vp }) < 1e-9, 'periapsis is phase 0');
+  assert.ok(Math.abs(orbitPhase({ x: -ra, y: 0 }, { x: 0, y: -va }) - 0.5) < 1e-9, 'apoapsis is 0.5');
+  // Direction round the planet is not the question — phase counts time since
+  // periapsis, so flying the same orbit backwards reads the same.
+  assert.ok(Math.abs(orbitPhase({ x: -ra, y: 0 }, { x: 0, y: va }) - 0.5) < 1e-9);
+});
+
+test('orbitPhase reports 0 rather than NaN for what has no phase', () => {
+  const r = { x: 0, y: R_EARTH + 200000 };
+  const circular = Math.sqrt(MU / (R_EARTH + 200000));
+  // A circular orbit has no periapsis to count from; 0 is the honest answer.
+  assert.equal(orbitPhase(r, { x: circular, y: 0 }), 0);
+  // Unbound, purely radial, and nowhere at all: the same total-function guard
+  // orbitElements keeps, because the ascent asks before it has an orbit.
+  assert.equal(orbitPhase(r, { x: circular * Math.SQRT2, y: 0 }), 0);
+  assert.equal(orbitPhase({ x: 0, y: R_EARTH }, { x: 0, y: 1000 }), 0);
+  assert.equal(orbitPhase({ x: 0, y: 0 }, { x: 0, y: 0 }), 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -1883,9 +1944,16 @@ test('the burns are scheduled on the transfer, and a return flight takes days', 
   const at = Object.fromEntries(o.lunar.burns.map((b) => [b.kind, b.t]));
   const ladder = lunarLadder(R_EARTH + o.insertion.periapsis, R_EARTH + o.insertion.apoapsis);
 
-  // tli at half a parking orbit after insertion; loi one transfer later.
+  // tli at the parking orbit's next PERIAPSIS passage after insertion — the
+  // place the ladder prices the burn at — and loi one transfer later. It used
+  // to be pinned at half an orbit after insertion, which is where the vehicle
+  // is NOT: half an orbit from a cutoff partway up the ascent is nowhere in
+  // particular, and half an orbit from periapsis is apoapsis, the most
+  // expensive place there is to leave from.
   const period = elementsFrom(R_EARTH + o.insertion.periapsis, R_EARTH + o.insertion.apoapsis).period;
-  assert.ok(Math.abs(at.tli - (o.insertion.t + period / 2)) < 1e-6);
+  const coast = at.tli - o.insertion.t;
+  assert.ok(Math.abs(coast - (1 - o.insertion.phase) * period) < 1e-6, `coast ${coast}s`);
+  assert.ok(coast > 0 && coast <= period + 1e-6, 'a coast, never an instant burn');
   assert.ok(Math.abs(at.loi - (at.tli + ladder.tof)) < 1e-6);
   // Descent a quarter of a lunar orbit after arrival; ascent a surface stay
   // later; the return burn a quarter orbit after that.
@@ -1904,6 +1972,47 @@ test('the burns are scheduled on the transfer, and a return flight takes days', 
   for (let i = 1; i < o.timeline.length; i += 1) {
     assert.ok(o.timeline[i].t >= o.timeline[i - 1].t, 'the timeline is sorted');
   }
+});
+
+test('the TLI happens at the periapsis it is priced at, and is charged for it', () => {
+  // THE REGRESSION GUARD. The ladder prices TLI as a burn made at the parking
+  // orbit's periapsis (the Oberth-efficient place, and hundreds of m/s cheaper
+  // than anywhere else on an eccentric orbit). The schedule used to put it at
+  // insertion + P/2, which is a different place entirely — so the mission was
+  // charged one burn and flew another, and the difference was 983 m/s of
+  // delta-v the vehicle did not have. Pinning the TIME alone cannot catch that
+  // coming back; pinning the RADIUS the vehicle is at when it burns can, and
+  // pinning the delta-v that radius implies closes it.
+  const v = moonFixture();
+  const o = resolveLaunch(v, MOON_MISSION('return'), MOON_LOAD, makeRng(7));
+  const rp = R_EARTH + o.insertion.periapsis;
+  const ra = R_EARTH + o.insertion.apoapsis;
+  const park = elementsFrom(rp, ra);
+  // The ascent really does leave an eccentric orbit, or none of this bites.
+  assert.ok(park.e > 0.05, `parking orbit is too circular to test with: e ${park.e}`);
+  // And it really does cut off away from periapsis, which is the fact the old
+  // schedule could not see: the vehicle is a few hundred km up and climbing.
+  assert.ok(o.insertion.phase > 0.01 && o.insertion.phase < 0.5,
+    `insertion phase ${o.insertion.phase} — cutoff is on the way up, not at an apsis`);
+
+  const tli = o.lunar.burns.find((b) => b.kind === 'tli');
+  const where = positionAt(rp, ra, 0, o.insertion.phase, tli.t - o.insertion.t);
+  assert.ok(Math.abs(where.r - rp) < 1,
+    `TLI at r ${where.r} m; the ladder priced it at periapsis, r ${rp} m`);
+
+  // The same thing said in m/s: the burn the resolver charged is the burn a
+  // departure from where the vehicle actually is would cost.
+  const costHere = Math.abs(
+    velocityAt(elementsFrom(where.r, A_MOON).a, where.r) - velocityAt(park.a, where.r),
+  );
+  assert.ok(Math.abs(tli.dv - costHere) < 1, `charged ${tli.dv} m/s, burn costs ${costHere} m/s`);
+  // What it would have cost half an orbit later, at apoapsis — the old
+  // schedule's departure point, and why this is a P1 and not a cosmetic one.
+  const costAtApoapsis = Math.abs(
+    velocityAt(elementsFrom(ra, A_MOON).a, ra) - velocityAt(park.a, ra),
+  );
+  assert.ok(costAtApoapsis - tli.dv > 300,
+    `departing at apoapsis would cost ${costAtApoapsis - tli.dv} m/s more, which was going unpaid`);
 });
 
 // ---------------------------------------------------------------------------

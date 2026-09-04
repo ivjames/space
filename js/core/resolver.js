@@ -443,6 +443,58 @@ export function orbitElements(r, v) {
 }
 
 /**
+ * Where on its own orbit a state vector is, as js/core/orbit.js's PHASE: the
+ * fraction of an orbit since periapsis passage (mean anomaly / 2pi), 0 at
+ * periapsis and 0.5 at apoapsis.
+ *
+ * THE INVERSE of orbit.js's `positionAt`, which goes phase -> mean anomaly ->
+ * (Kepler) eccentric anomaly -> position. This goes the other way, and it does
+ * not need Kepler's equation at all, because both halves of the eccentric
+ * anomaly fall straight out of the state vector:
+ *
+ *   e cos E = 1 - r/a                 (from r = a(1 - e cos E))
+ *   e sin E = (r . v) / sqrt(mu a)
+ *   E       = atan2(e sin E, e cos E)
+ *   M       = E - e sin E             (Kepler's equation, used FORWARDS)
+ *
+ * The `r . v` term is what puts the answer on the right side of the orbit: it
+ * is positive while the vehicle is climbing away from periapsis (phase 0..0.5)
+ * and negative while it is falling back toward it (0.5..1). Getting that sign
+ * wrong is a half-orbit error and nothing else — the radius comes back right
+ * either way — which is exactly the mistake that priced tier 4's departure
+ * burn at a periapsis the vehicle was nowhere near (js/core/moon.js).
+ *
+ * WHY THIS EXISTS. Insertion cutoff does NOT happen at periapsis: it fires the
+ * instant the ACHIEVED orbit's periapsis crosses the threshold, which on a real
+ * ascent is partway up and still climbing (a lunar flight cuts off around 300
+ * km on an 80 x 4 400 km orbit). Anything that schedules a later burn against
+ * the parking orbit has to know that, so the phase rides on `outcome.insertion`
+ * beside the two apsides.
+ *
+ * Unbound or degenerate input (a <= 0, e >= 1, no orbit at all) has no phase
+ * to report and returns 0, the same way orbitElements returns numbers rather
+ * than NaN for a flight that never left the pad.
+ *
+ * @param {{x: number, y: number}} r position, m, from the planet's centre
+ * @param {{x: number, y: number}} v velocity, m/s
+ * @returns {number} 0 <= phase < 1
+ */
+export function orbitPhase(r, v) {
+  const { a, e } = orbitElements(r, v);
+  if (!(a > 0) || !Number.isFinite(a) || !(e < 1)) return 0;
+  const rmag = Math.hypot(r.x, r.y);
+  if (!(rmag > 0)) return 0;
+  const eCosE = 1 - rmag / a;
+  const eSinE = (r.x * v.x + r.y * v.y) / Math.sqrt(MU * a);
+  // A circular orbit has no periapsis to count from, so both terms vanish and
+  // atan2(0, 0) hands back 0 — which is the honest answer: every point on it
+  // is periapsis.
+  const E = Math.atan2(eSinE, eCosE);
+  const M = E - eSinE;
+  return ((M / (2 * Math.PI)) % 1 + 1) % 1;
+}
+
+/**
  * Which requirement shape a mission carries (phase 0, 1, 2 and 3).
  *
  * A `moon` requirement is only recognised with a profile LUNAR_PROFILES knows:
@@ -1036,7 +1088,9 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
  * priced by js/core/moon.js and a list of things that can stop the vehicle
  * climbing it:
  *
- *   tli      translunar injection, at +P/2 on the parking orbit
+ *   tli      translunar injection, at the parking orbit's next PERIAPSIS
+ *            passage — where js/core/moon.js prices it, and not where the
+ *            ascent cut off
  *   loi      lunar orbit insertion, one transfer time of flight later
  *   descent  powered descent, a quarter of a lunar orbit after that, and then
  *            the landing roll
@@ -1131,7 +1185,12 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
   // so the map can play the sequence back without knowing any of the physics —
   // and a return flight's timeline is days long, which is simulated seconds
   // like every other flight's (the clock is phase 3b).
-  const stepTime = lunarSchedule(t0, period, ladder);
+  //
+  // The phase goes in with them because the ladder prices TLI at the parking
+  // orbit's PERIAPSIS, and the ascent does not cut off there: the schedule has
+  // to coast to the next periapsis passage, which it cannot work out from the
+  // two apsides alone (js/core/moon.js).
+  const stepTime = lunarSchedule(t0, period, ladder, insertion.phase);
   const {
     tli: tliT, loi: loiT, descent: descentT, ascent: ascentT, tei: teiT,
   } = stepTime;
@@ -1549,6 +1608,10 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     return rm > 0 ? (sx * svx + (sy + R_EARTH) * svy) / rm : svy;
   };
   const elementsNow = () => orbitElements({ x, y: y + R_EARTH }, { x: vx, y: vy });
+  // Where on that orbit the vehicle is, not just what shape it is: cutoff
+  // happens partway up the ascent, never at periapsis, and the lunar schedule
+  // has to coast to the next periapsis from wherever it actually is.
+  const phaseNow = () => orbitPhase({ x, y: y + R_EARTH }, { x: vx, y: vy });
 
   /**
    * The delta-v the vehicle still has at this instant, m/s.
@@ -1984,7 +2047,9 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       if (orbitConfirmedAt === null && el.periapsis >= ORBIT_MIN_ALT) {
         orbitFlag = true;
         orbitConfirmedAt = t;
-        insertion = { t, periapsis: el.periapsis, apoapsis: el.apoapsis };
+        insertion = {
+          t, periapsis: el.periapsis, apoapsis: el.apoapsis, phase: phaseNow(),
+        };
         event(t, 'orbit', orbitSentence(el), { alt });
       }
     }

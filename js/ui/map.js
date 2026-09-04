@@ -12,9 +12,10 @@
 // NO-LEAK CONTRACT. Nothing on this screen may reveal how the sequence ends
 // before the sequence shows it. Concretely, during playback this module reads:
 //
-//   - `outcome.insertion` — the orbit the vehicle is in. The ascent view has
-//     just played up to that event, so it is in the past from the first frame,
-//     and it is what the vehicle's orbit is drawn from.
+//   - `outcome.insertion` — the orbit the vehicle is in, and (`phase`) where on
+//     it the ascent left it. The ascent view has just played up to that event,
+//     so it is in the past from the first frame, and it is what the vehicle's
+//     orbit is drawn from.
 //   - `orbital.target` / `opts.target` and `orbital.phaseErrorDeg` — the
 //     target's orbit and where the two are relative to each other AT
 //     INSERTION. The target is persistent state (state.objects), so its orbit
@@ -108,6 +109,14 @@
 // with two exceptions that are what the burns MEAN rather than a fudge: the
 // second phasing burn ends the phasing, so it puts the vehicle at the target's
 // phase, and a successful docking merges the two.
+//
+// A LUNAR flight has no target to phase against, so its phase is not a window
+// but a MEASUREMENT: `insertion.phase` is where on the parking orbit the ascent
+// actually cut off, which is a few hundred km up and still climbing, never
+// periapsis. The picture is oriented by putting periapsis at +x instead, and
+// the vehicle starts wherever that phase says. It has to: the TLI is priced at
+// periapsis and scheduled at the next periapsis passage (js/core/moon.js), so a
+// vehicle drawn anywhere else would jump across the frame when it lit.
 
 import { R, altitudeOf, elementsFrom, positionAt, radiusOf } from '../core/orbit.js';
 import { A_MOON, R_MOON, lunarLadder, lunarSchedule } from '../core/moon.js';
@@ -301,15 +310,26 @@ export function playOrbital(canvas, outcome, opts = {}) {
   const targetPhase = Number(targetInfo?.phase) || 0;
   // The vehicle's own phase at insertion: the target's, plus the error the
   // launch window bought. Both are known at the first frame. A lunar flight
-  // has neither — there is nothing to phase against — so it inserts at
-  // periapsis and the picture is oriented by that.
+  // has neither — there is nothing to phase against — so the picture is
+  // oriented by putting the parking orbit's periapsis at +x instead.
   const windowPhase = cislunar ? 0 : targetPhase + phaseErrorDeg / 360;
+  // WHERE ON THAT ORBIT it inserted, which for a lunar flight is not periapsis
+  // and is not something the two apsides can say: cutoff fires partway up the
+  // ascent, still climbing, so the vehicle is a few hundred km up and some way
+  // round from periapsis. The resolver measures it and hands it over on
+  // `insertion` (which has already happened — the no-leak contract above), and
+  // it matters twice: it is the phase `lunarSchedule` counts the coast to
+  // periapsis from, so the burn is DRAWN where the ladder priced it, and it is
+  // what stops the TLI teleporting the vehicle from apoapsis to periapsis at
+  // the instant it lights. A tier 3 rendezvous keeps its own phase, which is
+  // the launch window and not a measurement.
+  const insertionPhase = cislunar ? (Number(insertion.phase) || 0) : 0;
 
   const target = targetInfo
     ? makeOrbit(targetInfo.periapsis, targetInfo.apoapsis, 0, targetPhase, t0)
     : null;
   let vehicle = makeOrbit(
-    insertion.periapsis, insertion.apoapsis, TWO_PI * windowPhase, 0, t0,
+    insertion.periapsis, insertion.apoapsis, TWO_PI * windowPhase, insertionPhase, t0,
   );
   const targetName = String(targetInfo?.name ?? targetInfo?.id ?? 'Target').toUpperCase();
 
@@ -323,10 +343,10 @@ export function playOrbital(canvas, outcome, opts = {}) {
     // shared function rather than a second copy of the arithmetic precisely
     // because the two have to agree: a departure time only the resolver knew
     // about would leave the capture burn flashing beside the moon instead of
-    // at it. It reads the parking orbit and the constants, never a burn, so
-    // the no-leak contract above still holds (js/core/moon.js).
+    // at it. It reads the parking orbit, its phase and the constants — never a
+    // burn — so the no-leak contract above still holds (js/core/moon.js).
     const { tli: tliT, loi: arriveT } = lunarSchedule(
-      t0, vehicle.period, lunarLadder(vehicle.rp, vehicle.ra),
+      t0, vehicle.period, lunarLadder(vehicle.rp, vehicle.ra), insertionPhase,
     );
     const depart = stateAt(vehicle, tliT);
     // A Hohmann departure leaves from the transfer's periapsis, so the moon

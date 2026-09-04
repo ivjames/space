@@ -9,7 +9,9 @@ import {
   LANDING_LOSS,
   LLO_PERIOD,
   LUNAR_STEPS,
+  SURFACE_STAY,
   lunarLadder,
+  lunarSchedule,
 } from '../js/core/moon.js';
 import {
   MU,
@@ -18,6 +20,7 @@ import {
   elementsFrom,
   velocityAt,
   hohmann,
+  positionAt,
 } from '../js/core/orbit.js';
 
 /** The parking orbit the whole tier departs from, as a radius. */
@@ -229,4 +232,87 @@ test('every rung is finite and positive for every orbit a launch can reach', () 
       assert.ok(Number.isFinite(l[key]) && l[key] > 0, `${key} at ${alt}m: ${l[key]}`);
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// The schedule. It exists so the resolver and the map cannot disagree about
+// WHEN each step happens — and, since the ladder prices the departure at the
+// parking orbit's periapsis, about WHERE the vehicle is when it departs. The
+// two used to disagree: the burn was scheduled half an orbit after insertion,
+// which is the far side of the orbit, and priced at periapsis, which is the
+// near one. These pin the two together.
+// ---------------------------------------------------------------------------
+
+test('the schedule departs at the next periapsis, which is where TLI is priced', () => {
+  // A genuinely eccentric parking orbit — 80 x 4 381 km, the shape a lunar
+  // ascent actually cuts off in — so the departure point is a decision worth
+  // hundreds of m/s rather than a rounding error.
+  const rp = park(80000);
+  const ra = park(4381000);
+  const { a, e, period } = elementsFrom(rp, ra);
+  assert.ok(e > 0.2, `this test needs an eccentric orbit, got e ${e}`);
+  const ladder = lunarLadder(rp, ra);
+
+  for (const phase of [0, 0.05, 0.25, 0.4999, 0.5, 0.75, 0.999]) {
+    const { tli } = lunarSchedule(1000, period, ladder, phase);
+    const coast = tli - 1000;
+    // A coast, never an instantaneous burn, and never more than one orbit.
+    assert.ok(coast > 0 && coast <= period + 1e-9, `phase ${phase}: coast ${coast}s`);
+    assert.ok(Math.abs(coast - (1 - phase) * period) < 1e-9, `phase ${phase}`);
+
+    // The guard that matters: wherever it inserted, it burns at PERIAPSIS.
+    const at = positionAt(rp, ra, 0, phase, coast);
+    assert.ok(Math.abs(at.r - rp) < 1e-3, `phase ${phase}: burns at r ${at.r}, periapsis is ${rp}`);
+
+    // And therefore the burn it makes is the burn it was charged for. Departing
+    // half an orbit later, at apoapsis, would cost ~983 m/s more than the
+    // ladder quotes — which is exactly what the old schedule did.
+    const costThere = Math.abs(velocityAt(elementsFrom(at.r, A_MOON).a, at.r)
+      - velocityAt(a, at.r));
+    assert.ok(Math.abs(costThere - ladder.tli) < 1e-9, `phase ${phase}: ${costThere} vs ${ladder.tli}`);
+  }
+
+  const atApoapsis = Math.abs(velocityAt(elementsFrom(ra, A_MOON).a, ra) - velocityAt(a, ra));
+  assert.ok(atApoapsis - ladder.tli > 900, `the far side costs ${atApoapsis - ladder.tli} m/s more`);
+});
+
+test('a phase of 0 waits a whole orbit rather than burning at insertion', () => {
+  // Already at periapsis is the one case where "the next periapsis" could mean
+  // "now". It does not: a burn at the instant of insertion is not a coast, and
+  // the map would have nothing to draw between the two.
+  const r = park(180000);
+  const { period } = elementsFrom(r, r);
+  const ladder = lunarLadder(r, r);
+  assert.equal(lunarSchedule(0, period, ladder, 0).tli, period);
+  // A phase outside 0..1 wraps, and rubbish is treated as periapsis rather
+  // than turning the whole timeline into NaN.
+  assert.equal(lunarSchedule(0, period, ladder, 2).tli, period);
+  assert.equal(lunarSchedule(0, period, ladder, -0.25).tli, 0.25 * period);
+  for (const bad of [NaN, Infinity, undefined, null, 'soon']) {
+    assert.equal(lunarSchedule(0, period, ladder, bad).tli, period, `phase ${bad}`);
+  }
+  // Omitting it entirely is the same as periapsis: every caller that does not
+  // know where it is gets the full coast.
+  assert.equal(lunarSchedule(0, period, ladder).tli, period);
+});
+
+test('the rest of the schedule hangs off the transfer and the lunar orbit', () => {
+  const rp = park(80000);
+  const ra = park(4381000);
+  const { period } = elementsFrom(rp, ra);
+  const ladder = lunarLadder(rp, ra);
+  const s = lunarSchedule(500, period, ladder, 0.3);
+
+  // Capture one time of flight after departure; descent a quarter of a lunar
+  // orbit after arriving; the ascent a surface stay later; the burn home a
+  // quarter orbit after that.
+  assert.ok(Math.abs(s.loi - (s.tli + ladder.tof)) < 1e-9);
+  assert.ok(Math.abs(s.descent - (s.loi + LLO_PERIOD / 4)) < 1e-9);
+  assert.ok(Math.abs((s.ascent - s.descent) - SURFACE_STAY) < 1e-6);
+  assert.ok(Math.abs(s.tei - (s.ascent + LLO_PERIOD / 4)) < 1e-9);
+  // Strictly ordered, which is what lets the resolver walk it as flight order.
+  const times = LUNAR_STEPS.map((step) => s[step]);
+  for (let i = 1; i < times.length; i += 1) assert.ok(times[i] > times[i - 1], LUNAR_STEPS[i]);
+  // Days, not minutes: the transfer dominates everything else on it.
+  assert.ok((s.tei - 500) / 86400 > 6, 'a return flight is most of a week');
 });
