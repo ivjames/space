@@ -218,3 +218,35 @@ test('extra stats do not open the door to arbitrary stat paths', () => {
     /unknown op 'toggle'/,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Phase 3: the lunar capability stats. They are seeded here for the same reason
+// the phase 2 ones are — a tree node can only target a stat that already
+// exists, so seeding them is what makes "the tree turns the lander on" a data
+// change rather than an edit to this module.
+// ---------------------------------------------------------------------------
+
+test('lander, shield and landerBonus are seeded to 0 on every vehicle', () => {
+  const v = buildVehicle(twoStage(), []);
+  assert.equal(v.lander, 0);
+  assert.equal(v.shield, 0);
+  assert.equal(v.landerBonus, 0);
+  // A phase 0 base is untouched by the defaults: nothing is added to it.
+  assert.ok(!('lander' in twoStage()));
+});
+
+test('the tree can turn the lunar stats on against a base that never declared them', () => {
+  // Exactly the effects ARCHITECTURE.md's tier 4 structure and reliability
+  // branches are written as: two `set`s and an `add`.
+  const v = buildVehicle(twoStage(), [
+    { stat: 'lander', op: 'set', value: 1 },
+    { stat: 'shield', op: 'set', value: 1 },
+    { stat: 'landerBonus', op: 'add', value: 0.05 },
+  ]);
+  assert.equal(v.lander, 1);
+  assert.equal(v.shield, 1);
+  assert.ok(Math.abs(v.landerBonus - 0.05) < 1e-12);
+  // And the base's own value still wins over the seeded default, as for every
+  // other capability stat.
+  assert.equal(buildVehicle({ ...twoStage(), lander: 1 }, []).lander, 1);
+});

@@ -34,6 +34,11 @@ import {
   ORBIT_CONFIRM_COAST,
   ESCAPE_DELAY,
   ESCAPE_MIN_ALT,
+  LUNAR_PROFILES,
+  SURFACE_STAY,
+  LANDING_RELIABILITY,
+  LANDING_RELIABILITY_MAX,
+  requiredLunarStep,
 } from '../js/core/resolver.js';
 import {
   elementsFrom,
@@ -42,6 +47,7 @@ import {
   phasingDeltaV,
   phaseFor,
 } from '../js/core/orbit.js';
+import { LUNAR_STEPS, LLO_PERIOD, lunarLadder } from '../js/core/moon.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures. Defined here, not imported from js/data, so content changes cannot
@@ -1634,4 +1640,536 @@ test('a vehicle that cannot lift off is short of thrust, not of delta-v', () => 
   const full = totalDeltaV(overloaded, 1);
   assert.ok(Math.abs(o.samples[0].dv - full) < 1e-6, `${o.samples[0].dv} vs ${full}`);
   assert.ok(o.samples[0].dv > 0);
+});
+
+// ===========================================================================
+// Phase 3 — tier 4, the moon.
+//
+// The moon is not a second attractor (ARCHITECTURE.md, phase 3): the ascent is
+// the same integrator flying the same planet, and everything past insertion is
+// an analytic ladder of burns priced by js/core/moon.js. So the tests below are
+// about the two things this phase actually changes — what budget the ladder is
+// spent out of, and what stops a vehicle climbing it.
+//
+// The fixture is the strong two-stage launcher, scaled up until its payload IS
+// a lunar upper stack: a cryogenic departure stage and a small lander/ascent
+// stage, plus the payload. Scaling preserves every mass ratio, so stages 1 and
+// 2 fly exactly the ascent `strongFixture` flies, with the same TWR and the
+// same good-turn window — the ascent is a solved problem here and the point is
+// what happens after it. Only the top stage is unreliable, and it is the one
+// stage that never lights during the ascent, so the lunar rolls can be scripted
+// without touching the ascent's draw order at all.
+// ===========================================================================
+
+const MOON_SCALE = 15;
+const moonBase = () => ({
+  stages: [
+    {
+      dryMass: 16000 * MOON_SCALE,
+      propMass: 160000 * MOON_SCALE,
+      thrust: 2.9e6 * MOON_SCALE,
+      isp: 290,
+      reliability: 1,
+    },
+    {
+      dryMass: 4500 * MOON_SCALE,
+      propMass: 28000 * MOON_SCALE,
+      thrust: 5.0e5 * MOON_SCALE,
+      isp: 350,
+      reliability: 1,
+    },
+    // Departure: high isp, low thrust, and never lit until the ascent is nearly
+    // over — this is the stage the insertion cutoff catches mid-burn.
+    { dryMass: 900, propMass: 9000, thrust: 1.2e5, isp: 450, reliability: 1 },
+    // Lander/ascent: never lit on the ascent at all, so its reliability is the
+    // lunar sequence's and nothing else's.
+    { dryMass: 400, propMass: 1200, thrust: 2.0e4, isp: 320, reliability: 0.98 },
+  ],
+  payloadMass: 500,
+  dragArea: 8 * Math.cbrt(MOON_SCALE * MOON_SCALE),
+  dragCoeff: 0.3,
+  guidance: 1,
+  restarts: 5,
+  lander: 1,
+  shield: 1,
+});
+const moonFixture = (effects = []) => buildVehicle(moonBase(), effects);
+
+/** Take `kg` of propellant out of the departure stage: a thinner margin. */
+const LEAN = (kg) => ({ stat: 'stages.2.propMass', op: 'add', value: -kg });
+
+const MOON_MISSION = (profile) => ({ id: `moon-${profile}`, tier: 4, requirement: { moon: { profile } } });
+/** The turn the scaled fixture reaches its parking orbit on. */
+const MOON_LOAD = { fuelFraction: 1, turn: 0.15 };
+
+// ---------------------------------------------------------------------------
+// The budget: dvAvailable becomes the remaining stack.
+//
+// The claim ARCHITECTURE.md makes is that this is a NO-OP for tiers 1 to 3, and
+// it is a claim about arithmetic, so it is pinned as arithmetic: the old
+// formula is reconstructed from the outcome itself and has to come back the
+// same number. Everything after cutoff is frozen — no stage burns again — so
+// any sample past it reads exactly the mass the cutoff saw, and the reserve
+// propellant follows from the stack mass above.
+// ---------------------------------------------------------------------------
+
+/** The old, one-stage budget: Tsiolkovsky on what the cutting stage kept back. */
+function cuttingStageReserveDeltaV(vehicle, outcome, fuelFraction = 1) {
+  const last = outcome.samples.at(-1);
+  const i = last.stage - 1;
+  const above = stackMassAbove(vehicle, i, fuelFraction);
+  const reserveMass = last.mass;
+  const reserveProp = reserveMass - above - vehicle.stages[i].dryMass;
+  return {
+    index: i,
+    dv: vehicle.stages[i].isp * G0 * Math.log(reserveMass / (reserveMass - reserveProp)),
+  };
+}
+
+test('a vehicle that inserts on its last stage gets exactly the old one-stage budget', () => {
+  // Tier 3, unchanged: two stages, so the stage that cuts off is the top one
+  // and there is nothing above it to add. This is the no-op, stated as the
+  // identity it has to be rather than as a number that might drift.
+  const v = strongFixture([{ stat: 'restarts', op: 'set', value: 2 }]);
+  const mission = { id: 'rdv-1', tier: 3, requirement: { rendezvous: { target: 'core', within: 5000 } } };
+  const target = { periapsis: 100000, apoapsis: 100000, phase: 0 };
+  const o = resolveLaunch(v, mission, { fuelFraction: 1, turn: 0.5, window: 0 }, makeRng(3), { target });
+
+  assert.ok(o.orbital, 'the ascent inserted and the orbital phase ran');
+  const old = cuttingStageReserveDeltaV(v, o);
+  assert.equal(old.index, v.stages.length - 1, 'it cut off on its last stage');
+  assert.ok(Math.abs(o.orbital.dvAvailable - old.dv) < 1e-9,
+    `budget moved: ${o.orbital.dvAvailable} vs ${old.dv}`);
+  // And it really is a reserve — part of one stage, not the whole of it.
+  assert.ok(o.orbital.dvAvailable > 0);
+  assert.ok(o.orbital.dvAvailable < stageDeltaV(v, v.stages.length - 1, 1));
+});
+
+test('dvAvailable adds every stage that had not lit when the ascent cut off', () => {
+  // Tier 4, the case the change exists for. The cutoff catches the DEPARTURE
+  // stage mid-burn, so the lander above it is still full — and a full stage is
+  // exactly its brochure delta-v, which is the rule the sample stream's
+  // "delta-v aboard" has always used.
+  const v = moonFixture();
+  const o = resolveLaunch(v, MOON_MISSION('return'), MOON_LOAD, makeRng(7));
+
+  assert.ok(o.lunar, 'the lunar phase ran');
+  const old = cuttingStageReserveDeltaV(v, o);
+  assert.equal(old.index, v.stages.length - 2, 'the cutting stage is not the top one');
+  let unlit = 0;
+  for (let j = old.index + 1; j < v.stages.length; j += 1) unlit += stageDeltaV(v, j, 1);
+  assert.ok(unlit > 2000, 'there is a real stage up there');
+  // 1e-6, not 1e-9: the reserve is reconstructed here by subtracting two stack
+  // masses of a quarter of a million kg, and that cancellation is worth about
+  // 3e-8 m/s of it. The resolver itself never does that subtraction.
+  assert.ok(Math.abs(o.lunar.dvAvailable - (old.dv + unlit)) < 1e-6,
+    `${o.lunar.dvAvailable} is not ${old.dv} + ${unlit}`);
+  // No single stage carries what the return profile needs; the stack does.
+  assert.ok(o.lunar.dvAvailable > 8000);
+  assert.ok(o.lunar.dvAvailable > stageDeltaV(v, old.index, 1));
+});
+
+test('the sample stream and the lunar budget agree about what is still aboard', () => {
+  // dvRemaining() and dvAvailable are the same arithmetic at the same instant,
+  // and after an insertion cutoff nothing burns again, so the last sample of
+  // the flight has to read the budget the sequence was handed. Before phase 3
+  // the cutting stage was always the top one and `thrustDone` was enough to say
+  // "nothing left above"; it is not any more.
+  const v = moonFixture();
+  const o = resolveLaunch(v, MOON_MISSION('return'), MOON_LOAD, makeRng(7));
+  assert.ok(Math.abs(o.samples.at(-1).dv - o.lunar.dvAvailable) < 1e-9,
+    `sample says ${o.samples.at(-1).dv}, the sequence was given ${o.lunar.dvAvailable}`);
+  assert.ok(o.samples.at(-1).dv > 0, 'a stack with a full stage aboard is not out of delta-v');
+});
+
+// ---------------------------------------------------------------------------
+// The requirement shape, and the orbit a lunar flight parks in.
+// ---------------------------------------------------------------------------
+
+test('a lunar mission needs no target and parks in the lowest orbit that counts', () => {
+  const v = moonFixture();
+  // No opts.target: the moon is a constant, not an entry in state.objects, so
+  // unlike a rendezvous this resolves without one and must not throw.
+  const o = resolveLaunch(v, MOON_MISSION('orbit'), MOON_LOAD, makeRng(7));
+  assert.ok(o.insertion, 'it inserted');
+  assert.ok(o.insertion.periapsis >= ORBIT_MIN_ALT);
+  // Every metre of altitude bought on the ascent is delta-v not spent on the
+  // transfer, so the cutoff fires at ORBIT_MIN_ALT and not a target's orbit.
+  assert.ok(o.insertion.periapsis < ORBIT_MIN_ALT + 10000,
+    `parked at ${o.insertion.periapsis} m, which is not the lowest orbit it could`);
+  assert.equal(o.orbital, null, 'a lunar flight has no orbital rendezvous phase');
+  assert.equal(o.closestApproach, null);
+  assert.equal(o.docked, false);
+});
+
+test('an unknown lunar profile is not a lunar mission at all', () => {
+  // requirementKind only recognises a profile the ladder knows: an unknown one
+  // has no steps to fly and no step to be judged on, so it falls through like
+  // any other malformed requirement rather than resolving as a flight to
+  // nowhere that reports success.
+  const v = moonFixture();
+  const o = resolveLaunch(v, MOON_MISSION('picnic'), MOON_LOAD, makeRng(7));
+  assert.equal(o.lunar, null);
+  assert.equal(requiredLunarStep('picnic'), -1);
+});
+
+test('requiredDeltaV prices a lunar mission as the parking orbit plus the profile', () => {
+  const rPark = R_EARTH + ORBIT_MIN_ALT;
+  const ascent = Math.sqrt(MU / rPark) * (1 + ORBIT_LOSS_ALLOWANCE);
+  const ladder = lunarLadder(rPark, rPark);
+  for (const profile of Object.keys(LUNAR_PROFILES)) {
+    const expected = ascent + LUNAR_PROFILES[profile].reduce((s, step) => s + ladder[step], 0);
+    assert.ok(Math.abs(requiredDeltaV(MOON_MISSION(profile)) - expected) < 1e-9, profile);
+  }
+  // The ladder is an escalation, and the goal is the dearest rung on it.
+  const price = (p) => requiredDeltaV(MOON_MISSION(p));
+  assert.ok(price('flyby') < price('orbit'));
+  assert.ok(price('orbit') < price('land'));
+  assert.ok(price('land') < price('return'));
+  assert.ok(price('return') > 18000, `the goal costs ${price('return')} m/s all told`);
+});
+
+// ---------------------------------------------------------------------------
+// The four profiles. They are strictly nested, so one vehicle flies all four
+// and each is judged only on the step it is about.
+// ---------------------------------------------------------------------------
+
+test('the four profiles fly the nested ladders LUNAR_PROFILES names', () => {
+  const v = moonFixture();
+  for (const profile of ['flyby', 'orbit', 'land', 'return']) {
+    const o = resolveLaunch(v, MOON_MISSION(profile), MOON_LOAD, makeRng(7));
+    assert.equal(o.success, true, `${profile}: ${o.readout}`);
+    assert.deepEqual(o.lunar.burns.map((b) => b.kind), LUNAR_PROFILES[profile], profile);
+    assert.equal(o.lunar.reached, requiredLunarStep(profile), profile);
+    assert.equal(o.lunar.stoppedAt, null, profile);
+    assert.equal(o.lunar.shortBy, 0, profile);
+    assert.equal(o.shortBy, 0, profile);
+    assert.equal(o.lunar.profile, profile);
+    // `landed` is the touchdown, not the profile: only the two that go down.
+    assert.equal(o.lunar.landed, profile === 'land' || profile === 'return', profile);
+  }
+  // A flown profile says what it achieved, and the outcome takes the
+  // sequence's line as its own.
+  const line = (profile) => resolveLaunch(v, MOON_MISSION(profile), MOON_LOAD, makeRng(7)).readout;
+  assert.equal(line('flyby'), 'Lunar flyby.');
+  assert.equal(line('orbit'), 'In lunar orbit.');
+  assert.equal(line('land'), 'Landed on the moon.');
+  assert.equal(line('return'), 'Landed on the moon and returned.');
+});
+
+test('a deeper profile costs strictly more of the same budget', () => {
+  const v = moonFixture();
+  const used = {};
+  let budget = null;
+  for (const profile of ['flyby', 'orbit', 'land', 'return']) {
+    const o = resolveLaunch(v, MOON_MISSION(profile), MOON_LOAD, makeRng(7));
+    used[profile] = o.lunar.dvUsed;
+    // The profile changes nothing about the ascent — there is no loadout
+    // control for it — so it cannot change what the ascent left over. Every
+    // rung is spent out of the same budget, which is what makes the ladder a
+    // decision about hardware rather than about flying.
+    if (budget === null) budget = o.lunar.dvAvailable;
+    assert.equal(o.lunar.dvAvailable, budget, profile);
+  }
+  assert.ok(used.flyby < used.orbit && used.orbit < used.land && used.land < used.return);
+  // The return profile is the one that needs the whole stack: about 8 km/s.
+  assert.ok(used.return > 7500 && used.return < 8500, `return profile spent ${used.return}`);
+  assert.ok(used.return < budget, 'and this vehicle can just afford it');
+});
+
+test('the burns are scheduled on the transfer, and a return flight takes days', () => {
+  const v = moonFixture();
+  const o = resolveLaunch(v, MOON_MISSION('return'), MOON_LOAD, makeRng(7));
+  const at = Object.fromEntries(o.lunar.burns.map((b) => [b.kind, b.t]));
+  const ladder = lunarLadder(R_EARTH + o.insertion.periapsis, R_EARTH + o.insertion.apoapsis);
+
+  // tli at half a parking orbit after insertion; loi one transfer later.
+  const period = elementsFrom(R_EARTH + o.insertion.periapsis, R_EARTH + o.insertion.apoapsis).period;
+  assert.ok(Math.abs(at.tli - (o.insertion.t + period / 2)) < 1e-6);
+  assert.ok(Math.abs(at.loi - (at.tli + ladder.tof)) < 1e-6);
+  // Descent a quarter of a lunar orbit after arrival; ascent a surface stay
+  // later; the return burn a quarter orbit after that.
+  assert.ok(Math.abs(at.descent - (at.loi + LLO_PERIOD / 4)) < 1e-6);
+  assert.equal(at.ascent - at.descent, SURFACE_STAY);
+  assert.ok(Math.abs(at.tei - (at.ascent + LLO_PERIOD / 4)) < 1e-6);
+
+  // The whole thing is a week of simulated seconds — five days out, a day on
+  // the surface — and the timeline is still sorted and still ends on the 'end'
+  // event. It ends AT the return burn: the coast home is free and eventless,
+  // because the atmosphere does the braking and entry is not a step.
+  const days = o.timeline.at(-1).t / 86400;
+  assert.ok(days > 5.5 && days < 7, `a return flight took ${days} days`);
+  assert.equal(o.timeline.at(-1).t, at.tei, 'the last thing that happens is the burn for home');
+  assert.equal(o.timeline.at(-1).kind, 'end');
+  for (let i = 1; i < o.timeline.length; i += 1) {
+    assert.ok(o.timeline[i].t >= o.timeline[i - 1].t, 'the timeline is sorted');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The hardware gates. Both stop the sequence having drawn nothing and spent
+// nothing, because a vehicle without the part does not attempt the step.
+// ---------------------------------------------------------------------------
+
+test('a vehicle with no lander cannot descend, and says which branch to buy', () => {
+  const v = moonFixture([{ stat: 'lander', op: 'set', value: 0 }]);
+  const o = resolveLaunch(v, MOON_MISSION('land'), MOON_LOAD, makeRng(7));
+  assert.equal(o.success, false);
+  assert.equal(o.lunar.stoppedAt, 'lander');
+  assert.equal(o.lunar.reached, LUNAR_STEPS.indexOf('loi'), 'it is in lunar orbit, and stays there');
+  assert.equal(o.lunar.landed, false);
+  assert.equal(o.lunar.shortBy, 0, 'this is not a delta-v shortfall and must not read as one');
+  assert.equal(o.shortBy, 0);
+  assert.match(o.readout, /^No lander aboard/);
+  // The same vehicle still flies the two profiles that never go down.
+  for (const profile of ['flyby', 'orbit']) {
+    assert.equal(resolveLaunch(v, MOON_MISSION(profile), MOON_LOAD, makeRng(7)).success, true, profile);
+  }
+});
+
+test('a vehicle with no heat shield gets home no further than lunar orbit', () => {
+  // ARCHITECTURE.md: the shield blocks the return leg. The gate sits in FRONT
+  // of the trans-earth burn — a burn nobody survives the end of is not one to
+  // fly, and `reached` has to stay under the return profile's step or the
+  // flight would raise best.lunarStep to "landed and returned" for a crew still
+  // in orbit round the moon.
+  const v = moonFixture([{ stat: 'shield', op: 'set', value: 0 }]);
+  const o = resolveLaunch(v, MOON_MISSION('return'), MOON_LOAD, makeRng(7));
+  assert.equal(o.success, false);
+  assert.equal(o.lunar.stoppedAt, 'shield');
+  assert.equal(o.lunar.landed, true, 'it landed; it just cannot come home');
+  assert.equal(o.lunar.reached, LUNAR_STEPS.indexOf('ascent'));
+  assert.ok(o.lunar.reached < requiredLunarStep('return'));
+  assert.deepEqual(o.lunar.burns.map((b) => b.kind), ['tli', 'loi', 'descent', 'ascent']);
+  assert.match(o.readout, /^No heat shield aboard/);
+  // Landing without one is still landing: the shield is only about the return.
+  assert.equal(resolveLaunch(v, MOON_MISSION('land'), MOON_LOAD, makeRng(7)).success, true);
+});
+
+// ---------------------------------------------------------------------------
+// Restarts. Five is what the deepest profile needs, which is what puts the
+// propulsion branch back in the shop for a tier.
+// ---------------------------------------------------------------------------
+
+test('every lunar burn is a relight, so the profile needs one restart per step', () => {
+  for (const profile of ['flyby', 'orbit', 'land', 'return']) {
+    const need = LUNAR_PROFILES[profile].length;
+    const enough = moonFixture([{ stat: 'restarts', op: 'set', value: need }]);
+    const short = moonFixture([{ stat: 'restarts', op: 'set', value: need - 1 }]);
+    assert.equal(resolveLaunch(enough, MOON_MISSION(profile), MOON_LOAD, makeRng(7)).success,
+      true, `${profile} with ${need}`);
+
+    const o = resolveLaunch(short, MOON_MISSION(profile), MOON_LOAD, makeRng(7));
+    assert.equal(o.success, false, `${profile} with ${need - 1}`);
+    assert.equal(o.lunar.stoppedAt, 'restarts');
+    assert.equal(o.lunar.reached, need - 2, `${profile} stopped one step short`);
+    assert.equal(o.lunar.shortBy, 0, 'a restarts stop is not a delta-v shortfall');
+    assert.match(o.readout, /^No restart available for the .+ burn\.$/);
+  }
+  assert.equal(LUNAR_PROFILES.return.length, 5, 'five restarts is the deepest requirement');
+});
+
+// ---------------------------------------------------------------------------
+// Shortfall. `shortBy` is this step's cost PLUS everything the profile still
+// needs after it — which is what lets the result screen name the step.
+// ---------------------------------------------------------------------------
+
+test('a shortfall names the step it stopped before and prices the rest of the profile', () => {
+  // 3.5 t of departure propellant short: it lands, and then cannot afford to
+  // leave. What it is short of is the ascent AND the return burn behind it, not
+  // the ascent alone — the difference is the whole point of threading restAfter.
+  const v = moonFixture([LEAN(3500)]);
+  const o = resolveLaunch(v, MOON_MISSION('return'), MOON_LOAD, makeRng(7));
+  assert.equal(o.success, false);
+  assert.equal(o.lunar.stoppedAt, 'deltaV');
+  assert.equal(o.lunar.reached, LUNAR_STEPS.indexOf('descent'));
+  assert.equal(o.lunar.landed, true);
+
+  const ladder = lunarLadder(R_EARTH + o.insertion.periapsis, R_EARTH + o.insertion.apoapsis);
+  const left = o.lunar.dvAvailable - o.lunar.dvUsed;
+  const expected = ladder.ascent + ladder.tei - left;
+  assert.ok(Math.abs(o.lunar.shortBy - expected) < 1e-6,
+    `shortBy ${o.lunar.shortBy} is not ascent + return - ${left}`);
+  // Without the rest of the profile it would have read a tenth of that, and a
+  // player would have bought a stage a tenth too small.
+  assert.ok(o.lunar.shortBy > 10 * (ladder.ascent - left));
+  assert.match(o.readout, /^Short by \d+ m\/s for the ascent burn\.$/);
+  // The outcome takes the sequence's number unfloored, as tier 3 already does.
+  assert.equal(o.shortBy, o.lunar.shortBy);
+});
+
+test('a return flight stopped at the last burn reads as short for the return burn', () => {
+  // The readout ARCHITECTURE.md quotes, produced rather than written: this
+  // fixture lands, gets back to lunar orbit, and is 640 m/s short of home.
+  const v = moonFixture([LEAN(3000)]);
+  const o = resolveLaunch(v, MOON_MISSION('return'), MOON_LOAD, makeRng(7));
+  assert.equal(o.lunar.stoppedAt, 'deltaV');
+  assert.equal(o.lunar.reached, LUNAR_STEPS.indexOf('ascent'));
+  assert.match(o.readout, /^Short by \d+ m\/s for the return burn\.$/);
+  assert.ok(o.lunar.shortBy > 500 && o.lunar.shortBy < 800, `short by ${o.lunar.shortBy}`);
+  // Nothing after the last step, so this one is the step's own price less what
+  // is left — there is no rest of the profile to add.
+  const ladder = lunarLadder(R_EARTH + o.insertion.periapsis, R_EARTH + o.insertion.apoapsis);
+  const left = o.lunar.dvAvailable - o.lunar.dvUsed;
+  assert.ok(Math.abs(o.lunar.shortBy - (ladder.tei - left)) < 1e-6);
+  // The same vehicle flies the shallower profiles it can afford.
+  assert.equal(resolveLaunch(v, MOON_MISSION('land'), MOON_LOAD, makeRng(7)).success, true);
+});
+
+// ---------------------------------------------------------------------------
+// The landing roll: one draw, shaped exactly like the docking roll.
+// ---------------------------------------------------------------------------
+
+test('the landing roll decides the touchdown, and landerBonus raises the threshold', () => {
+  // The scripts below are the lunar sequence's draws only; the ascent's are
+  // counted off a probe run first, because the ascent's count is a property of
+  // the fixture and not of this test.
+  const v = moonFixture();
+  const probe = (() => { let i = 0; return { next: () => { i += 1; return 0.1; }, int: () => 0, get draws() { return i; } }; })();
+  const clean = resolveLaunch(v, MOON_MISSION('land'), MOON_LOAD, probe);
+  assert.equal(clean.lunar.landed, true);
+  // Three steps at two draws each (restart roll, performance roll — the top
+  // stage's 0.98 passes at 0.1), then the landing roll.
+  const ascentDraws = probe.draws - 7;
+
+  const script = (values) => {
+    let i = 0;
+    const rest = [...values];
+    return { next: () => (i++ < ascentDraws ? 0.1 : (rest.shift() ?? 0.1)), int: () => 0 };
+  };
+  // Six sequence draws pass, then the landing roll comes up at 0.95 — over the
+  // bare 0.9 threshold, so the landing is aborted.
+  const missed = resolveLaunch(v, MOON_MISSION('land'), MOON_LOAD,
+    script([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.95]));
+  assert.equal(missed.success, false);
+  assert.equal(missed.lunar.landed, false);
+  assert.equal(missed.lunar.stoppedAt, 'landing-failure');
+  assert.equal(missed.lunar.reached, LUNAR_STEPS.indexOf('loi'),
+    'the descent burn was made; the touchdown was not');
+  assert.deepEqual(missed.lunar.burns.map((b) => b.kind), ['tli', 'loi', 'descent']);
+  assert.equal(missed.lunar.shortBy, 0, 'a botched landing is not a delta-v shortfall');
+  assert.equal(missed.readout, 'Landing aborted.');
+  assert.ok(missed.timeline.some((e) => e.kind === 'landing-failure' && /lateral drift/.test(e.text)),
+    'the flavour line is derived from the roll already drawn');
+
+  // The same roll, with the rehearsal node bought: the threshold moves up past
+  // it and the same flight lands.
+  const better = moonFixture([{ stat: 'landerBonus', op: 'add', value: 0.06 }]);
+  const saved = resolveLaunch(better, MOON_MISSION('land'), MOON_LOAD,
+    script([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.95]));
+  assert.equal(saved.lunar.landed, true);
+  assert.equal(saved.success, true);
+
+  // And it is capped, exactly as the docking roll is: no amount of bonus buys
+  // a certainty.
+  const absurd = moonFixture([{ stat: 'landerBonus', op: 'add', value: 5 }]);
+  const capped = resolveLaunch(absurd, MOON_MISSION('land'), MOON_LOAD,
+    script([0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.995]));
+  assert.equal(capped.lunar.landed, false, `capped at ${LANDING_RELIABILITY_MAX}`);
+  assert.ok(LANDING_RELIABILITY_MAX < 1);
+  assert.equal(LANDING_RELIABILITY, DOCK_RELIABILITY, 'the two rolls are the same shape');
+});
+
+// ---------------------------------------------------------------------------
+// The relight coupling: a burn that underperforms charges the pool more than it
+// delivers, and the bill arrives days later at a step the vehicle could have
+// afforded. This is the same machinery the orbital sequence uses, and it has to
+// keep working across a ladder five steps long.
+// ---------------------------------------------------------------------------
+
+test('an underperforming relight makes a later lunar step unaffordable', () => {
+  // 3 t of departure propellant short leaves ~90 m/s of margin over the whole
+  // return profile — enough to fly it to spec, and not enough to fly it with a
+  // translunar injection that charged 6% more than it delivered.
+  const v = moonFixture([LEAN(1200)]);
+  const probe = (() => { let i = 0; return { next: () => { i += 1; return 0.1; }, int: () => 0, get draws() { return i; } }; })();
+  const clean = resolveLaunch(v, MOON_MISSION('return'), MOON_LOAD, probe);
+  assert.equal(clean.success, true, `the clean flight makes it: ${clean.readout}`);
+  assert.deepEqual(clean.anomalies, []);
+  const margin = clean.lunar.dvAvailable - clean.lunar.dvUsed;
+  assert.ok(margin > 0 && margin < 200, `margin to spec is ${margin} m/s`);
+  // Five steps, two draws each (restart roll, performance roll), plus the
+  // landing roll: eleven.
+  const ascentDraws = probe.draws - 11;
+
+  // The same flight, with the first relight passing its restart roll and
+  // failing its performance roll (0.999 against the top stage's 0.98), deficit
+  // drawn at u = 1 -> 12%. Every later relight is to spec.
+  let i = 0;
+  const rest = [0.1, 0.999, 1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1];
+  const scripted = { next: () => (i++ < ascentDraws ? 0.1 : (rest.shift() ?? 0.1)), int: () => 0 };
+  const o = resolveLaunch(v, MOON_MISSION('return'), MOON_LOAD, scripted);
+
+  assert.deepEqual(o.samples, clean.samples, 'the ascent is the same flight');
+  assert.equal(o.anomalies.length, 1);
+  const [a] = o.anomalies;
+  assert.equal(a.kind, 'underperform');
+  assert.equal(a.stage, v.stages.length, 'the sequence relights the top of the stack');
+  assert.equal(a.t, o.lunar.burns[0].t, 'decided at the translunar injection');
+  assert.ok(Math.abs(a.factor - 0.88) < 1e-9);
+
+  // The burn delivered what it was asked for; it just cost more of the pool.
+  assert.ok(Math.abs(o.lunar.burns[0].dv - clean.lunar.burns[0].dv) < 1e-9);
+  const overcharge = clean.lunar.burns[0].dv * (1 / (1 - 0.12 / 2) - 1);
+  assert.ok(overcharge > margin, `an overcharge of ${overcharge} has to break a ${margin} margin`);
+
+  // ...and the bill arrives at the return burn, four days and four burns later.
+  assert.equal(o.success, false);
+  assert.equal(o.lunar.stoppedAt, 'deltaV');
+  assert.equal(o.lunar.reached, LUNAR_STEPS.indexOf('ascent'));
+  assert.match(o.readout, /^Short by \d+ m\/s for the return burn\. Stage \d engine underperforming: 88% thrust\.$/);
+});
+
+test('a restart failure in the lunar phase is the failure the outcome names', () => {
+  const v = moonFixture();
+  const probe = (() => { let i = 0; return { next: () => { i += 1; return 0.1; }, int: () => 0, get draws() { return i; } }; })();
+  resolveLaunch(v, MOON_MISSION('flyby'), MOON_LOAD, probe);
+  const ascentDraws = probe.draws - 2;   // one step: restart roll, performance roll
+
+  // The translunar injection's restart roll fails (0.99 against 0.98). One
+  // draw: a failed restart rolls for nothing else.
+  let i = 0;
+  const rest = [0.99];
+  const rng = { next: () => (i++ < ascentDraws ? 0.1 : (rest.shift() ?? 0.1)), int: () => 0 };
+  const o = resolveLaunch(v, MOON_MISSION('flyby'), MOON_LOAD, rng);
+  assert.equal(o.success, false);
+  assert.equal(o.lunar.stoppedAt, 'restart-failure');
+  assert.equal(o.lunar.reached, -1, 'nothing was completed');
+  assert.equal(o.failure.kind, 'restart');
+  assert.equal(o.failure.stage, v.stages.length);
+  assert.ok(o.failure.t > o.insertion.t);
+  assert.deepEqual(o.lunar.burns, [
+    { t: o.lunar.burns[0].t, kind: 'tli', dv: 0, ok: false, elements: o.lunar.burns[0].elements },
+  ]);
+  assert.equal(o.lunar.dvUsed, 0);
+  assert.match(o.readout, /^Stage \d restart failure at T\+\d+s\.$/);
+});
+
+// ---------------------------------------------------------------------------
+// A lunar flight that never gets to orbit is a tier 2 orbit miss, judged the
+// way one always has been — there is no ladder to climb, so there is no lunar
+// result at all.
+// ---------------------------------------------------------------------------
+
+test('a lunar flight that never reaches orbit reads as an orbit miss', () => {
+  // The scaled fixture flown straight up: it lobs, it does not insert.
+  const v = moonFixture();
+  const o = resolveLaunch(v, MOON_MISSION('return'), { fuelFraction: 1, vertical: true }, makeRng(7));
+  assert.equal(o.success, false);
+  assert.equal(o.lunar, null, 'no insertion, no ladder');
+  assert.equal(o.insertion, null);
+  assert.ok(o.shortBy > 0, 'and it is short of an orbit, not short by nothing');
+  assert.match(o.readout, /Short by \d+ m\/s\.$/);
+});
+
+test('tiers 1 and 2 never cut off, so nothing above changes them', () => {
+  // The cutoff is scoped to missions with a phase after insertion. An altitude
+  // or orbit mission burns to depletion exactly as it always has, whatever is
+  // stacked on top of it.
+  const v = moonFixture();
+  const o = resolveLaunch(v, MISSION_ORBIT, { fuelFraction: 1, turn: 0.15 }, makeRng(7), { maxTime: 4000 });
+  assert.equal(o.lunar, null);
+  assert.ok(!o.timeline.some((e) => e.kind === 'burnout' && /cutoff/.test(e.text)),
+    'no stage cut off: there was nothing to save propellant for');
+  assert.equal(o.samples.at(-1).dv, 0, 'it burned everything it had');
 });

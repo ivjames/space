@@ -1247,6 +1247,7 @@ export const R_MOON, MU_MOON, A_MOON   // radius, gravitational parameter,
 export const LLO_ALT                   // the low lunar orbit the ladder prices, m
 export const LANDING_LOSS              // gravity/steering loss factor on the
                                        //   powered descent and ascent, ~1.15
+export const LLO_PERIOD                // the low lunar orbit's period, s
 export function lunarLadder(parkPeriapsis, parkApoapsis)
   // -> { tli, loi, descent, ascent, tei, tof }  all m/s, tof in s
 ```
@@ -1300,9 +1301,20 @@ it, in order.
 
 This is a no-op for tiers 1 to 3, and that claim is a test, not a hope: a
 three-stage vehicle inserts on its last stage, so the sum has one term and
-equals today's number. `resolver.test.js` pins it, and the tier 3 gate
-measurements in `data.test.js` are the real check — if any of them move, the
-change was not a no-op and the contract is wrong.
+equals today's number. `resolver.test.js` pins it as arithmetic rather than as
+a magic number — it reconstructs the old formula from the outcome's own frozen
+post-cutoff sample and asserts equality — and the tier 3 gate measurements in
+`data.test.js` are the real check: if any of them move, the change was not a
+no-op and the contract is wrong.
+
+**The insertion cutoff comes with it.** `cutoff()` was scoped to the last
+stage, which makes "stages still unfired" vacuous: a lunar stack would burn its
+departure stage into the parking orbit and arrive with nothing. It fires on
+whichever stage is burning when periapsis crosses the cutoff. Same no-op claim,
+same check — a tier 1 to 3 stack only crosses an 80–160 km periapsis on its top
+stage. `dvRemaining()`, which feeds the flight readout's "delta-v aboard",
+needs a fired-yet guard alongside it, or the HUD reads zero with a full stage
+still attached.
 
 **New capability stats** (seeded in `CAPABILITY_STATS`, `vehicle.js:88`, so
 they are a data change once declared):
@@ -1310,7 +1322,7 @@ they are a data change once declared):
 | stat | set by | the resolver reads it as |
 |------|--------|--------------------------|
 | `lander` | structure | 0 blocks `descent`; the sequence stops at `stoppedAt: 'lander'` |
-| `shield` | structure | 0 blocks the return leg after `tei` |
+| `shield` | structure | 0 blocks the return leg **in front of** `tei` |
 | `landerBonus` | reliability | added to the landing roll threshold, capped as `dockBonus` is |
 
 **`resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng)`** —
@@ -1473,6 +1485,17 @@ The numbers above are the shape, not the answer. Tier 3's contract said
 200 km and shipped 160 km because the resolver disagreed with it
 (`js/data/tree.js:657`); the same applies here. What the tools measure wins,
 and what they measure gets written back into this file.
+
+**Measured, from the phase 3 core work, so the tier is priced against the
+right number.** From a 180 km circular parking orbit the ladder is tli 3 136,
+loi 822, descent 1 878, ascent 1 878, tei 822 — 8 536 m/s, transfer 4.98 days.
+But the parking orbit a real ascent reaches is not circular: the cutoff fires
+the instant periapsis crosses `ORBIT_MIN_ALT`, leaving apoapsis around 1 800 km,
+and the departure burn is charged at periapsis. The Oberth discount is worth
+about 415 m/s, so a `return` flight spends nearer **8 100 m/s** than 8 540. Size
+the tree against the flown number, not the circular one — and note that this
+makes a low, eccentric parking orbit the *right* answer for a lunar mission,
+which is why the cutoff is `ORBIT_MIN_ALT` rather than something tidier.
 
 ## Deferred to phase 3b, together
 

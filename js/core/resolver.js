@@ -28,6 +28,19 @@
 // the launch axis is +x. Downrange is the surface arc from the pad,
 // R * atan2(x, y + R), not the straight-line x.
 //
+// THE PHASE AFTER INSERTION. From tier 3 on, some missions do not end when the
+// ascent does. Those are the shapes `needsInsertion` names, and for them the
+// stage that is burning cuts off the instant the orbit is good enough
+// (`cutoffAlt`), keeping the rest of the stack as the budget for an ANALYTIC
+// sequence of burns — a rendezvous and docking in tier 3
+// (`resolveOrbitalSequence`), a flight to the moon in tier 4
+// (`resolveLunarSequence`). Neither is simulated: nothing is piloted, so there
+// is nothing to fly, and what the player is really buying is whether the
+// vehicle can afford the sequence at all. The moon in particular is NOT a
+// second attractor — the integrator below keeps its one central gravity term
+// and its one planet-centred frame, and js/core/moon.js prices the lunar ladder
+// analytically from the moon's own constants.
+//
 // STAGE ABORTS (ARCHITECTURE.md "Stage abort systems"). `vehicle.escape` is
 // how many stages, counted from the bottom, are covered by an abort system. A
 // reliability failure of a covered stage that is not the top stage, once the
@@ -52,6 +65,7 @@ import {
   transferDeltaV,
   phasingDeltaV,
 } from './orbit.js';
+import { A_MOON, LLO_PERIOD, LUNAR_STEPS, lunarLadder } from './moon.js';
 
 /**
  * Planet radius, m. Earth-like and unnamed (DESIGN.md: real physics, fictional
@@ -192,6 +206,75 @@ export const PHASE_TOLERANCE_DEG = 5;
  * budget a mission is quoted against is exactly the budget the sequence spends.
  */
 export const APPROACH_DV = 50;
+
+// --- Lunar phase constants (ARCHITECTURE.md, phase 3) -----------------------
+// Tier 4 is resolved the same way tier 3 is: analytically, after insertion, as
+// a sequence of burns the vehicle can or cannot afford. The moon is NOT a
+// second attractor — the integrator keeps its one central gravity term and its
+// one planet-centred frame — so everything the lunar leg needs is a delta-v and
+// a time, and js/core/moon.js computes both from the moon's own constants. What
+// lives here is only what the SEQUENCE needs on top of the ladder: what each
+// profile has to fly, when the burns happen, and the roll that decides a
+// landing.
+
+/**
+ * The steps each lunar profile flies, in order, as a prefix of LUNAR_STEPS.
+ *
+ * The profile IS the mission (ARCHITECTURE.md, phase 3: there is no loadout
+ * control for it), and the last step of the list is the one the profile is
+ * judged on — see `requiredLunarStep`. The four ladders are strictly nested, so
+ * a harder profile is the easier one plus its own tail, which is what makes the
+ * mission ladder read as an escalation rather than as four separate flights.
+ *
+ * `flyby` stops after the translunar injection deliberately: a free-return
+ * flyby coasts round the moon and home again on the transfer it is already on,
+ * and charging it for a burn it does not make would price it as an orbit
+ * mission that failed.
+ */
+export const LUNAR_PROFILES = {
+  flyby: ['tli'],
+  orbit: ['tli', 'loi'],
+  land: ['tli', 'loi', 'descent'],
+  return: ['tli', 'loi', 'descent', 'ascent', 'tei'],
+};
+
+/**
+ * Seconds spent on the surface between the descent and the ascent.
+ *
+ * One day, which is between Apollo 11's 21 hours and Apollo 17's 75. Nothing
+ * measures it — there is no clock in phase 3 (that is 3b) and no surface
+ * activity to spend it on — so it exists only to put the ascent burn somewhere
+ * believable on the timeline the map plays back and the result screen reports
+ * as mission elapsed time.
+ */
+export const SURFACE_STAY = 86400;
+
+/**
+ * Probability a landing attempt succeeds with a bare lander.
+ *
+ * The same number and the same shape as DOCK_RELIABILITY, and for the same
+ * reason: the descent burn is the part the delta-v budget prices, and the
+ * touchdown itself is a roll the guidance and reliability branches buy down.
+ */
+export const LANDING_RELIABILITY = 0.9;
+/** Ceiling on the landing roll, however much `landerBonus` the tree buys. */
+export const LANDING_RELIABILITY_MAX = 0.99;
+
+/**
+ * The index into LUNAR_STEPS a profile has to reach to count as flown.
+ *
+ * -1 for an unknown profile, which is the value `reached` itself carries when
+ * nothing was completed — so an unknown profile is never met by accident, and
+ * `state.js`'s tier-goal test can compare the two directly.
+ *
+ * @param {string} profile 'flyby' | 'orbit' | 'land' | 'return'
+ * @returns {number}
+ */
+export function requiredLunarStep(profile) {
+  const steps = LUNAR_PROFILES[profile];
+  if (!steps || steps.length === 0) return -1;
+  return LUNAR_STEPS.indexOf(steps[steps.length - 1]);
+}
 
 /** Altitude (m) at which a `turn: 0` program starts to pitch over. */
 export const TURN_START_LAZY = 8000;
@@ -366,7 +449,14 @@ export function orbitElements(r, v) {
   };
 }
 
-/** Which requirement shape a mission carries (phase 0, 1 and 2). */
+/**
+ * Which requirement shape a mission carries (phase 0, 1, 2 and 3).
+ *
+ * A `moon` requirement is only recognised with a profile LUNAR_PROFILES knows:
+ * an unknown profile has no ladder to fly and no step to be judged on, so it
+ * falls through to null exactly as any other malformed requirement does,
+ * rather than resolving as a flight to nowhere.
+ */
 function requirementKind(requirement) {
   if (!requirement) return null;
   if (typeof requirement.altitude === 'number') return 'altitude';
@@ -374,12 +464,35 @@ function requirementKind(requirement) {
   if (requirement.orbit && typeof requirement.orbit.periapsis === 'number') return 'orbit';
   if (requirement.rendezvous && typeof requirement.rendezvous.within === 'number') return 'rendezvous';
   if (requirement.dock) return 'dock';
+  if (requirement.moon && LUNAR_PROFILES[requirement.moon.profile] !== undefined) return 'moon';
   return null;
 }
 
-/** The two shapes that resolve an orbital phase after insertion (tier 3). */
+/**
+ * The two shapes that are flown to an entry in `state.objects` (tier 3).
+ *
+ * This is what the name has always meant, and in phase 2 it was also the test
+ * for "resolves a phase after insertion", because the two sets were the same
+ * two shapes. Phase 3 separates them: a lunar mission resolves an analytic
+ * phase after insertion and has NO target — the moon is a constant in
+ * js/core/moon.js, not an object in state (ARCHITECTURE.md, phase 3) — so
+ * anything about fetching, validating or measuring against a target keeps
+ * asking this, and everything about the insertion itself asks the predicate
+ * below instead.
+ */
 function needsTarget(kind) {
   return kind === 'rendezvous' || kind === 'dock';
+}
+
+/**
+ * The shapes whose flight does not end at insertion: the ascent cuts off the
+ * moment it has an orbit, and an analytic sequence spends what is left.
+ *
+ * That is the property the cutoff and the post-insertion phase actually care
+ * about, and it is true of a lunar mission as much as of a rendezvous.
+ */
+function needsInsertion(kind) {
+  return needsTarget(kind) || kind === 'moon';
 }
 
 /**
@@ -422,6 +535,11 @@ function matchAllowance(target) {
  *     template with no object in orbit yet) the maneuver terms are unknowable,
  *     so the plain tier 2 orbit requirement is returned instead — quoted at
  *     ORBIT_MIN_ALT, the lowest orbit that counts as one.
+ * - moon (phase 3): the same two parts, with the lunar ladder in place of the
+ *     rendezvous budget — the ascent to ORBIT_MIN_ALT (a lunar flight parks in
+ *     the lowest orbit it can, see `cutoffAlt`), plus every rung the profile
+ *     has to fly from there. It needs no target: the moon is a constant, so
+ *     unlike a rendezvous this number is always knowable.
  *
  * @param {object} mission
  * @param {object} [target] the object being flown to: { periapsis, apoapsis }
@@ -431,6 +549,13 @@ export function requiredDeltaV(mission, target = null) {
   const req = mission?.requirement;
   if (!req) return 0;
   if (typeof req.deltaV === 'number') return req.deltaV;
+  if (requirementKind(req) === 'moon') {
+    const rPark = R_EARTH + ORBIT_MIN_ALT;
+    const ascent = Math.sqrt(MU / rPark) * (1 + ORBIT_LOSS_ALLOWANCE);
+    const ladder = lunarLadder(rPark, rPark);
+    const steps = LUNAR_PROFILES[req.moon.profile] ?? [];
+    return ascent + steps.reduce((sum, step) => sum + ladder[step], 0);
+  }
   if (needsTarget(requirementKind(req))) {
     const peri = target && Number.isFinite(target.periapsis) ? target.periapsis : ORBIT_MIN_ALT;
     const ascent = Math.sqrt(MU / (R_EARTH + peri)) * (1 + ORBIT_LOSS_ALLOWANCE);
@@ -907,6 +1032,313 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
   };
 }
 
+
+/**
+ * Resolve the lunar phase: the analytic sequence of burns that turns an
+ * insertion into a flyby, an orbit, a landing, or a landing and a return.
+ *
+ * A SIBLING OF resolveOrbitalSequence, deliberately built out of the same
+ * parts. Nothing here is simulated either — the moon is not a second attractor
+ * (ARCHITECTURE.md, phase 3), so a lunar flight is a ladder of impulsive burns
+ * priced by js/core/moon.js and a list of things that can stop the vehicle
+ * climbing it:
+ *
+ *   tli      translunar injection, at +P/2 on the parking orbit
+ *   loi      lunar orbit insertion, one transfer time of flight later
+ *   descent  powered descent, a quarter of a lunar orbit after that, and then
+ *            the landing roll
+ *   ascent   back to lunar orbit, after SURFACE_STAY seconds on the surface
+ *   tei      trans-earth injection, a quarter of a lunar orbit later again.
+ *            Entry itself is free: the atmosphere does the braking, and the
+ *            heat shield is a hardware gate rather than a rung.
+ *
+ * WHICH of those the vehicle flies is the profile's business (LUNAR_PROFILES),
+ * and the profile is the mission — there is no loadout control for it and no
+ * window slider, because without a phasing target a launch window means
+ * nothing. So unlike the orbital sequence this one takes no phase error and
+ * reaches no separation: what it produces is how far up the ladder the vehicle
+ * got, and what stopped it.
+ *
+ * THE BUDGET is a single pool, `dvAvailable`, and by phase 3 it is the whole
+ * remaining stack rather than one stage's reserve (see the call site). The
+ * restarts and the reliability rolls are priced against the TOP stage, exactly
+ * as the orbital sequence prices its relights: the pool does not know which
+ * engine is spending it, and modelling a per-burn engine would need the tree to
+ * say which stage is the lander, which is a thing no requirement shape carries.
+ *
+ * HARDWARE GATES. Two steps need something bolted to the vehicle, and a vehicle
+ * that has not got it stops there having drawn nothing and spent nothing:
+ *   - `descent` needs `lander`; without one, `stoppedAt: 'lander'`.
+ *   - `tei` needs `shield`. ARCHITECTURE.md words this as the shield blocking
+ *     "the return leg after tei", and the gate is placed in FRONT of the tei
+ *     burn rather than behind it, for two reasons: a trans-earth injection a
+ *     vehicle cannot survive the end of is not a burn worth flying, and
+ *     `reached` has to stay under the return profile's required step or a
+ *     shieldless flight would raise `best.lunarStep` to "landed and returned"
+ *     for a crew that is still in lunar orbit.
+ *
+ * THE LANDING ROLL is shaped exactly like the docking roll: one draw, after a
+ * descent burn that completed, against LANDING_RELIABILITY raised by
+ * `landerBonus` and capped at LANDING_RELIABILITY_MAX. A failed roll leaves
+ * `landed` false and `reached` at the step below, so a landing mission fails on
+ * a landing the same way a dock mission fails on a docking.
+ *
+ * SHORTFALL. `shortBy` is this step's cost PLUS everything the profile still
+ * needs after it — the `restAfter` threading, the same as the orbital
+ * sequence's — so the result screen can say "short by 640 m/s for the return
+ * burn" rather than quoting a number that would have bought one burn of five.
+ *
+ * RNG DRAW ORDER. Every ascent draw is made before any of these. Within the
+ * sequence, per step in ladder order: the restart roll; then, only if it
+ * passed, the performance roll; then, only if THAT failed, the deficit —
+ * followed, on a descent that completed, by exactly one draw for the landing
+ * roll. A step that is not flown, is gated out, or cannot be afforded draws
+ * nothing. An underperforming relight charges `relightCost` against the pool
+ * exactly as it does in the orbital sequence, so a weak TLI really can make the
+ * return burn unaffordable four days later.
+ *
+ * @param {object} vehicle
+ * @param {string} profile   'flyby' | 'orbit' | 'land' | 'return'
+ * @param {object} insertion { t, periapsis, apoapsis } — the achieved orbit
+ * @param {number} dvAvailable m/s in the whole remaining stack
+ * @param {object} rng
+ * @returns {{ lunar: object, events: object[], failure: object|null,
+ *             anomalies: object[], readout: string, shortBy: number }}
+ *   `lunar` is the outcome field, and carries the shape ARCHITECTURE.md names:
+ *   { profile, burns, dvAvailable, dvUsed, shortBy, stoppedAt, reached,
+ *     landed, readout }, with `reached` an index into LUNAR_STEPS and -1 when
+ *   no step was completed at all.
+ */
+function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
+  const stages = vehicle?.stages ?? [];
+  const finalIndex = stages.length - 1;
+  const finalStage = stages[finalIndex];
+  const stageNo = finalIndex + 1;
+  const reliability = finalStage?.reliability ?? 0;
+
+  const restartsAvailable = Math.max(0, Math.floor(vehicle?.restarts ?? 0));
+  const hasLander = (vehicle?.lander ?? 0) >= 1;
+  const hasShield = (vehicle?.shield ?? 0) >= 1;
+  const landerBonus = Number(vehicle?.landerBonus) || 0;
+
+  const rp = R_EARTH + insertion.periapsis;
+  const ra = R_EARTH + insertion.apoapsis;
+  const period = elementsFrom(rp, ra).period;
+  const t0 = insertion.t;
+  // `requirementKind` only calls a mission lunar when its profile is one of
+  // these, so the fallback is a total-function guard rather than a live path.
+  const steps = LUNAR_PROFILES[profile] ?? LUNAR_PROFILES.flyby;
+
+  // The ladder is priced from the orbit the ascent actually achieved, not from
+  // the one the mission asked for: a flight that made a higher or an eccentric
+  // parking orbit really does have a cheaper departure (js/core/moon.js).
+  const ladder = lunarLadder(rp, ra);
+
+  // The schedule. Every time is derived from the transfer and the two orbits,
+  // so the map can play the sequence back without knowing any of the physics —
+  // and a return flight's timeline is days long, which is simulated seconds
+  // like every other flight's (the clock is phase 3b).
+  const tliT = t0 + period / 2;
+  const loiT = tliT + ladder.tof;
+  const descentT = loiT + LLO_PERIOD / 4;
+  const ascentT = descentT + SURFACE_STAY;
+  const teiT = ascentT + LLO_PERIOD / 4;
+  const stepTime = {
+    tli: tliT, loi: loiT, descent: descentT, ascent: ascentT, tei: teiT,
+  };
+
+  // The planet-centred ellipse each burn puts the vehicle on, for the map. The
+  // two translunar legs ride the same Hohmann transfer — periapsis where the
+  // vehicle is, apoapsis at the moon — and the three steps AT the moon have no
+  // planet-centred orbit worth drawing, so they carry null and the map draws
+  // them at the moon marker instead (ARCHITECTURE.md, the cislunar frame).
+  const transferElements = {
+    periapsis: insertion.periapsis,
+    apoapsis: A_MOON - R_EARTH,
+  };
+  const stepElements = {
+    tli: transferElements,
+    loi: null,
+    descent: null,
+    ascent: null,
+    tei: transferElements,
+  };
+  const stepLabel = {
+    tli: 'translunar injection',
+    loi: 'lunar orbit insertion',
+    descent: 'descent',
+    ascent: 'ascent',
+    tei: 'return',
+  };
+
+  let dvLeft = dvAvailable;
+  let dvUsed = 0;
+  let restartsLeft = restartsAvailable;
+  let reached = -1;             // deepest step COMPLETED, as a LUNAR_STEPS index
+  let landed = false;
+  let stoppedAt = null;
+  let stoppedStep = null;
+  let failure = null;
+  let shortBy = 0;
+  const burns = [];
+  const events = [];
+  const anomalies = [];
+  // Budget charged per m/s of the burn the latest relight covers: 1 to spec,
+  // more when the relight underperforms.
+  let relightCost = 1;
+
+  /**
+   * Consume one restart: the restart roll against the top stage's reliability,
+   * then — a relight is an ignition — the performance roll. Identical to the
+   * orbital sequence's, down to the draw order, because it is the same event.
+   */
+  const restartOk = (time) => {
+    restartsLeft -= 1;
+    if (!(rng.next() < reliability)) {
+      failure = { t: time, stage: stageNo, kind: 'restart' };
+      stoppedAt = 'restart-failure';
+      events.push({
+        t: time, kind: 'restart-failure', text: failureSentence(failure), stage: stageNo,
+      });
+      return false;
+    }
+    relightCost = 1;
+    if (!(rng.next() < reliability)) {
+      const deficit = lerp(ENGINE_DEFICIT_MIN, ENGINE_DEFICIT_MAX, rng.next());
+      relightCost = 1 / (1 - deficit / 2);
+      const anomaly = { t: time, stage: stageNo, kind: 'underperform', factor: 1 - deficit };
+      anomalies.push(anomaly);
+      events.push({ t: time, kind: 'anomaly', text: anomalySentence(anomaly), stage: stageNo });
+    }
+    return true;
+  };
+
+  // --- The ladder ----------------------------------------------------------
+  // One pass, in flight order, stopping at the first step the vehicle cannot
+  // fly. `restAfter` is what the profile still needs beyond this step, which is
+  // what turns a shortfall into "short by X for the return burn".
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i];
+    const time = stepTime[step];
+    const cost = ladder[step];
+    let restAfter = 0;
+    for (let j = i + 1; j < steps.length; j += 1) restAfter += ladder[steps[j]];
+
+    if (step === 'descent' && !hasLander) {
+      stoppedAt = 'lander';
+      stoppedStep = step;
+      break;
+    }
+    if (step === 'tei' && !hasShield) {
+      stoppedAt = 'shield';
+      stoppedStep = step;
+      break;
+    }
+    if (restartsLeft < 1) {
+      stoppedAt = 'restarts';
+      stoppedStep = step;
+      break;
+    }
+    if (dvLeft < cost) {
+      stoppedAt = 'deltaV';
+      stoppedStep = step;
+      shortBy = Math.max(0, cost + restAfter - dvLeft);
+      break;
+    }
+    if (!restartOk(time)) {
+      burns.push({ t: time, kind: step, dv: 0, ok: false, elements: stepElements[step] });
+      break;
+    }
+    // Priced to spec above, so this can only bite after an underperforming
+    // relight — the same coupling the orbital sequence has, and the reason the
+    // charge is made here rather than deducted up front.
+    const charged = cost * relightCost;
+    if (dvLeft < charged - EPS) {
+      stoppedAt = 'deltaV';
+      stoppedStep = step;
+      shortBy = Math.max(0, charged + restAfter - dvLeft);
+      break;
+    }
+    dvLeft -= charged;
+    dvUsed += charged;
+    burns.push({ t: time, kind: step, dv: cost, ok: true, elements: stepElements[step] });
+    // "Translunar injection burn: 3141 m/s." — the same label the shortfall
+    // names the step by, sentence-cased, so the two lines agree.
+    const label = stepLabel[step];
+    events.push({
+      t: time,
+      kind: 'burn',
+      text: `${label[0].toUpperCase()}${label.slice(1)} burn: ${Math.round(cost)} m/s.`,
+    });
+
+    if (step === 'descent') {
+      // Touchdown. One draw, exactly as the docking roll, and a failed one
+      // leaves the vehicle at the step below with `landed` false.
+      const threshold = Math.min(LANDING_RELIABILITY_MAX, LANDING_RELIABILITY + landerBonus);
+      const roll = rng.next();
+      if (!(roll < threshold)) {
+        stoppedAt = 'landing-failure';
+        stoppedStep = step;
+        // Flavour telemetry derived from the roll already drawn — no extra
+        // draw, so the sequence's draw count does not depend on the text.
+        events.push({
+          t: time,
+          kind: 'landing-failure',
+          text: `Landing aborted: ${(1 + roll * 4).toFixed(1)} m/s lateral drift.`,
+        });
+        break;
+      }
+      landed = true;
+      events.push({ t: time, kind: 'landing', text: 'Landed on the moon.' });
+    }
+
+    reached = LUNAR_STEPS.indexOf(step);
+  }
+
+  let readout;
+  if (stoppedAt === null) {
+    // The profile flew: say what it achieved, which is the profile itself.
+    readout = profile === 'return'
+      ? 'Landed on the moon and returned.'
+      : profile === 'land'
+        ? 'Landed on the moon.'
+        : profile === 'orbit'
+          ? 'In lunar orbit.'
+          : 'Lunar flyby.';
+  } else if (stoppedAt === 'lander') {
+    readout = 'No lander aboard: cannot descend.';
+  } else if (stoppedAt === 'shield') {
+    readout = 'No heat shield aboard: cannot return.';
+  } else if (stoppedAt === 'restarts') {
+    readout = `No restart available for the ${stepLabel[stoppedStep]} burn.`;
+  } else if (stoppedAt === 'restart-failure') {
+    readout = failureSentence(failure);
+  } else if (stoppedAt === 'landing-failure') {
+    readout = 'Landing aborted.';
+  } else {
+    readout = `Short by ${Math.round(shortBy)} m/s for the ${stepLabel[stoppedStep]} burn.`;
+  }
+
+  return {
+    lunar: {
+      profile,
+      burns,
+      dvAvailable,
+      dvUsed,
+      shortBy,
+      stoppedAt,
+      reached,
+      landed,
+      readout,
+    },
+    events,
+    failure,
+    anomalies,
+    readout,
+    shortBy,
+  };
+}
+
 /**
  * Simulate a launch.
  *
@@ -915,6 +1347,7 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
  * @param {object} mission  requirement is { altitude } | { downrange }
  *                          | { orbit: { periapsis } }
  *                          | { rendezvous: { target, within } } | { dock: { target } }
+ *                          | { moon: { profile } }
  * @param {object} loadout  { fuelFraction: 0.5..1.0, turn: 0..1, window: 0..1 }
  * @param {object} rng      from makeRng(seed)
  * @param {object} [opts]
@@ -925,7 +1358,8 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
  *        mission is flown to, from state.findTarget: { id, name, periapsis,
  *        apoapsis, phase }. REQUIRED for those two shapes — resolving one
  *        without it throws, because every number the orbital phase produces is
- *        relative to it.
+ *        relative to it. A `moon` mission takes NO target: the moon is a
+ *        constant in js/core/moon.js, not an entry in state.objects.
  * @param {(t: number, alt: number) => number} [opts.pitch]
  *        angle from local vertical, radians. Defaults to
  *        `pitchProgram(vehicle, loadout)`; an explicit function overrides it,
@@ -965,18 +1399,23 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   const requirementRange = kind === 'downrange' ? requirement.downrange : null;
   // A rendezvous is flown to the target's own periapsis: that is the orbit the
   // ascent has to reach before anything orbital can happen, and it is what the
-  // tier 2 miss below is judged against when the flight never gets there.
+  // tier 2 miss below is judged against when the flight never gets there. A
+  // lunar flight is flown to ORBIT_MIN_ALT — it parks in the lowest orbit that
+  // counts as one, because every metre of altitude bought on the ascent is
+  // delta-v not spent on the transfer (ARCHITECTURE.md, phase 3).
   const requirementPeri = kind === 'orbit'
     ? requirement.orbit.periapsis
-    : (orbital ? target.periapsis : null);
+    : kind === 'moon'
+      ? ORBIT_MIN_ALT
+      : (orbital ? target.periapsis : null);
   const deltaVRequired = requiredDeltaV(mission, target);
 
-  // The ascent's final stage shuts down as soon as it has the orbit it came
-  // for, keeping whatever propellant is left for the orbital phase. That is
-  // what makes the tree's top-stage propellant reserve worth buying — and it
-  // is scoped to target missions, so tier 1 and tier 2 burn to depletion
-  // exactly as they always have.
-  const cutoffAlt = orbital ? Math.max(target.periapsis, ORBIT_MIN_ALT) : null;
+  // The ascent shuts down as soon as it has the orbit it came for, keeping
+  // whatever propellant is left for the analytic phase. That is what makes the
+  // tree's top-stage propellant reserve worth buying — and it is scoped to the
+  // shapes that HAVE a phase after insertion, so tier 1 and tier 2 burn to
+  // depletion exactly as they always have.
+  const cutoffAlt = needsInsertion(kind) ? Math.max(requirementPeri, ORBIT_MIN_ALT) : null;
 
   const timeline = [];
   const samples = [];
@@ -1036,6 +1475,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       samples,
       insertion: null,
       orbital: null,
+      lunar: null,
       closestApproach: null,
       docked: false,
     });
@@ -1095,8 +1535,13 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   let impacted = false;
   let ended = false;
   let insertion = null;        // { t, periapsis, apoapsis } once orbit is confirmed
-  let reserveProp = 0;         // propellant left in the final stage at its shutdown
-  let reserveMass = 0;         // total mass at that moment (stage + payload)
+  let reserveProp = 0;         // propellant left in the cutting stage at its shutdown
+  let reserveMass = 0;         // total mass at that moment (stage + everything above)
+  // Which stage cut off, and whether one did at all. Defaulted to the top stage
+  // so that a flight which never cuts off has no unlit stages ABOVE the
+  // default, and the budget below reads exactly 0 for it, as it always has.
+  let reserveStage = Math.max(0, stages.length - 1);
+  let cutoffFired = false;
 
   const stageNo = () => stageIndex + 1;
 
@@ -1127,10 +1572,16 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
    * samples up to the current sim time can show it without learning anything
    * about how the flight ends (js/ui/ascent.js's no-leak contract).
    *
-   * Two moments are not that arithmetic:
+   * Three moments are not that arithmetic:
    *   - a TERMINAL failure leaves nothing to spend, whatever is in the tanks;
    *   - during an abort coast the escaped stage has not lit, so its full load
-   *     counts even though `propRemaining` is 0 (it is filled at ignition).
+   *     counts even though `propRemaining` is 0 (it is filled at ignition);
+   *   - an INSERTION CUTOFF ends powered flight with the stack intact. Every
+   *     stage above the one that cut off is still full and still going to be
+   *     spent — that is the whole point of cutting off (see `cutoff`) — so
+   *     `thrustDone` must not be read as "nothing left up there". Before phase
+   *     3 the cutting stage was always the top one and the loop was empty
+   *     either way, which is why this guard did not exist.
    */
   const dvRemaining = () => {
     if (failure) return 0;
@@ -1140,7 +1591,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     } else if (!thrustDone && !thrusting) {
       dv = stageDeltaV(vehicle, stageIndex, fuelFraction);
     }
-    if (!thrustDone) {
+    if (!thrustDone || cutoffFired) {
       for (let j = stageIndex + 1; j < stages.length; j += 1) {
         dv += stageDeltaV(vehicle, j, fuelFraction);
       }
@@ -1282,10 +1733,12 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   };
 
   /**
-   * Insertion cutoff: the final stage shuts down mid-burn because the orbit it
-   * was aiming at is achieved (target missions only, see `cutoffAlt`).
+   * Insertion cutoff: the burning stage shuts down mid-burn because the orbit
+   * it was aiming at is achieved (see `cutoffAlt`, and `needsInsertion` for
+   * which missions get one).
    *
-   * Everything still in the tank becomes the orbital phase's budget. The
+   * Everything still in the tank — and every stage above it that has not lit —
+   * becomes the analytic phase's budget. The
    * partial burn is credited the same way a mid-burn failure is — Tsiolkovsky
    * over the mass actually spent — and the pending mid-burn reliability roll is
    * cancelled, because the burn is over. No rng draw is made or skipped by
@@ -1299,6 +1752,8 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     deltaVAchieved += stageIsp * G0 * Math.log(mStart / mass);
     reserveProp = propRemaining;
     reserveMass = mass;
+    reserveStage = stageIndex;
+    cutoffFired = true;
     thrusting = false;
     thrustDone = true;
     poweredEndT = t;
@@ -1511,11 +1966,20 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       event(t, 'goal', `Passed ${formatAltitude(requirementRange)} downrange.`, { alt });
     }
 
-    // Insertion cutoff: on a target mission the last stage stops the instant
-    // the orbit is good enough, so the remainder of the tank is the orbital
-    // phase's delta-v budget instead of a higher apoapsis nobody asked for.
-    if (thrusting && cutoffAlt !== null && stageIndex === stages.length - 1
-      && elementsNow().periapsis >= cutoffAlt) {
+    // Insertion cutoff: on a mission with a phase after insertion, WHICHEVER
+    // stage is burning stops the instant the orbit is good enough, so the rest
+    // of the stack is that phase's delta-v budget instead of a higher apoapsis
+    // nobody asked for.
+    //
+    // It used to be scoped to the last stage, which was the same thing while
+    // the budget was one stage's reserve: a tier 3 vehicle only ever crosses
+    // an 80-160 km periapsis on its top stage, because periapsis does not
+    // leave the ground until the stack is nearly at orbital speed. Phase 3 is
+    // what makes the difference real — a lunar stack carries a departure stage
+    // and a lander ABOVE the stage that finishes the ascent, and burning them
+    // into the parking orbit to raise an apoapsis is exactly the mistake the
+    // cutoff exists to prevent.
+    if (thrusting && cutoffAlt !== null && elementsNow().periapsis >= cutoffAlt) {
       cutoff();
     }
 
@@ -1644,52 +2108,81 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   const periapsis = leftPad && endElements ? endElements.periapsis : null;
   const apoapsis = leftPad && endElements ? endElements.apoapsis : null;
 
-  // ---- The orbital phase (tier 3) -----------------------------------------
-  // It runs only on a target mission whose ascent actually got somewhere it can
-  // maneuver from: a confirmed orbit that is BOUND. An unbound trajectory can
-  // pass the ORBIT_MIN_ALT periapsis test (it is on its way out, not round),
-  // and it has no period, so there is no sequence to schedule on it — that
-  // falls through to the tier 2 miss below with closestApproach null, as a
-  // flight that never reached orbit does.
+  // ---- The analytic phase after insertion (tiers 3 and 4) -----------------
+  // It runs only on a mission that HAS one and whose ascent actually got
+  // somewhere it can maneuver from: a confirmed orbit that is BOUND. An unbound
+  // trajectory can pass the ORBIT_MIN_ALT periapsis test (it is on its way out,
+  // not round), and it has no period, so there is no sequence to schedule on
+  // it — that falls through to the tier 2 miss below with closestApproach null,
+  // as a flight that never reached orbit does.
   let orbitalResult = null;
+  let lunarResult = null;
+  let sequenceResult = null;   // whichever of the two ran, for the ladders below
   let closestApproach = null;
   let docked = false;
   let endT = t;
-  if (orbital && insertion !== null && Number.isFinite(insertion.apoapsis)) {
-    // The budget: Tsiolkovsky on what the final stage kept back at cutoff.
-    const finalStage = stages[stages.length - 1];
-    const dvAvailable = reserveProp > 0 && reserveMass > reserveProp
-      ? finalStage.isp * G0 * Math.log(reserveMass / (reserveMass - reserveProp))
-      : 0;
-    const windowValue = clamp(Number(loadout?.window) || 0, 0, 1);
-    const phaseErrorDeg = wrapDeg((windowValue - (Number(target.phase) || 0)) * 360);
+  if (needsInsertion(kind) && insertion !== null && Number.isFinite(insertion.apoapsis)) {
+    // THE BUDGET: THE REMAINING STACK (ARCHITECTURE.md, phase 3), which is the
+    // cutting stage's reserve plus every stage above it that has not lit, each
+    // priced with the mass of everything above IT — i.e. its own ideal
+    // `stageDeltaV`, because a stage that has not been lit is exactly the
+    // brochure until it is. The same rule the sample stream's `dvRemaining`
+    // has always used, applied to the moment of cutoff.
+    //
+    // Tiers 1 to 3 do not move. A tier 3 vehicle reaches its parking orbit on
+    // its top stage, so `reserveStage` is the top stage, the loop below runs
+    // zero times, and the sum is the single Tsiolkovsky term this used to be —
+    // computed against the same stage's brochure isp, which is what it always
+    // used. A flight that never cut off keeps reserveProp 0 and gets 0, as
+    // before. Tier 4 is the case that needed it: no single stage carries the
+    // ~8.5 km/s a return profile spends past insertion, and the answer Apollo
+    // used is to arrive in the parking orbit with stages still unfired.
+    let dvAvailable = 0;
+    if (reserveProp > 0 && reserveMass > reserveProp) {
+      dvAvailable = stages[reserveStage].isp * G0
+        * Math.log(reserveMass / (reserveMass - reserveProp));
+    }
+    for (let j = reserveStage + 1; j < stages.length; j += 1) {
+      dvAvailable += stageDeltaV(vehicle, j, fuelFraction);
+    }
 
-    orbitalResult = resolveOrbitalSequence(
-      vehicle, target, insertion, dvAvailable, phaseErrorDeg, rng, kind === 'dock',
-    );
-    closestApproach = orbitalResult.orbital.closestApproach;
-    docked = orbitalResult.orbital.docked;
+    if (orbital) {
+      const windowValue = clamp(Number(loadout?.window) || 0, 0, 1);
+      const phaseErrorDeg = wrapDeg((windowValue - (Number(target.phase) || 0)) * 360);
+
+      orbitalResult = resolveOrbitalSequence(
+        vehicle, target, insertion, dvAvailable, phaseErrorDeg, rng, kind === 'dock',
+      );
+      sequenceResult = orbitalResult;
+      closestApproach = orbitalResult.orbital.closestApproach;
+      docked = orbitalResult.orbital.docked;
+    } else {
+      lunarResult = resolveLunarSequence(
+        vehicle, requirement.moon.profile, insertion, dvAvailable, rng,
+      );
+      sequenceResult = lunarResult;
+    }
 
     event(insertion.t, 'insertion',
       `Orbit insertion: ${formatElement(insertion.periapsis)} × ${formatElement(insertion.apoapsis)}.`,
       { alt: insertion.periapsis });
-    for (const e of orbitalResult.events) {
+    for (const e of sequenceResult.events) {
       const { t: et, kind: ek, text, ...extra } = e;
       event(et, ek, text, extra);
       if (et > endT) endT = et;
     }
     // The outcome carries ONE failure: the TERMINAL one. An ascent that made
     // orbit at all had no terminal ascent failure — its `failure`, if any, is
-    // an escaped one — so a restart failure in the orbital phase is the failure
+    // an escaped one — so a restart failure in the analytic phase is the failure
     // that actually ends the flight and replaces it (the escape is still in
-    // `escapes` and the readout). The orbital phase's own stop is reported by
+    // `escapes` and the readout). The phase's own stop is reported by
     // `stoppedAt`.
-    if ((failure === null || failure.escaped) && orbitalResult.failure) {
-      failure = orbitalResult.failure;
+    if ((failure === null || failure.escaped) && sequenceResult.failure) {
+      failure = sequenceResult.failure;
     }
     // Anomalies are all carried, in time order: the relights come after
     // every ascent event.
-    anomalies.push(...orbitalResult.anomalies);
+    anomalies.push(...sequenceResult.anomalies);
   }
 
   // ---- Outcome ------------------------------------------------------------
@@ -1706,6 +2199,14 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     success = closestApproach !== null && closestApproach <= requirement.rendezvous.within;
   } else if (kind === 'dock') {
     success = docked;
+  } else if (kind === 'moon') {
+    // The profile is met by reaching the step it is about: a flyby by the
+    // injection, a landing by the touchdown, a return by the burn that leaves
+    // lunar orbit for home. `reached` is -1 when nothing was completed, so a
+    // flight that never got out of the parking orbit fails every profile
+    // including `flyby`, whose required step is index 0.
+    success = lunarResult !== null
+      && lunarResult.lunar.reached >= requiredLunarStep(requirement.moon.profile);
   } else {
     success = deltaVAchieved >= deltaVRequired;
   }
@@ -1718,15 +2219,16 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   // nonsense on the result screen and a contradiction of ARCHITECTURE.md's own
   // rule that shortBy is > 0 whenever the run did not succeed.
   //
-  // The orbital phase is judged on its own terms and never floored: a tier 3
-  // miss is usually not a delta-v shortfall at all (ARCHITECTURE.md — a
-  // restarts stop and an approach that is simply too wide both report 0, and
-  // the readout says restarts or navigation instead), so only a stop for want
+  // The analytic phase is judged on its own terms and never floored: a tier 3
+  // or tier 4 miss is usually not a delta-v shortfall at all (ARCHITECTURE.md —
+  // a restarts stop and an approach that is simply too wide both report 0, and
+  // a lunar flight can be stopped by having no lander at all — and the readout
+  // says restarts, navigation or hardware instead), so only a stop for want
   // of delta-v reports a number, and it is the delta-v the sequence still
-  // needed.
+  // needed, this step's cost plus everything the profile still had to fly.
   let shortBy = success ? 0 : Math.max(0, deltaVRequired - deltaVAchieved);
-  if (orbitalResult) {
-    shortBy = success ? 0 : orbitalResult.shortBy;
+  if (sequenceResult) {
+    shortBy = success ? 0 : sequenceResult.shortBy;
   } else if (!success) {
     let floorGap = 0;
     if (kind === 'altitude') {
@@ -1740,9 +2242,11 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       //   sqrt(g0 d_req) - sqrt(g0 d_reached)
       floorGap = Math.sqrt(G0 * requirementRange)
         - Math.sqrt(G0 * Math.max(maxDownrange, 0));
-    } else if (kind === 'orbit' || orbital) {
-      // A target mission that never got to orbit is short of one, and is judged
-      // exactly as a tier 2 orbit miss to the target's own periapsis.
+    } else if (kind === 'orbit' || needsInsertion(kind)) {
+      // A mission with a phase after insertion that never got to orbit is short
+      // of one, and is judged exactly as a tier 2 orbit miss to the periapsis it
+      // was parking in — the target's own for a rendezvous, ORBIT_MIN_ALT for a
+      // lunar flight.
       //
       // Two ways to be short of an orbit; the honest number is the bigger:
       //  1. the burn that would raise periapsis to the requirement, made at
@@ -1772,11 +2276,11 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   let readout;
   if (terminal && !success) {
     readout = failureSentence(terminal);
-  } else if (orbitalResult) {
-    // The orbital phase writes its own line: docked, closest approach, or the
-    // step it could not perform.
-    readout = orbitalResult.readout;
-  } else if (kind === 'orbit' || orbital) {
+  } else if (sequenceResult) {
+    // The analytic phase writes its own line: docked, closest approach, the
+    // lunar step it reached, or the step it could not perform.
+    readout = sequenceResult.readout;
+  } else if (kind === 'orbit' || needsInsertion(kind)) {
     if (success) {
       // A failure that still made orbit is worth saying — it points the result
       // screen at the reliability branch even though the contract paid out.
@@ -1834,6 +2338,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     samples,
     insertion,
     orbital: orbitalResult ? orbitalResult.orbital : null,
+    lunar: lunarResult ? lunarResult.lunar : null,
     closestApproach,
     docked,
   });
