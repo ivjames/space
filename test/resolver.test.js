@@ -50,7 +50,9 @@ import {
   phaseFor,
   velocityAt,
 } from '../js/core/orbit.js';
-import { A_MOON, LUNAR_STEPS, LLO_PERIOD, lunarLadder } from '../js/core/moon.js';
+import {
+  A_MOON, ASCENT_TIME, DESCENT_TIME, LUNAR_STEPS, LLO_PERIOD, lunarLadder,
+} from '../js/core/moon.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures. Defined here, not imported from js/data, so content changes cannot
@@ -1955,11 +1957,19 @@ test('the burns are scheduled on the transfer, and a return flight takes days', 
   assert.ok(Math.abs(coast - (1 - o.insertion.phase) * period) < 1e-6, `coast ${coast}s`);
   assert.ok(coast > 0 && coast <= period + 1e-6, 'a coast, never an instant burn');
   assert.ok(Math.abs(at.loi - (at.tli + ladder.tof)) < 1e-6);
-  // Descent a quarter of a lunar orbit after arrival; ascent a surface stay
-  // later; the return burn a quarter orbit after that.
+  // Descent a quarter of a lunar orbit after arrival; the ascent a surface
+  // stay after the TOUCHDOWN the descent takes DESCENT_TIME to reach; the
+  // return burn a quarter orbit after the ascent has finished.
   assert.ok(Math.abs(at.descent - (at.loi + LLO_PERIOD / 4)) < 1e-6);
-  assert.equal(at.ascent - at.descent, SURFACE_STAY);
-  assert.ok(Math.abs(at.tei - (at.ascent + LLO_PERIOD / 4)) < 1e-6);
+  assert.equal(at.ascent - at.descent, DESCENT_TIME + SURFACE_STAY);
+  assert.ok(Math.abs(at.tei - (at.ascent + ASCENT_TIME + LLO_PERIOD / 4)) < 1e-6);
+
+  // And the touchdown is announced where it happens, which is not where the
+  // burn that starts the descent is: twelve minutes of falling separate them,
+  // and that gap is the whole of what the map has to fly the vehicle down in.
+  const touchdown = o.timeline.find((e) => e.kind === 'landing');
+  assert.ok(touchdown, 'a return flight lands');
+  assert.equal(touchdown.t, at.descent + DESCENT_TIME);
 
   // The whole thing is a week of simulated seconds — five days out, a day on
   // the surface — and the timeline is still sorted and still ends on the 'end'

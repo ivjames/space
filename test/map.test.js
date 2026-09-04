@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // Importing the renderer must not touch window/document at module load: the
 // browser globals are only reached inside playOrbital.
-import { formatFarRange } from '../js/ui/map.js';
+import { LUNAR_DWELL_S, formatFarRange } from '../js/ui/map.js';
 import { A_MOON, lunarLadder, lunarSchedule } from '../js/core/moon.js';
 import { R, elementsFrom, radiusOf } from '../js/core/orbit.js';
 
@@ -39,7 +39,13 @@ function stubContext(record) {
     beginPath() { state.pts = []; state.arcs = 0; },
     moveTo(x, y) { state.pts.push({ x, y }); },
     lineTo(x, y) { state.pts.push({ x, y }); },
-    arc() { state.arcs += 1; },
+    // The widest circle drawn in a frame, which is how the camera is measured:
+    // wide, the biggest thing on the canvas is a floored ten-pixel body or a
+    // burn flash; in the close-up it is the moon itself and the orbit round it.
+    arc(x, y, r) {
+      state.arcs += 1;
+      if (r > record.arcR) record.arcR = r;
+    },
     stroke() {
       if (state.arcs || state.pts.length !== 2 || own.lineWidth !== 2) return;
       const [a, b] = state.pts;
@@ -54,9 +60,18 @@ function stubContext(record) {
         if (last) last.toMoon = s;
         return;
       }
+      // The close-up's readout, drawn in the same slot and belonging to the
+      // same just-closed frame: the range to the moon gives way to it once the
+      // vehicle is at the moon.
+      if (s.startsWith('ALTITUDE')) {
+        const last = record.frames.at(-1);
+        if (last) last.alt = s;
+        return;
+      }
       if (!s.startsWith('T+')) return;
-      record.frames.push({ clock: s, trail: record.trail });
+      record.frames.push({ clock: s, trail: record.trail, arcR: record.arcR });
       record.trail = 0;
+      record.arcR = 0;
     },
   };
   return new Proxy(own, {
@@ -74,7 +89,7 @@ function stubContext(record) {
 
 /** Run `fn(canvas, pump, record)` with the browser globals playOrbital needs. */
 function withBrowser(fn) {
-  const record = { frames: [], trail: 0 };
+  const record = { frames: [], trail: 0, arcR: 0 };
   const ctx = stubContext(record);
   const canvas = {
     clientWidth: 360,
@@ -149,8 +164,11 @@ function lunarOutcome() {
         { t: s.tli, kind: 'burn', text: 'Translunar injection burn.' },
         { t: s.loi, kind: 'burn', text: 'Lunar orbit insertion.' },
         { t: s.descent, kind: 'burn', text: 'Powered descent.' },
-        { t: s.descent + 60, kind: 'landing', text: 'Touchdown.' },
-        { t: s.descent + 120, kind: 'end', text: 'Flight ends.' },
+        // The touchdown is the far end of the descent, not the burn that
+        // starts it (js/core/moon.js, DESCENT_TIME) — which is what the map
+        // has to fly the vehicle down in.
+        { t: s.touchdown, kind: 'landing', text: 'Touchdown.' },
+        { t: s.touchdown + 120, kind: 'end', text: 'Flight ends.' },
       ],
     },
   };
@@ -194,15 +212,25 @@ function flybyOutcome() {
  */
 const TEST_RATE = 4000;
 
+/** Milliseconds `pump` advances the clock by per frame. */
+const FRAME_MS = 100;
+
 test('playOrbital: the flown arc grows across the transfer and stops at the moon', async () => {
   const { playOrbital } = await import('../js/ui/map.js');
   withBrowser((canvas, pump, record) => {
     const { outcome } = lunarOutcome();
     const seen = [];
     let done = 0;
+    // The capture ends the transfer, and the camera leaves the planet-centred
+    // picture shortly after it (LUNAR_DWELL_S), so the arc this test is about
+    // is the one drawn up to that point.
+    let arrivedAt = -1;
     const handle = playOrbital(canvas, outcome, {
       speed: TEST_RATE,
-      onEvent: (ev) => seen.push(ev),
+      onEvent: (ev) => {
+        seen.push(ev);
+        if (ev.text === 'Lunar orbit insertion.') arrivedAt = record.frames.length;
+      },
       onDone: () => { done += 1; },
     });
     pump(20000);
@@ -211,11 +239,12 @@ test('playOrbital: the flown arc grows across the transfer and stops at the moon
     assert.equal(done, 1);
     assert.deepEqual(seen.map((e) => e.kind), ['burn', 'burn', 'burn', 'landing', 'end']);
     assert.ok(record.frames.length > 20, `frames drawn: ${record.frames.length}`);
+    assert.ok(arrivedAt > 0, `capture seen at frame ${arrivedAt}`);
 
     // The arc is drawn at all, and it is not the whole conic from the first
     // frame: what the vehicle has flown by the time it is a third of the way
     // is a fraction of what it has flown by the end of the coast.
-    const coast = record.frames.map((f) => f.trail).filter((v) => v > 0);
+    const coast = record.frames.slice(0, arrivedAt + 1).map((f) => f.trail).filter((v) => v > 0);
     assert.ok(coast.length > 20, 'the flown arc is drawn on most frames');
     const peak = Math.max(...coast);
     assert.ok(coast[Math.floor(coast.length / 3)] < peak * 0.9, 'the arc starts short');
@@ -296,11 +325,64 @@ test('playOrbital: at the moon the flown arc holds where it arrived', async () =
     handle.stop();
 
     assert.ok(arrivedAt > 0, `capture seen at frame ${arrivedAt}`);
-    // Every frame from the capture on draws the same arc: the transfer as
-    // flown, not one that carries on round an ellipse the vehicle has left.
-    const tail = record.frames.slice(arrivedAt).map((f) => f.trail);
+    // Every frame from the capture until the camera starts moving draws the
+    // same arc: the transfer as flown, not one that carries on round an
+    // ellipse the vehicle has left. The dwell is what bounds it — after that
+    // the planet-centred picture is being left behind, and an arc scaled to
+    // lunar distance is not a measurement of anything (js/ui/map.js).
+    const dwellFrames = Math.floor((LUNAR_DWELL_S * 1000) / FRAME_MS) - 1;
+    const tail = record.frames.slice(arrivedAt, arrivedAt + dwellFrames).map((f) => f.trail);
     assert.ok(tail.length >= 3, `frames at the moon: ${tail.length}`);
     assert.ok(tail[0] > 0, 'the flown transfer is still drawn at the moon');
     for (const v of tail) assert.ok(Math.abs(v - tail[0]) < 0.5, `held at ${tail[0]}, saw ${v}`);
+  });
+});
+
+test('playOrbital: the descent is flown, and the altitude counts down to nothing', async () => {
+  // The regression this is about is the picture the tier is named for, so it
+  // is asserted as one: at the moon the corner reads the vehicle's altitude
+  // above the surface, and over a landing that number goes from the orbit the
+  // ladder is priced against to zero without ever going back up. It used to
+  // read nothing at all — a capture put the vehicle ON the moon marker, and
+  // the descent, the touchdown and the stay all happened inside ten pixels.
+  const { playOrbital } = await import('../js/ui/map.js');
+  withBrowser((canvas, pump, record) => {
+    const { outcome } = lunarOutcome();
+    const seen = [];
+    const handle = playOrbital(canvas, outcome, {
+      speed: TEST_RATE,
+      onEvent: (ev) => seen.push(ev),
+    });
+    pump(40000);
+    handle.stop();
+
+    assert.deepEqual(seen.map((e) => e.kind), ['burn', 'burn', 'burn', 'landing', 'end']);
+    const alts = record.frames.filter((f) => f.alt);
+    assert.ok(alts.length > 20, `frames with an altitude: ${alts.length}`);
+    // In lunar orbit it is the orbit js/core/moon.js prices everything from.
+    assert.equal(alts[0].alt, 'ALTITUDE 100 km');
+    // And it finishes on the ground, in metres, because a landing does.
+    assert.equal(alts.at(-1).alt, 'ALTITUDE 0 m');
+    // Never upwards: a coast at 100 km, then a descent, then the surface.
+    const metres = (f) => {
+      const [, n, unit] = f.alt.match(/^ALTITUDE ([\d.]+) (m|km)$/);
+      return Number(n) * (unit === 'km' ? 1000 : 1);
+    };
+    for (let i = 1; i < alts.length; i += 1) {
+      assert.ok(metres(alts[i]) <= metres(alts[i - 1]), `altitude rose at frame ${i}`);
+    }
+    // The descent is a trip and not a cut: the frames strictly between the
+    // orbit and the ground are most of what is drawn at the moon.
+    const falling = alts.filter((f) => metres(f) > 0 && metres(f) < 100000);
+    assert.ok(falling.length > 10, `frames on the way down: ${falling.length}`);
+
+    // And the camera went in to show it. Out at the transfer the widest circle
+    // on the canvas is a body floored to ten pixels or a burn flash expanding
+    // off one; at the moon it is the moon, drawn at its own size, and the orbit
+    // around it.
+    const wide = Math.max(...record.frames.slice(0, 5).map((f) => f.arcR));
+    const near = record.frames.at(-1).arcR;
+    assert.ok(wide < 40, `widest circle in the cislunar picture: ${wide}px`);
+    assert.ok(near > wide * 2, `widest circle in the close-up: ${near}px`);
   });
 });
