@@ -1974,6 +1974,52 @@ test('the burns are scheduled on the transfer, and a return flight takes days', 
   }
 });
 
+test('a flyby flies to the moon: the pass is the last event, not the injection', () => {
+  // THE PICTURE THE MISSION PAID FOR. `flyby` is the one profile whose ladder
+  // ends with a burn made at the PLANET — it rounds the moon on the transfer
+  // the injection bought and makes no burn there — so its timeline used to end
+  // in the parking orbit, five days and 380 000 km short of the moon, and the
+  // map (which plays the timeline and stops at its last event) stopped there
+  // with it. The arrival is an event for exactly that reason.
+  const v = moonFixture();
+  const o = resolveLaunch(v, MOON_MISSION('flyby'), MOON_LOAD, makeRng(7));
+  assert.equal(o.success, true, o.readout);
+
+  const ladder = lunarLadder(R_EARTH + o.insertion.periapsis, R_EARTH + o.insertion.apoapsis);
+  const tli = o.lunar.burns.find((b) => b.kind === 'tli');
+  const pass = o.timeline.filter((e) => e.kind === 'flyby');
+  assert.equal(pass.length, 1, 'one pass, at the moon');
+  // Arrival is the transfer's own: the same instant the schedule calls `loi`
+  // and the map places the moon at, so the craft is drawn AT it and not beside
+  // it. Five days after the injection, and the flight ends on it.
+  assert.ok(Math.abs(pass[0].t - (tli.t + ladder.tof)) < 1e-6, `pass at ${pass[0].t}`);
+  const days = (pass[0].t - tli.t) / 86400;
+  assert.ok(days > 4 && days < 6, `the coast took ${days} days`);
+  assert.equal(o.timeline.at(-1).kind, 'end');
+  assert.equal(o.timeline.at(-1).t, pass[0].t, 'the flight ends at the moon');
+  assert.equal(o.timeline.at(-1).text, o.readout);
+  for (let i = 1; i < o.timeline.length; i += 1) {
+    assert.ok(o.timeline[i].t >= o.timeline[i - 1].t, 'the timeline is sorted');
+  }
+
+  // And it is an event, not a rung: nothing is spent on it, no restart is
+  // used, and the profile is still judged on the injection alone.
+  assert.deepEqual(o.lunar.burns.map((b) => b.kind), ['tli']);
+  assert.equal(o.lunar.reached, LUNAR_STEPS.indexOf('tli'));
+  assert.ok(Math.abs(o.lunar.dvUsed - ladder.tli) < 1e-6, `spent ${o.lunar.dvUsed}`);
+
+  // A flight that never made the injection never made the pass either: there
+  // is nothing to coast on, and an event drawn anyway would fly a vehicle that
+  // is still in its parking orbit to the moon.
+  const stranded = resolveLaunch(
+    moonFixture([{ stat: 'restarts', op: 'set', value: 0 }]),
+    MOON_MISSION('flyby'), MOON_LOAD, makeRng(7),
+  );
+  assert.equal(stranded.success, false);
+  assert.equal(stranded.lunar.reached, -1);
+  assert.ok(!stranded.timeline.some((e) => e.kind === 'flyby'));
+});
+
 test('the TLI happens at the periapsis it is priced at, and is charged for it', () => {
   // THE REGRESSION GUARD. The ladder prices TLI as a burn made at the parking
   // orbit's periapsis (the Oberth-efficient place, and hundreds of m/s cheaper

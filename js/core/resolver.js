@@ -1347,6 +1347,26 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
     reached = LUNAR_STEPS.indexOf(step);
   }
 
+  // THE PASS. A free-return flyby makes no burn at the moon — that is what
+  // makes it the cheapest rung, and why `LUNAR_PROFILES.flyby` is one step —
+  // so its ladder ends with the departure and, without this, so does its
+  // timeline: the last thing that ever happened on a successful flyby was a
+  // burn made in the parking orbit, five days and 380 000 km short of the
+  // thing the contract paid for. The map plays the timeline and stops at its
+  // last event, so it stopped there too, with the vehicle drawn in the orbit
+  // it was in the act of leaving. Every other profile's last burn is AT the
+  // moon and reaches it for free.
+  //
+  // So the arrival is an event, at the transfer's own arrival time — the same
+  // `loi` instant the schedule already computes and the map already places the
+  // moon at, which is why nothing new is derived here. It is NOT a step: no
+  // delta-v is spent, no restart is used, `reached` does not move and the
+  // profile's success is still the injection's. It is the moment the mission
+  // is about, and the flight now ends on it.
+  if (profile === 'flyby' && reached >= 0) {
+    events.push({ t: stepTime.loi, kind: 'flyby', text: 'Closest approach: rounding the moon.' });
+  }
+
   let readout;
   if (stoppedAt === null) {
     // The profile flew: say what it achieved, which is the profile itself.
