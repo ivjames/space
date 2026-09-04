@@ -1278,7 +1278,11 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
         break;
       }
       landed = true;
-      events.push({ t: time, kind: 'landing', text: 'Landed on the moon.' });
+      // "Touchdown", not "Landed on the moon" — the readout says the latter,
+      // and the final 'end' event carries the readout into the same ticker, so
+      // identical strings print the line twice. The event is the moment; the
+      // readout is the summary of the flight.
+      events.push({ t: time, kind: 'landing', text: 'Touchdown on the moon.' });
     }
 
     reached = LUNAR_STEPS.indexOf(step);
