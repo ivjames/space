@@ -195,3 +195,45 @@ export function lunarLadder(parkPeriapsis, parkApoapsis) {
  */
 export const LLO_PERIOD = 2 * Math.PI
   * Math.sqrt(((R_MOON + LLO_ALT) ** 3) / MU_MOON);
+
+/**
+ * Seconds spent on the surface between the descent and the ascent.
+ *
+ * One day, which is between Apollo 11's 21 hours and Apollo 17's 75. Nothing
+ * measures it — there is no clock in phase 3 (that is 3b) and no surface
+ * activity to spend it on — so it exists only to put the ascent burn somewhere
+ * believable on the timeline the map plays back and the result screen reports
+ * as mission elapsed time.
+ */
+export const SURFACE_STAY = 86400;
+
+/**
+ * When each step of a lunar flight happens, s.
+ *
+ * Derived from the parking orbit and the ladder alone — no burn, no outcome,
+ * nothing the flight discovered. That is what lets the map view call it: the
+ * cislunar frame has to place the moon where the transfer will arrive from the
+ * FIRST frame, before any burn has been played back, and reading the burn times
+ * off the outcome to do that would break the no-leak contract the map keeps
+ * (js/ui/map.js). Both callers derive the schedule instead of sharing it, which
+ * is why it is one exported function rather than two agreeing copies: a change
+ * to the departure time that only the resolver knew about would leave the map
+ * flashing the capture burn beside the moon rather than at it.
+ *
+ * Departure is half a parking orbit after insertion — the vehicle coasts to
+ * the far side and leaves from there. Capture is one transfer time of flight
+ * later. Descent and the burn home each sit a quarter of a low lunar orbit
+ * after arriving, which is the shortest wait that is not zero.
+ *
+ * @param {number} t0 insertion time, s
+ * @param {number} parkPeriod period of the achieved parking orbit, s
+ * @param {{tof: number}} ladder from `lunarLadder`
+ * @returns {{tli: number, loi: number, descent: number, ascent: number, tei: number}}
+ */
+export function lunarSchedule(t0, parkPeriod, ladder) {
+  const tli = t0 + parkPeriod / 2;
+  const loi = tli + ladder.tof;
+  const descent = loi + LLO_PERIOD / 4;
+  const ascent = descent + SURFACE_STAY;
+  return { tli, loi, descent, ascent, tei: ascent + LLO_PERIOD / 4 };
+}

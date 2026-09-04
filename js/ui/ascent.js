@@ -77,6 +77,11 @@
 // (downrange, alt) is exactly "the planet stays drawn flat" (ARCHITECTURE.md,
 // phase 1) — curvature is not shown at this scale.
 
+// The one thing this module takes from the core, and it is a REQUIREMENT
+// rather than anything about the flight: the altitude a lunar ascent is cut
+// off at, which is the line such a flight is aiming for (normalizeRequirement).
+import { ORBIT_MIN_ALT } from '../core/resolver.js';
+
 /** Sim seconds per real second while a stage is burning. */
 const BURN_RATE = 8;
 /** Multiplier applied once nothing is burning any more: 8 -> 24. */
@@ -426,8 +431,17 @@ function burningAt(timeline, t) {
  *
  * Accepts a bare number (phase 0's altitude in metres) or a mission
  * requirement object — `{ altitude }`, `{ downrange }` or
- * `{ orbit: { periapsis } }` (ARCHITECTURE.md, phase 1). The requirement is
- * known before the flight starts, so drawing it leaks nothing.
+ * `{ orbit: { periapsis } }` (ARCHITECTURE.md, phase 1), and
+ * `{ moon: { profile } }` (phase 3). The requirement is known before the
+ * flight starts, so drawing it leaks nothing.
+ *
+ * A LUNAR mission's marker is the parking orbit, not the moon: this view ends
+ * at insertion and hands the canvas to the map (see `opts.stopAtKind`), so the
+ * altitude it is flying at is ORBIT_MIN_ALT — the orbit the resolver cuts a
+ * lunar ascent off at, because every metre bought on the way up is delta-v not
+ * spent on the transfer. Taken from the resolver rather than written out here
+ * so the line the rocket is aiming at cannot drift away from the line it is
+ * actually cut off at.
  */
 function normalizeRequirement(req) {
   if (typeof req === 'number') {
@@ -439,6 +453,7 @@ function normalizeRequirement(req) {
   if (req.orbit && typeof req.orbit.periapsis === 'number') {
     return { kind: 'orbit', value: req.orbit.periapsis };
   }
+  if (req.moon) return { kind: 'orbit', value: ORBIT_MIN_ALT };
   return null;
 }
 

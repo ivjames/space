@@ -464,6 +464,24 @@ canvas {
   text-align: right;
 }
 
+/*
+ * A row whose value is a sentence rather than a number — the lunar shortfall,
+ * which names the burn it fell short of as well as the number. Right-aligning
+ * a clause against its own label wraps it into a ragged column two words wide
+ * on a phone, so the row stacks instead: label, then the sentence under it.
+ */
+.stats > div.note {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.stats > div.note dd {
+  text-align: left;
+  font-size: 0.929rem;
+  font-weight: normal;
+}
+
 /* ---- Delta-v gauge ------------------------------------------------------ */
 
 .gauge { margin: 14px 0; }

@@ -65,7 +65,7 @@ import {
   transferDeltaV,
   phasingDeltaV,
 } from './orbit.js';
-import { A_MOON, LLO_PERIOD, LUNAR_STEPS, lunarLadder } from './moon.js';
+import { A_MOON, LUNAR_STEPS, lunarLadder, lunarSchedule } from './moon.js';
 
 /**
  * Planet radius, m. Earth-like and unnamed (DESIGN.md: real physics, fictional
@@ -238,16 +238,9 @@ export const LUNAR_PROFILES = {
   return: ['tli', 'loi', 'descent', 'ascent', 'tei'],
 };
 
-/**
- * Seconds spent on the surface between the descent and the ascent.
- *
- * One day, which is between Apollo 11's 21 hours and Apollo 17's 75. Nothing
- * measures it — there is no clock in phase 3 (that is 3b) and no surface
- * activity to spend it on — so it exists only to put the ascent burn somewhere
- * believable on the timeline the map plays back and the result screen reports
- * as mission elapsed time.
- */
-export const SURFACE_STAY = 86400;
+// SURFACE_STAY moved to js/core/moon.js, beside `lunarSchedule`, which is its
+// only consumer. Re-exported so this module's surface is unchanged.
+export { SURFACE_STAY } from './moon.js';
 
 /**
  * Probability a landing attempt succeeds with a bare lander.
@@ -1138,14 +1131,10 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
   // so the map can play the sequence back without knowing any of the physics —
   // and a return flight's timeline is days long, which is simulated seconds
   // like every other flight's (the clock is phase 3b).
-  const tliT = t0 + period / 2;
-  const loiT = tliT + ladder.tof;
-  const descentT = loiT + LLO_PERIOD / 4;
-  const ascentT = descentT + SURFACE_STAY;
-  const teiT = ascentT + LLO_PERIOD / 4;
-  const stepTime = {
+  const stepTime = lunarSchedule(t0, period, ladder);
+  const {
     tli: tliT, loi: loiT, descent: descentT, ascent: ascentT, tei: teiT,
-  };
+  } = stepTime;
 
   // The planet-centred ellipse each burn puts the vehicle on, for the map. The
   // two translunar legs ride the same Hohmann transfer — periapsis where the

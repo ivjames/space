@@ -1452,11 +1452,31 @@ is removed. `data.test.js` checks both against the real resolver.
   marker as a ring and a landed dot; the moon moves on its own circle.
   The no-leak contract is unchanged and is the reason the moon's position is
   drawable from frame one: it is a constant, like a target's orbit is state.
+  Placing the moon before any burn has played back needs the burn schedule,
+  which is why `lunarSchedule` is an exported function of `moon.js` rather
+  than arithmetic the resolver keeps to itself: both callers derive it from the
+  parking orbit and the constants, and neither reads a burn. Two agreeing
+  copies would not have stayed agreeing — a departure time only the resolver
+  knew about would flash the capture burn beside the moon rather than at it.
+- **Playback rate, the one invariant this phase widens.** Tier 3's rule is that
+  the rate is a constant (`MAP_RATE`, 600×). No constant works across cislunar
+  distances: one fast enough to cross five days of transfer reduces a `flyby`,
+  whose entire map is the parking orbit, to a twentieth of a second. So the
+  cislunar rate scales with the vehicle's currently drawn radius — about
+  54 000× at lunar distance and a sixtieth of that in the parking orbit. It
+  reads a position already on the screen, so it stays outcome-independent, and
+  it is the same shape as the ascent view's burn and coast rates. `formatClock`
+  grows a days branch here; tier 3's timelines never reached one.
 - **Loadout**: no new control. The profile is the mission, not a choice, and
   the window slider is meaningless without a phasing target.
 - **Result**: rows for the deepest step reached, delta-v used of available,
   and the shortfall named with the step it stopped before ("short by 640 m/s
-  for the return burn"). Points-at: `stoppedAt: 'restarts'` → propulsion;
+  for the return burn"). That row REPLACES the generic "short by" row on a
+  lunar mission rather than sitting beside it — two rows for one shortfall,
+  one of them missing the half that matters, is worse than either alone. The
+  resolver composes the sentence; the screen renders it rather than
+  recomputing it, and shows it for any stop, not just a delta-v one, because
+  it is the only row that reports why the ladder ended. Points-at: `stoppedAt: 'restarts'` → propulsion;
   `'lander'` → structure; `'shield'` → structure; `'deltaV'` → propulsion
   and structure.
 - **Tier flow**: tier 3 win → "Tier 4: The Moon" → contracts. Tier 4 win →
