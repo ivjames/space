@@ -1201,12 +1201,16 @@ export function mountScreens(ctx) {
     const canvas = screenEl.querySelector('#ascent');
     const tickerEl = screenEl.querySelector('[data-ticker]');
 
+    // The ticker follows the flight: the newest line is the one to read, so it
+    // stays pinned to the bottom.
+    const pinTicker = () => { tickerEl.scrollTop = tickerEl.scrollHeight; };
+
     const appendTicker = (ev) => {
       const li = document.createElement('li');
       li.className = `tick ${ev.kind}`;
       li.textContent = `${tickTime(ev.t)}  ${ev.text}`;
       tickerEl.appendChild(li);
-      tickerEl.scrollTop = tickerEl.scrollHeight;
+      pinTicker();
     };
 
     /** Playback is over — on whichever view was last holding the canvas. */
@@ -1222,6 +1226,12 @@ export function mountScreens(ctx) {
         update(committed);
       }
       paintActions();
+      // CONTINUE arriving shortens the ticker's box, and a scroll offset set
+      // against the taller one is then short by exactly the height of the
+      // button: the last lines of every flight — the arrival, and the readout
+      // that sums it up — sat below the fold, on the one screen the player is
+      // looking at when the flight ends. Re-pin once the bar is in.
+      pinTicker();
     };
 
     /**
