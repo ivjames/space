@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // Importing the renderer must not touch window/document at module load: the
 // browser globals are only reached inside playOutcome.
-import { stackGeometry } from '../js/ui/ascent.js';
+import { stackGeometry, formatClock } from '../js/ui/ascent.js';
 
 // Starter booster, tier 1 second stage, tier 3 third stage (js/data/tree.js).
 const threeStage = [
@@ -105,11 +105,13 @@ function stubContext(record) {
     createLinearGradient: () => gradient,
     createRadialGradient: () => ({ addColorStop() {} }),
     fillText(text) {
-      // drawReadout stamps T+<simT>s once per frame, after everything the
-      // frame drew, so it closes the frame the record is accumulating.
-      const m = /^T\+(\d+)s$/.exec(String(text));
+      // The telemetry card's clock is drawn once per frame, after everything
+      // the frame drew, so it closes the frame the record is accumulating.
+      // Nothing else on the canvas is [H:]MM:SS.
+      const m = /^(?:(\d+):)?(\d\d):(\d\d)$/.exec(String(text));
       if (!m) return;
-      record.frames.push({ t: Number(m[1]), flame: record.flame });
+      const t = Number(m[1] ?? 0) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+      record.frames.push({ t, flame: record.flame });
       record.flame = false;
     },
   };
@@ -318,4 +320,28 @@ test('playOutcome: several escaped failures each play their own bang', async () 
     assert.equal(seen.filter((e) => e.kind === 'failure').length, 2);
     assert.equal(seen.filter((e) => e.kind === 'separation').length, 2);
   });
+});
+
+// ---------------------------------------------------------------------------
+// The telemetry card's mission clock.
+// ---------------------------------------------------------------------------
+
+test('formatClock: MM:SS, zero-padded, seconds truncated', () => {
+  assert.equal(formatClock(0), '00:00');
+  assert.equal(formatClock(7), '00:07');
+  assert.equal(formatClock(7.9), '00:07');
+  assert.equal(formatClock(65), '01:05');
+  assert.equal(formatClock(600), '10:00');
+  assert.equal(formatClock(3599), '59:59');
+});
+
+test('formatClock: past an hour it grows a leading hours field', () => {
+  assert.equal(formatClock(3600), '1:00:00');
+  assert.equal(formatClock(3661), '1:01:01');
+  assert.equal(formatClock(36000), '10:00:00');
+});
+
+test('formatClock: a negative or nonsense clock reads as zero, not as garbage', () => {
+  assert.equal(formatClock(-5), '00:00');
+  assert.equal(formatClock(Number.NaN), '00:00');
 });

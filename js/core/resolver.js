@@ -42,7 +42,7 @@
 // inside the ESCAPE_DELAY coast and the relight then fails, the apogee is
 // reported the moment that failure is known (see the apogee rule in the loop).
 
-import { G0, stageDeltaV, stackMassAbove } from './vehicle.js';
+import { G0, stageDeltaV, stackMassAbove, totalDeltaV } from './vehicle.js';
 import {
   MU as ORBIT_MU,
   R as ORBIT_R,
@@ -1004,7 +1004,18 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     const readout = 'Insufficient thrust to lift off.';
     event(0, 'end', readout, { alt: 0 });
     samples.push({
-      t: 0, alt: 0, vel: 0, mass: totalMass0, stage: 1, x: 0, y: 0, downrange: 0,
+      t: 0,
+      alt: 0,
+      vel: 0,
+      mass: totalMass0,
+      stage: 1,
+      x: 0,
+      y: 0,
+      downrange: 0,
+      // Nothing was ever burnt, so every drop of delta-v is still aboard —
+      // which is the whole point of this readout here: the stack is not short
+      // of delta-v, it is short of thrust.
+      dv: totalDeltaV(vehicle, fuelFraction),
     });
     return finish({
       success: false,
@@ -1101,6 +1112,42 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   };
   const elementsNow = () => orbitElements({ x, y: y + R_EARTH }, { x: vx, y: vy });
 
+  /**
+   * The delta-v the vehicle still has at this instant, m/s.
+   *
+   * The stage flying now contributes what is actually in its tank, over the
+   * mass it is actually pushing, at the isp it is actually running — an
+   * engine that came up underperforming really does have less delta-v than
+   * the brochure says. Every stage above it contributes its ideal
+   * `stageDeltaV`, because a stage that has not lit yet is exactly the
+   * brochure until it does.
+   *
+   * It is a property of the CURRENT state — mass, propellant, stage — like
+   * `vel` and `mass` beside it in the sample, so a renderer that only reads
+   * samples up to the current sim time can show it without learning anything
+   * about how the flight ends (js/ui/ascent.js's no-leak contract).
+   *
+   * Two moments are not that arithmetic:
+   *   - a TERMINAL failure leaves nothing to spend, whatever is in the tanks;
+   *   - during an abort coast the escaped stage has not lit, so its full load
+   *     counts even though `propRemaining` is 0 (it is filled at ignition).
+   */
+  const dvRemaining = () => {
+    if (failure) return 0;
+    let dv = 0;
+    if (propRemaining > EPS && mass > propRemaining && stageIsp > 0) {
+      dv = stageIsp * G0 * Math.log(mass / (mass - propRemaining));
+    } else if (!thrustDone && !thrusting) {
+      dv = stageDeltaV(vehicle, stageIndex, fuelFraction);
+    }
+    if (!thrustDone) {
+      for (let j = stageIndex + 1; j < stages.length; j += 1) {
+        dv += stageDeltaV(vehicle, j, fuelFraction);
+      }
+    }
+    return dv;
+  };
+
   const pushSample = () => {
     const last = samples[samples.length - 1];
     if (last && t <= last.t) return;
@@ -1113,6 +1160,7 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       x,
       y,
       downrange: downrangeOf(x, y),
+      dv: dvRemaining(),
     });
   };
   let nextSampleAt = 0;
