@@ -225,8 +225,8 @@
 
 import { R, altitudeOf, elementsFrom, positionAt, radiusOf } from '../core/orbit.js';
 import {
-  A_MOON, ASCENT_TIME, DESCENT_TIME, ENTRY_TIME, LLO_ALT, LLO_PERIOD, R_MOON,
-  lunarLadder, lunarSchedule,
+  A_MOON, ASCENT_TIME, DESCENT_TIME, ENTRY_ALT, ENTRY_TIME, LLO_ALT, LLO_PERIOD,
+  R_MOON, lunarLadder, lunarSchedule,
 } from '../core/moon.js';
 import { SURFACE_ALT, drawSurface } from './surface.js';
 // The chrome is drawn over whatever the shot is drawn over, and at the planet
@@ -325,9 +325,10 @@ export const ENTRY_RATE = 240;
  * that fall, and this is where they live for the same reason `poweredAt`'s
  * are here — this is the only place that draws it.
  *
- *   ENTRY_ALT    the interface, and where the shot opens: the top of the
- *                atmosphere, 120 km, which is where a returning vehicle stops
- *                being in space and starts being in weather.
+ *   ENTRY_ALT    the interface, and where the shot opens — js/core/moon.js's,
+ *                not one of this module's own, because it is the periapsis the
+ *                leg home is aimed at and timed to (RETURN_TOF): the coast
+ *                ends at the altitude the fall starts from, on the same frame.
  *   ENTRY_RANGE  how far downrange the fall covers. Chosen so that the shot
  *                OPENS at the speed a lunar return actually arrives at — the
  *                cubic below leaves 3 x RANGE / TIME at the interface, and at
@@ -338,7 +339,6 @@ export const ENTRY_RATE = 240;
  *                it brings both rates to zero at the ground rather than
  *                arriving with either still on.
  */
-export const ENTRY_ALT = 120000;
 const ENTRY_RANGE = 2.2e6;
 const ENTRY_FALL = 1.9;
 

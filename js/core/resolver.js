@@ -65,7 +65,9 @@ import {
   transferDeltaV,
   phasingDeltaV,
 } from './orbit.js';
-import { A_MOON, LLO_PERIOD, LUNAR_STEPS, lunarLadder, lunarSchedule } from './moon.js';
+import {
+  A_MOON, ENTRY_ALT, LLO_PERIOD, LUNAR_STEPS, lunarLadder, lunarSchedule,
+} from './moon.js';
 
 /**
  * Planet radius, m. Earth-like and unnamed (DESIGN.md: real physics, fictional
@@ -1209,12 +1211,24 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
     periapsis: insertion.periapsis,
     apoapsis: A_MOON - R_EARTH,
   };
+  // THE WAY HOME IS AIMED AT THE ATMOSPHERE, not at the orbit it left from: a
+  // trans-earth injection targets an entry corridor, so the leg home is the
+  // same transfer with its periapsis at the interface (js/core/moon.js,
+  // ENTRY_ALT). Handing back the outbound ellipse instead had the map fly the
+  // capsule down to the parking orbit's periapsis — 40 km under the altitude
+  // the entry view opens at — and announce the interface a minute and a half
+  // after the vehicle had crossed it. `lunarSchedule` times this leg with the
+  // matching RETURN_TOF, so the coast home ends exactly where the entry begins.
+  const returnElements = {
+    periapsis: ENTRY_ALT,
+    apoapsis: A_MOON - R_EARTH,
+  };
   const stepElements = {
     tli: transferElements,
     loi: null,
     descent: null,
     ascent: null,
-    tei: transferElements,
+    tei: returnElements,
   };
   const stepLabel = {
     tli: 'translunar injection',

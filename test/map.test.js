@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 // Importing the renderer must not touch window/document at module load: the
 // browser globals are only reached inside playOrbital.
 import { LUNAR_DWELL_S, formatFarRange } from '../js/ui/map.js';
-import { A_MOON, lunarLadder, lunarSchedule } from '../js/core/moon.js';
+import { A_MOON, ENTRY_ALT, lunarLadder, lunarSchedule } from '../js/core/moon.js';
 import { R, elementsFrom, radiusOf } from '../js/core/orbit.js';
 
 test('formatFarRange: cislunar distances, grouped in threes', () => {
@@ -190,12 +190,15 @@ function lunarOutcome() {
  */
 function returnOutcome() {
   const { steps, outcome } = lunarOutcome();
-  const transfer = { periapsis: 80000, apoapsis: A_MOON - R };
+  // The leg home is aimed at the interface, not at the orbit it left from —
+  // the shape js/core/resolver.js hands over, so the coast the map flies ends
+  // at the altitude the entry view opens at (js/core/moon.js, ENTRY_ALT).
+  const home = { periapsis: ENTRY_ALT, apoapsis: A_MOON - R };
   outcome.lunar.profile = 'return';
   outcome.lunar.burns = [
     ...outcome.lunar.burns,
     { t: steps.ascent, kind: 'ascent', dv: 1900, ok: true, elements: null },
-    { t: steps.tei, kind: 'tei', dv: 900, ok: true, elements: transfer },
+    { t: steps.tei, kind: 'tei', dv: 900, ok: true, elements: home },
   ];
   outcome.timeline = [
     ...outcome.timeline.filter((ev) => ev.kind !== 'end'),
@@ -436,7 +439,7 @@ test('playOrbital: the landing, the liftoff and the way home are all shot at the
   // the rocket leave the planet on, and cuts back once the climb home is clear
   // of it. The corner note says which scale a frame is drawn at, which is how
   // the pictures are told apart from out here.
-  const { playOrbital, ENTRY_ALT, SHOT_RATE } = await import('../js/ui/map.js');
+  const { playOrbital, SHOT_RATE } = await import('../js/ui/map.js');
   const { SURFACE_ALT } = await import('../js/ui/surface.js');
   withBrowser((canvas, pump, record) => {
     const { outcome } = returnOutcome();

@@ -9,7 +9,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { GROUND_H, SCREEN_ANCHOR, VIEW_SPAN_M } from '../js/ui/ascent.js';
-import { SURFACE_ALT, drawSurface, pitchAt, surfaceView } from '../js/ui/surface.js';
+import {
+  SURFACE_ALT, drawSurface, landedLift, pitchAt, surfaceView,
+} from '../js/ui/surface.js';
 
 test('surfaceView: a pixel is the same number of metres it is at launch', () => {
   // js/ui/ascent.js sets its own mPerPx to viewSpan / canvas height, from this
@@ -135,7 +137,18 @@ test('drawSurface: the capsule comes home on the same ruler the rocket left on',
   assert.ok(Math.abs((chute.groundY - chute.lander.y) - 1200 / mPerPx) < 0.01);
   assert.ok(1200 < liftAlt, 'and the camera is on the ground by then');
 
-  // Down: the capsule sits on the surface it came back to, not in it.
+  // Down: the capsule sits ON the surface it came back to, not in it. It is
+  // drawn tipped over, and the sprite's origin is the point its shield touches
+  // — so the tilt is taken out of the anchor, or the downhill corner and the
+  // shield's belly end up under a ground that was painted before them.
   const down = draw({ alt: 0, x: 0, kind: 'landed', body: 'earth' });
-  assert.equal(down.lander.y, down.groundY);
+  const lift = landedLift();
+  assert.ok(lift > 0, `a tilted capsule needs lifting: ${lift}`);
+  assert.ok(Math.abs((down.groundY - down.lander.y) - lift) < 1e-9, 'lifted by exactly that');
+  // And it is the shield's own reach rather than a guess: flat on its base the
+  // capsule still has a belly under the origin, and tipping it over puts more
+  // of it down there.
+  assert.ok(landedLift(0) > 0, 'the shield bulges below the origin even upright');
+  assert.ok(lift > landedLift(0), 'and the tilt adds to it');
+  assert.ok(lift < 9, `a lift the size of the capsule would be a bug: ${lift}`);
 });

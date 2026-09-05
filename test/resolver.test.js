@@ -51,7 +51,8 @@ import {
   velocityAt,
 } from '../js/core/orbit.js';
 import {
-  A_MOON, ASCENT_TIME, DESCENT_TIME, ENTRY_TIME, LUNAR_STEPS, LLO_PERIOD, lunarLadder,
+  A_MOON, ASCENT_TIME, DESCENT_TIME, ENTRY_ALT, ENTRY_TIME, LUNAR_STEPS, LLO_PERIOD,
+  RETURN_TOF, lunarLadder,
 } from '../js/core/moon.js';
 
 // ---------------------------------------------------------------------------
@@ -1980,8 +1981,18 @@ test('the burns are scheduled on the transfer, and a return flight takes days', 
   const entry = o.timeline.find((e) => e.kind === 'entry');
   const home = o.timeline.find((e) => e.kind === 'recovery');
   assert.ok(entry && home, 'a return flight reaches the atmosphere and the ground');
-  assert.ok(Math.abs(entry.t - (at.tei + ladder.tof)) < 1e-6, 'entry one transfer after the burn');
+  assert.ok(Math.abs(entry.t - (at.tei + RETURN_TOF)) < 1e-6, 'entry one transfer after the burn');
   assert.equal(home.t - entry.t, ENTRY_TIME);
+  // AIMED AT THE ATMOSPHERE. The leg home is not the outbound ellipse handed
+  // back: a trans-earth injection targets an entry corridor, so the conic the
+  // map is given for it has its periapsis at the interface, and RETURN_TOF is
+  // that conic's own half-period. Otherwise the coast is drawn down to the
+  // parking orbit's periapsis, 40 km under the altitude the entry view opens
+  // at, and the interface is announced a minute and a half late.
+  const teiBurn = o.lunar.burns.find((b) => b.kind === 'tei');
+  const tliBurn = o.lunar.burns.find((b) => b.kind === 'tli');
+  assert.equal(teiBurn.elements.periapsis, ENTRY_ALT);
+  assert.equal(tliBurn.elements.periapsis, o.insertion.periapsis);
 
   // The whole thing is a week and a half of simulated seconds — five days out,
   // a day on the surface, five days back — and the timeline is still sorted and

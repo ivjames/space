@@ -94,9 +94,12 @@ const NOZZLE_H = 4;
 const DUST_ALT = 140;
 
 // ---- coming home ----------------------------------------------------------
-/** Capsule sprite, px: the body, and the heat shield under it. */
+/** Capsule sprite, px: the body, the heat shield's bulge under it, and the
+ * angle it lies at once it is down. */
 const CAP_W = 13;
 const CAP_H = 9;
+const SHIELD_BULGE = 4.5;
+const LANDED_TILT = 0.42;
 /** Canopy: full width and height, px, and the risers' length. */
 const CHUTE_W = 30;
 const CHUTE_H = 15;
@@ -165,6 +168,34 @@ export function surfaceView(w, h) {
 export function pitchAt(alt) {
   const span = SURFACE_ALT - PITCH_UPRIGHT_ALT;
   return PITCH_MAX * smooth(clamp01((alt - PITCH_UPRIGHT_ALT) / span));
+}
+
+/**
+ * How far a landed capsule has to be RAISED so that it rests on the surface
+ * rather than in it, px.
+ *
+ * The sprite's origin is the point its shield touches the ground, which is
+ * exactly right while it is coming down and exactly wrong the moment it tips
+ * over: rotating about that point swings the downhill corner — and the
+ * shield's belly, which reaches further still — below the origin, and the
+ * sprite is drawn after the terrain, so a capsule meant to be lying on the
+ * ground reads as one half-buried in it. So the lowest point of the tilted
+ * shield is measured off the curve itself, and the sprite is lifted by it.
+ * Sampled rather than derived so that it stays right if the sprite's numbers
+ * move.
+ */
+export function landedLift(tilt = LANDED_TILT) {
+  const sin = Math.sin(tilt);
+  const cos = Math.cos(tilt);
+  let low = 0;
+  for (let i = 0; i <= 24; i += 1) {
+    const t = i / 24;
+    // The shield: a quadratic from (-CAP_W/2, 0) to (CAP_W/2, 0), belly down.
+    const x = -(CAP_W / 2) * (1 - t) * (1 - t) + (CAP_W / 2) * t * t;
+    const y = 2 * t * (1 - t) * SHIELD_BULGE;
+    low = Math.max(low, x * sin + y * cos);
+  }
+  return low;
 }
 
 /** Deterministic hash of a slot index -> three numbers in 0..1. */
@@ -509,8 +540,9 @@ export function drawSurface(ctx, view, state) {
    */
   function drawCapsule() {
     const px = drToX(x);
-    const py = altToY(alt);
     const down = kind === 'landed';
+    // Lifted by whatever the tilt would otherwise bury (landedLift).
+    const py = altToY(alt) - (down ? landedLift() : 0);
     const ink = rgba(inkOver(sky), 1);
     ctx.save();
     ctx.translate(px, py);
@@ -521,8 +553,10 @@ export function drawSurface(ctx, view, state) {
     }
 
     // The body: a blunt cone, flat end down, standing on its shield. Landed,
-    // it tips over onto its side the way a capsule on the ground does.
-    if (down) ctx.rotate(0.42);
+    // it tips over onto its side the way a capsule on the ground does — about
+    // the lifted origin, so the lowest corner of the tilt comes to rest ON the
+    // ground rather than under it.
+    if (down) ctx.rotate(LANDED_TILT);
     const top = -CAP_H;
     ctx.beginPath();
     ctx.moveTo(-CAP_W / 2, 0);
@@ -538,7 +572,7 @@ export function drawSurface(ctx, view, state) {
     // The shield: the part that does the work, and the only part that is hot.
     ctx.beginPath();
     ctx.moveTo(-CAP_W / 2, 0);
-    ctx.quadraticCurveTo(0, 4.5, CAP_W / 2, 0);
+    ctx.quadraticCurveTo(0, SHIELD_BULGE, CAP_W / 2, 0);
     ctx.closePath();
     ctx.fillStyle = down ? ink : '#3b2b26';
     ctx.fill();

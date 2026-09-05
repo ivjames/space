@@ -1632,11 +1632,18 @@ is removed. `data.test.js` checks both against the real resolver.
   than a rung. Free is not the same as eventless: the burn for home is 380 000
   km from home, and the map plays the timeline and stops at its last event, so
   the flight the contract pays for RETURNING from ended with the vehicle still
-  at the moon. `lunarSchedule` therefore carries two more moments, out of the
-  same transfer it already knew about — `entry`, one time of flight after the
-  burn, and `home`, `ENTRY_TIME` (600 s, Apollo's interface-to-splashdown was
-  about 840) after that — and the resolver emits an `entry` and a `recovery`
-  event at them. Neither is a step or a burn: no delta-v, no restart, `reached`
+  at the moon. `lunarSchedule` therefore carries two more moments — `entry`,
+  one `RETURN_TOF` after the burn, and `home`, `ENTRY_TIME` (600 s, Apollo's
+  interface-to-splashdown was about 840) after that — and the resolver emits an
+  `entry` and a `recovery` event at them. The leg home is **aimed at the
+  atmosphere**: a trans-earth injection targets an entry corridor, not the
+  parking orbit it left from, so the conic the resolver hands the map for it has
+  its periapsis at `ENTRY_ALT` and `RETURN_TOF` is that conic's own half-period
+  — sixty seconds longer than the way out over five days, and the reason the
+  coast home ends at the altitude and on the frame the entry view opens at.
+  Handing back the outbound ellipse instead flew the capsule down to the parking
+  orbit's periapsis, 40 km under it, and announced the interface a minute and a
+  half after the vehicle had crossed it. Neither is a step or a burn: no delta-v, no restart, `reached`
   does not move, and the profile's success is still the injection's, exactly as
   the ascent's `lunar-orbit` event and the flyby's pass are. A `flyby`'s free
   return is deliberately untouched: its mission is the pass, and its timeline
