@@ -89,14 +89,19 @@ const COAST_MULT = 3;
 // World metres shown per canvas height, and per canvas width at the same
 // metres-per-pixel. Fixed for every flight of every mission; the follow
 // camera makes altitude and downrange a matter of scrolling, not zoom.
-const VIEW_SPAN_M = 15000;
+//
+// EXPORTED, along with the ruler and the anchor below, because js/ui/surface.js
+// draws the landing and the liftoff at the moon on this same ruler — the
+// surface shot is the launch view's scale, one body over, and the way to say
+// "the same scale" is to share the constant rather than to copy the number.
+export const VIEW_SPAN_M = 15000;
 // Labelled tick spacing and unlabelled minor spacing, also fixed.
-const TICK_STEP_M = 5000;
-const MINOR_STEP_M = 1000;
+export const TICK_STEP_M = 5000;
+export const MINOR_STEP_M = 1000;
 /** Downrange spacing of the ground's surface marks, m. */
-const GROUND_MARK_M = 2000;
+export const GROUND_MARK_M = 2000;
 /** Rocket's resting height on screen, as a fraction up from the bottom. */
-const SCREEN_ANCHOR = 0.58;
+export const SCREEN_ANCHOR = 0.58;
 // ---- sky model ------------------------------------------------------------
 // All of it is a function of the rocket's current altitude and these
 // constants; none of it may touch the outcome (see the SKY note above).
@@ -153,7 +158,7 @@ const CLOUD_SEED = 0x5bf03635;
 const CLOUD_SLOTS = Math.round((CLOUD_BAND_END_M - CLOUD_BAND_START_M) / CLOUD_SPACING_M);
 
 /** Ground strip height, px. */
-const GROUND_H = 22;
+export const GROUND_H = 22;
 
 // ---- readout --------------------------------------------------------------
 // The live telemetry card in the top-left of the sky: two columns of three

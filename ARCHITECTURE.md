@@ -12,6 +12,10 @@ below is a change to this file first.
   `Math.random()`. Everything it needs comes in as arguments. This is what
   makes it testable under `node --test` and reusable by the Capacitor build.
 - `js/ui/*` is browser-only and imports from `js/core/*`, never the reverse.
+  One view may import another's constants where the two have to agree about
+  something visible — `js/ui/surface.js` takes `VIEW_SPAN_M` and the rest of
+  the ruler from `js/ui/ascent.js`, which is what makes the landing at the
+  moon the same scale as the launch rather than a scale that looks like it.
 - `js/data/*` is content: plain objects exported from JS modules (JSON can't
   be imported without a bundler in every target we care about).
 - Tests: `node --test test/` on Node 22. No test framework.
@@ -1618,6 +1622,43 @@ is removed. `data.test.js` checks both against the real resolver.
   its OUTCOME is not — both the `landing` and the `landing-failure` event
   arrive at the far end of it — which is what makes a descent something to
   watch rather than something to have watched.
+- **The shot on the ground, a third picture and a CUT.** The close-up is a
+  picture of an orbit, and in the last kilometres of a descent it stops being a
+  picture of a landing: at a fit set by the drawn lunar orbit the moon is ninety
+  pixels of radius, so the final kilometre is two of them and the touchdown the
+  tier is named for is a marker meeting a limb. So below `SURFACE_ALT` (8 km)
+  the view cuts to `js/ui/surface.js` — the **surface shot** — which draws the
+  approach, the touchdown, the stay and the liftoff that starts the trip home
+  side-on, at EXACTLY the scale the launch was drawn at. `VIEW_SPAN_M`, the km
+  ruler, the ground-mark spacing and the screen anchor are imported from
+  `js/ui/ascent.js` rather than copied, so "the same scale as the launch" is a
+  shared constant and not a claim (`test/surface.test.js` pins it, and
+  `test/map.test.js` pins the sequence of corner notes across a whole `return`
+  flight: *bodies not to scale → lunar altitude ×6 → launch scale → lunar
+  altitude ×6 → bodies not to scale*).
+  It is a CUT, dipped through black over `SHOT_CUT_S`, and not the camera move
+  the close-up is. The camera could travel from the planet to the moon because
+  both pictures share an origin, an orientation and a projection and differ only
+  by 150× of scale; the surface shot shares none of them — its up is the local
+  vertical at the site, its ground is flat, its altitudes are honest where the
+  close-up's are stretched ×6 — and it is another 180× in. Easing between two
+  pictures with nothing in common is a smear. What asks for the cut is the
+  altitude the vehicle is drawn at right now, which is a position already on the
+  screen: the same licence the lunar rates take, and it says nothing about how
+  the flight ends. The corner note, which in every other picture says which of
+  the two things is a lie, says `launch scale` here, because nothing in this one
+  is: no body is drawn, nothing is exaggerated, and a pixel is the number of
+  metres it was on the way up off the planet. Two things are the renderer's own
+  opinion, both about the sprite rather than the flight: the lander's ATTITUDE
+  is a function of altitude, not of the velocity direction (the ladder's descent
+  holds one ten-degree slope all the way down, so a vehicle pointed along it
+  would still be lying on its side at contact — it leans back into its braking
+  high up and is level over the last 800 m, and an ascent is the mirror image),
+  and the crater field is deterministic scenery in world coordinates, the same
+  trick the launch view's cloud layer uses. An ABORT is the one thing this
+  picture shows that the close-up could not: `ABORT_U` leaves the vehicle 360 m
+  up and two kilometres short of the site, which at this scale is visibly short
+  of a site that is drawn.
 - **Playback rate, the one invariant this phase widens.** Tier 3's rule is that
   the rate is a constant (`MAP_RATE`, 600×). No constant works across cislunar
   distances: one fast enough to cross five days of transfer reduces a `flyby`,
@@ -1632,9 +1673,20 @@ is removed. `data.test.js` checks both against the real resolver.
   what the vehicle is DOING, which a burn or an event has already said:
   `LUNAR_RATE` coasting (a two-hour revolution in about nine seconds),
   `LUNAR_BURN_RATE` on the two powered legs (a twelve-minute descent in three),
-  and `SURFACE_RATE` for the stay, which is a day of nothing in two. All three
-  are applied as a fraction of the playback rate, so an overridden `speed`
-  still scales everything together.
+  and `SURFACE_RATE` for the stay, which is a day of nothing in two. A fourth,
+  `SHOT_RATE`, takes over inside the surface shot: 240× plays the last eight
+  kilometres of a descent in a fifth of a second, where this plays them in
+  about seven. All four are applied as a fraction of the playback rate, so an
+  overridden `speed` still scales everything together.
+  A rate is only valid up to the next thing that changes it, so a frame never
+  carries the clock past a burn or an event: one frame of `SURFACE_RATE` is
+  4 320 simulated seconds, ten times the whole climb back to orbit, and
+  unclamped the frame that ends the stay steps over the ascent burn, over
+  `ASCENT_TIME` and out the far side — the vehicle was on the moon on one frame
+  and in orbit round it on the next, with the climb never drawn. The clamp drops
+  the remainder of that frame, which costs at most one frame at the new rate,
+  and it lands every burn flash on its own instant rather than up to a frame
+  late.
 - **Loadout**: no new control. The profile is the mission, not a choice, and
   the window slider is meaningless without a phasing target.
 - **Result**: rows for the deepest step reached, delta-v used of available,

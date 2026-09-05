@@ -45,6 +45,7 @@ const PRECACHE_URLS = [
   'js/data/missions.js',
   'js/ui/ascent.js',
   'js/ui/map.js',
+  'js/ui/surface.js',
   'js/ui/shop.js',
   'js/ui/hud.js',
   'js/ui/screens.js',

@@ -35,6 +35,7 @@ function stubContext(record) {
   const own = {
     lineWidth: 1,
     createRadialGradient: () => ({ addColorStop() {} }),
+    createLinearGradient: () => ({ addColorStop() {} }),
     measureText: (text) => ({ width: String(text).length * 5 }),
     beginPath() { state.pts = []; state.arcs = 0; },
     moveTo(x, y) { state.pts.push({ x, y }); },
@@ -66,6 +67,13 @@ function stubContext(record) {
       if (s.startsWith('ALTITUDE')) {
         const last = record.frames.at(-1);
         if (last) last.alt = s;
+        return;
+      }
+      // The corner note, which says which scale the frame is drawn at and so
+      // says which of the three pictures is live.
+      if (s === 'launch scale' || s === 'bodies not to scale' || s.startsWith('lunar altitude')) {
+        const last = record.frames.at(-1);
+        if (last) last.note = s;
         return;
       }
       if (!s.startsWith('T+')) return;
@@ -172,6 +180,31 @@ function lunarOutcome() {
       ],
     },
   };
+}
+
+/**
+ * The whole ladder: down to the surface, a day on it, and the climb back to
+ * lunar orbit that starts the trip home. The `return` profile's shape, built
+ * the way js/core/resolver.js builds it — the ascent's own event is at the FAR
+ * end of the climb (`orbited`), which is the moment the step is about.
+ */
+function returnOutcome() {
+  const { steps, outcome } = lunarOutcome();
+  const transfer = { periapsis: 80000, apoapsis: A_MOON - R };
+  outcome.lunar.profile = 'return';
+  outcome.lunar.burns = [
+    ...outcome.lunar.burns,
+    { t: steps.ascent, kind: 'ascent', dv: 1900, ok: true, elements: null },
+    { t: steps.tei, kind: 'tei', dv: 900, ok: true, elements: transfer },
+  ];
+  outcome.timeline = [
+    ...outcome.timeline.filter((ev) => ev.kind !== 'end'),
+    { t: steps.ascent, kind: 'burn', text: 'Lunar ascent burn.' },
+    { t: steps.orbited, kind: 'lunar-orbit', text: 'Back in lunar orbit.' },
+    { t: steps.tei, kind: 'burn', text: 'Trans-Earth injection.' },
+    { t: steps.tei + 60, kind: 'end', text: 'Flight ends.' },
+  ];
+  return { steps, outcome };
 }
 
 /**
@@ -379,10 +412,77 @@ test('playOrbital: the descent is flown, and the altitude counts down to nothing
     // And the camera went in to show it. Out at the transfer the widest circle
     // on the canvas is a body floored to ten pixels or a burn flash expanding
     // off one; at the moon it is the moon, drawn at its own size, and the orbit
-    // around it.
+    // around it. Measured off the frames the CLOSE-UP is live in — the corner
+    // note says which those are — because the last few of a landing belong to
+    // the surface shot, which is a third picture and has no body in it at all.
     const wide = Math.max(...record.frames.slice(0, 5).map((f) => f.arcR));
-    const near = record.frames.at(-1).arcR;
+    const closeUp = record.frames.filter((f) => (f.note ?? '').startsWith('lunar altitude'));
+    assert.ok(closeUp.length > 5, `frames in the close-up: ${closeUp.length}`);
+    const near = Math.max(...closeUp.map((f) => f.arcR));
     assert.ok(wide < 40, `widest circle in the cislunar picture: ${wide}px`);
     assert.ok(near > wide * 2, `widest circle in the close-up: ${near}px`);
+  });
+});
+
+test('playOrbital: the landing and the liftoff are shot at the launch scale', async () => {
+  // The shot on the ground (js/ui/surface.js). The close-up above it is a
+  // picture of an ORBIT — the moon at true size and a hundred kilometres of
+  // altitude stretched x6 — and the last kilometres of a descent are two pixels
+  // of it. So below SURFACE_ALT the view cuts to the ruler the player watched
+  // the rocket leave the planet on, and cuts back once the climb home is clear
+  // of it. The corner note says which scale a frame is drawn at, which is how
+  // the pictures are told apart from out here.
+  const { playOrbital, SHOT_RATE } = await import('../js/ui/map.js');
+  const { SURFACE_ALT } = await import('../js/ui/surface.js');
+  withBrowser((canvas, pump, record) => {
+    const { outcome } = returnOutcome();
+    const seen = [];
+    const handle = playOrbital(canvas, outcome, {
+      speed: TEST_RATE,
+      onEvent: (ev) => seen.push(ev),
+    });
+    pump(200000);
+    handle.stop();
+
+    assert.deepEqual(
+      seen.map((e) => e.kind),
+      ['burn', 'burn', 'burn', 'landing', 'burn', 'lunar-orbit', 'burn', 'end'],
+    );
+
+    const notes = record.frames.filter((f) => f.note).map((f) => f.note);
+    assert.ok(notes.length > 40, `frames with a note: ${notes.length}`);
+    // Every run of frames that share a note, in order — which is the whole trip
+    // told in scales: out to the moon, in to the orbit round it, down onto the
+    // ground at the scale the rocket launched at, back out to the orbit the
+    // climb home ends in, and back out again behind the burn for home.
+    const runs = notes.filter((n, i) => i === 0 || n !== notes[i - 1]);
+    assert.deepEqual(runs, [
+      'bodies not to scale',
+      'lunar altitude ×6',
+      'launch scale',
+      'lunar altitude ×6',
+      'bodies not to scale',
+    ]);
+
+    // The shot is the low part of the flight and nothing else: every frame it
+    // owns is at or below the altitude the cut is made at, and the ones either
+    // side of it are the orbit, a hundred kilometres up.
+    const metres = (f) => {
+      const [, n, unit] = f.alt.match(/^ALTITUDE ([\d.]+) (m|km)$/);
+      return Number(n) * (unit === 'km' ? 1000 : 1);
+    };
+    const shot = record.frames.filter((f) => f.note === 'launch scale' && f.alt);
+    assert.ok(shot.length > 20, `frames in the shot: ${shot.length}`);
+    for (const f of shot) {
+      assert.ok(metres(f) <= SURFACE_ALT, `shot frame at ${f.alt}`);
+    }
+    // It is a landing and a liftoff, not one of them: the altitude inside the
+    // shot goes to zero and then back up.
+    const zero = shot.findIndex((f) => metres(f) === 0);
+    assert.ok(zero > 0, 'the shot reaches the ground');
+    assert.ok(metres(shot.at(-1)) > 0, `the shot ends climbing: ${shot.at(-1).alt}`);
+    // And it plays at its own rate: the whole descent at LUNAR_BURN_RATE would
+    // put the last eight kilometres inside a couple of frames.
+    assert.ok(SHOT_RATE < 60, `shot rate: ${SHOT_RATE}`);
   });
 });
