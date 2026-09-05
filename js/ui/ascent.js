@@ -321,6 +321,99 @@ function darknessAt(alt, darkAlt, blackAlt) {
 }
 
 /**
+ * The sky's state at altitude `alt`: how dark the top of the view is, how dark
+ * the horizon band is, the blend value everything drawn over the sky uses, and
+ * how far the stars have come up. A pure function of the altitude and the SKY_*
+ * constants — never the outcome, the scale or the target.
+ *
+ * EXPORTED because the launch is not the only time this game is in an
+ * atmosphere: js/ui/surface.js draws the capsule coming home through the same
+ * sky, and two implementations of "what does 40 km look like" would drift
+ * apart. The accent, which needs the canvas's own palette, is left to the
+ * caller — everything here is a number.
+ */
+export function skyAt(alt) {
+  const a = Math.max(alt, 0);
+  const top = darknessAt(a, SKY_DARK_ALT, SKY_BLACK_ALT);
+  const horizon = darknessAt(a, SKY_HORIZON_DARK_ALT, SKY_HORIZON_BLACK_ALT);
+  // What foreground colours blend by: the darkness partway down the view,
+  // where most of the ticks, labels and the vehicle actually sit.
+  const dark = top + (horizon - top) * 0.5;
+  return {
+    top,
+    horizon,
+    dark,
+    day: 1 - dark,
+    // Stars ride the same darkness value the sky does: nothing at the pad,
+    // first ones around 30 km, full by ~80 km.
+    stars: clamp01((top - STAR_ON_DARK) / (STAR_FULL_DARK - STAR_ON_DARK)),
+  };
+}
+
+/** Sky colour at screen fraction `f` (0 = top of view, 1 = bottom). */
+function skyColorAt(sky, f) {
+  // Day gradient deepens toward the top; the pale band is squeezed to the
+  // bottom of the view, which is where the horizon is.
+  const day = mix(DAY_TOP, DAY_HORIZON, Math.pow(f, 1.35));
+  const night = mix(NIGHT_TOP, NIGHT_HORIZON, f);
+  // The horizon's slower darkening only takes over near the bottom.
+  const d = sky.top + (sky.horizon - sky.top) * Math.pow(f, 2);
+  return mix(day, night, d);
+}
+
+/** Fill the canvas with the sky for `sky` (from skyAt). */
+export function paintSky(ctx, w, h, sky) {
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  // Enough stops that the horizon's separate falloff reads as a gradient
+  // rather than as bands.
+  for (const f of [0, 0.25, 0.45, 0.62, 0.76, 0.86, 0.94, 1]) {
+    g.addColorStop(f, rgba(skyColorAt(sky, f), 1));
+  }
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+}
+
+/**
+ * The starfield, faded in with the sky's darkness and drifting with the camera
+ * — slowly, so it reads as far away. `stars` is whatever makeStars produced;
+ * `scrollX` and `scrollY` are already in pixels.
+ */
+export function drawStarField(ctx, w, h, stars, sky, scrollX, scrollY, color) {
+  if (sky.stars <= 0.01) return;
+  ctx.fillStyle = color;
+  for (const s of stars) {
+    const y = ((s.y + scrollY) % h + h) % h;
+    const x = ((s.x - scrollX) % w + w) % w;
+    ctx.globalAlpha = s.a * sky.stars;
+    ctx.beginPath();
+    ctx.arc(x, y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// The night half of every blend below. They are the two greys this screen has
+// always ended on — theme-independent on purpose (see `colors`), which is what
+// lets them be constants here rather than parameters: two views blending
+// against different greys would not be drawing the same world.
+const NIGHT_MUTED = [164, 173, 185];    // #a4adb9
+const NIGHT_BORDER = [58, 67, 80];      // #3a4350
+
+/** Ink for labels and sprites over `sky`: dark by day, the muted grey at night. */
+export const inkOver = (sky) => mix(DAY_INK, NIGHT_MUTED, sky.dark);
+/** The same for ruled lines, which sit a shade back from the labels. */
+export const lineOver = (sky) => mix(DAY_INK, NIGHT_BORDER, sky.dark);
+/** The accent, deepened so it stays readable against a bright sky. */
+export const accentOver = (sky, accentRgb) => mix(DAY_ACCENT, accentRgb, sky.dark);
+/** Ground colours under `sky`: the land, and the marks drawn on it. */
+export const groundOver = (sky) => ({
+  fill: mix(DAY_GROUND, NIGHT_BORDER, sky.horizon),
+  line: mix(DAY_GROUND_LINE, NIGHT_MUTED, sky.horizon),
+});
+/** '[r,g,b] + alpha -> css' and '#rrggbb -> [r,g,b]', with the colours. */
+export { rgba, parseHex };
+
+/**
  * Deterministic hash of (slot, salt) -> [0,1). A fixed seed, so the cloud
  * layer is identical on every launch of every flight — it is scenery, not an
  * outcome, and must never be able to hint at one.
@@ -331,6 +424,72 @@ function cloudRand(slot, salt) {
   x = Math.imul(x ^ (x >>> 13), 0x27d4eb2f) >>> 0;
   x = (x ^ (x >>> 16)) >>> 0;
   return x / 4294967296;
+}
+
+/**
+ * The cloud layer, in world space so it scrolls in both axes with everything
+ * else. Slots are laid out every CLOUD_SPACING_M of downrange and only the ones
+ * on screen are evaluated (capped at CLOUD_MAX_DRAWN); each slot's jitter,
+ * altitude, size and puffs come from cloudRand's fixed seed, so the clouds are
+ * identical on every flight. Past the band the slot index wraps, so a long
+ * downrange flight keeps meeting clouds instead of an edge.
+ *
+ * `view` is a camera: { w, h, mPerPx, drToX, altToY, xToDr, yToAlt }. Exported
+ * for the same reason the sky is — the capsule comes home through this weather
+ * (js/ui/surface.js), and there is one cloud layer in the game.
+ */
+export function drawCloudLayer(ctx, view, fade) {
+  if (fade <= 0.02) return;
+  const { w, h, mPerPx, drToX, altToY, xToDr, yToAlt } = view;
+  // Vertical cull: is any of the 1.5-9 km band in view?
+  if (yToAlt(h) > CLOUD_MAX_ALT_M || yToAlt(0) < CLOUD_MIN_ALT_M) return;
+
+  const margin = CLOUD_MAX_W_M;
+  const left = xToDr(0) - margin;
+  const right = xToDr(w) + margin;
+  const i0 = Math.floor((left - CLOUD_BAND_START_M) / CLOUD_SPACING_M);
+  const i1 = Math.min(
+    Math.ceil((right - CLOUD_BAND_START_M) / CLOUD_SPACING_M),
+    i0 + CLOUD_MAX_DRAWN,
+  );
+
+  ctx.save();
+  for (let i = i0; i <= i1; i += 1) {
+    const slot = ((i % CLOUD_SLOTS) + CLOUD_SLOTS) % CLOUD_SLOTS;
+    const dr = CLOUD_BAND_START_M
+      + i * CLOUD_SPACING_M
+      + (cloudRand(slot, 1) - 0.5) * CLOUD_SPACING_M * 0.8;
+    const alt = CLOUD_MIN_ALT_M + cloudRand(slot, 2) * (CLOUD_MAX_ALT_M - CLOUD_MIN_ALT_M);
+    const widthPx = (CLOUD_MIN_W_M + cloudRand(slot, 3) * (CLOUD_MAX_W_M - CLOUD_MIN_W_M)) / mPerPx;
+    const x = drToX(dr);
+    const y = altToY(alt);
+    if (x + widthPx < 0 || x - widthPx > w || y + widthPx < 0 || y - widthPx > h) continue;
+
+    const alpha = (0.55 + cloudRand(slot, 4) * 0.30) * fade;
+    const puffs = cloudRand(slot, 5) < 0.45 ? 2 : 3;
+    for (let p = 0; p < puffs; p += 1) {
+      const px = x + (cloudRand(slot, 10 + p) - 0.5) * widthPx * 0.72;
+      const py = y - cloudRand(slot, 20 + p) * widthPx * 0.12;
+      const rx = widthPx * (0.30 + cloudRand(slot, 30 + p) * 0.22);
+      const ry = rx * (0.40 + cloudRand(slot, 40 + p) * 0.20);
+      // A radial fade gives the soft edge a flat ellipse cannot; squashing
+      // the whole thing vertically keeps that softness in both axes.
+      const r = Math.max(rx, 1);
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.scale(1, Math.max(ry / r, 0.05));
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+      grad.addColorStop(0, `rgba(255,255,255,${alpha})`);
+      grad.addColorStop(0.55, `rgba(252,254,255,${alpha * 0.80})`);
+      grad.addColorStop(1, 'rgba(248,252,255,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+  ctx.restore();
 }
 
 /** Deterministic little LCG so the starfield does not sparkle between frames. */
@@ -532,14 +691,12 @@ export function playOutcome(canvas, outcome, opts = {}) {
     bg: '#0a0f18',
     fg: '#e8e8e8',
     muted: '#a4adb9',
-    border: '#3a4350',
     accent: cssVar(canvas, '--accent', '#00d4ff'),
     fail: cssVar(canvas, '--fail', '#ff6b6b'),
     warn: cssVar(canvas, '--warn', '#ffb347'),
   };
   const rgbFg = parseHex(colors.fg, [232, 232, 232]);
   const rgbMuted = parseHex(colors.muted, [164, 173, 185]);
-  const rgbBorder = parseHex(colors.border, [58, 67, 80]);
   const rgbAccent = parseHex(colors.accent, [0, 212, 255]);
 
   // Per-frame sky state, recomputed by updateSky(alt) at the top of frame().
@@ -619,122 +776,34 @@ export function playOutcome(canvas, outcome, opts = {}) {
 
   // ---- drawing -----------------------------------------------------------
   /**
-   * Recompute the sky state for the rocket's current altitude. Every number
-   * here is a function of `alt` and the SKY_* constants alone — never the
-   * scale, the target, or anything in the outcome.
+   * Recompute the sky state for the rocket's current altitude. The numbers come
+   * from the module-level `skyAt` (which js/ui/surface.js shares, so the sky at
+   * 40 km is the same sky on the way home as on the way up); the accent needs
+   * this canvas's own palette, so it is mixed here.
    */
   function updateSky(alt) {
-    const a = Math.max(alt, 0);
-    sky.top = darknessAt(a, SKY_DARK_ALT, SKY_BLACK_ALT);
-    sky.horizon = darknessAt(a, SKY_HORIZON_DARK_ALT, SKY_HORIZON_BLACK_ALT);
-    // What foreground colours blend by: the darkness partway down the view,
-    // where most of the ticks, labels and the rocket actually sit.
-    sky.dark = sky.top + (sky.horizon - sky.top) * 0.5;
-    sky.day = 1 - sky.dark;
-    // Stars ride the same darkness value the sky does: nothing at the pad,
-    // first ones around 30 km, full by ~80 km.
-    sky.stars = clamp01((sky.top - STAR_ON_DARK) / (STAR_FULL_DARK - STAR_ON_DARK));
-    sky.accent = mix(DAY_ACCENT, rgbAccent, sky.dark);
-  }
-
-  /** Sky colour at screen fraction `f` (0 = top of view, 1 = bottom). */
-  function skyColorAt(f) {
-    // Day gradient deepens toward the top; the pale band is squeezed to the
-    // bottom of the view, which is where the horizon is.
-    const day = mix(DAY_TOP, DAY_HORIZON, Math.pow(f, 1.35));
-    const night = mix(NIGHT_TOP, NIGHT_HORIZON, f);
-    // The horizon's slower darkening only takes over near the bottom.
-    const d = sky.top + (sky.horizon - sky.top) * Math.pow(f, 2);
-    return mix(day, night, d);
+    Object.assign(sky, skyAt(alt));
+    sky.accent = accentOver(sky, rgbAccent);
   }
 
   function drawSky() {
-    const g = ctx.createLinearGradient(0, 0, 0, h);
-    // Enough stops that the horizon's separate falloff reads as a gradient
-    // rather than as bands.
-    for (const f of [0, 0.25, 0.45, 0.62, 0.76, 0.86, 0.94, 1]) {
-      g.addColorStop(f, rgba(skyColorAt(f), 1));
-    }
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
-
-    // Stars fade in with the sky's darkness and drift with the camera in both
-    // axes — slowly, so they read as far away.
-    if (sky.stars <= 0.01) return;
-    const scrollY = ((camAlt - liftAlt) / mPerPx) * 0.12;
-    const scrollX = (camX / mPerPx) * 0.04;
-    ctx.fillStyle = colors.fg;
-    for (const s of stars) {
-      const y = ((s.y + scrollY) % h + h) % h;
-      const x = ((s.x - scrollX) % w + w) % w;
-      ctx.globalAlpha = s.a * sky.stars;
-      ctx.beginPath();
-      ctx.arc(x, y, s.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
+    paintSky(ctx, w, h, sky);
+    // The stars drift with the camera in both axes, slowly.
+    drawStarField(
+      ctx, w, h, stars, sky,
+      (camX / mPerPx) * 0.04,
+      ((camAlt - liftAlt) / mPerPx) * 0.12,
+      colors.fg,
+    );
   }
 
-  /**
-   * A cloud layer in world space, so it scrolls in both axes with everything
-   * else. Slots are laid out every CLOUD_SPACING_M of downrange and only the
-   * ones on screen are evaluated (capped at CLOUD_MAX_DRAWN); each slot's
-   * jitter, altitude, size and puffs come from cloudRand's fixed seed, so the
-   * clouds are identical on every launch. Past the band the slot index wraps,
-   * so a long downrange flight keeps meeting clouds instead of an edge.
-   */
+  /** The cloud layer, at this view's camera (drawCloudLayer). */
   function drawClouds() {
-    const fade = sky.day;
-    if (fade <= 0.02) return;
-    // Vertical cull: is any of the 1.5-9 km band in view?
-    if (yToAlt(h) > CLOUD_MAX_ALT_M || yToAlt(0) < CLOUD_MIN_ALT_M) return;
-
-    const margin = CLOUD_MAX_W_M;
-    const left = xToDr(0) - margin;
-    const right = xToDr(w) + margin;
-    const i0 = Math.floor((left - CLOUD_BAND_START_M) / CLOUD_SPACING_M);
-    const i1 = Math.min(
-      Math.ceil((right - CLOUD_BAND_START_M) / CLOUD_SPACING_M),
-      i0 + CLOUD_MAX_DRAWN,
+    drawCloudLayer(
+      ctx,
+      { w, h, mPerPx, drToX, altToY, xToDr, yToAlt },
+      sky.day,
     );
-
-    ctx.save();
-    for (let i = i0; i <= i1; i += 1) {
-      const slot = ((i % CLOUD_SLOTS) + CLOUD_SLOTS) % CLOUD_SLOTS;
-      const dr = CLOUD_BAND_START_M
-        + i * CLOUD_SPACING_M
-        + (cloudRand(slot, 1) - 0.5) * CLOUD_SPACING_M * 0.8;
-      const alt = CLOUD_MIN_ALT_M + cloudRand(slot, 2) * (CLOUD_MAX_ALT_M - CLOUD_MIN_ALT_M);
-      const widthPx = (CLOUD_MIN_W_M + cloudRand(slot, 3) * (CLOUD_MAX_W_M - CLOUD_MIN_W_M)) / mPerPx;
-      const x = drToX(dr);
-      const y = altToY(alt);
-      if (x + widthPx < 0 || x - widthPx > w || y + widthPx < 0 || y - widthPx > h) continue;
-
-      const alpha = (0.55 + cloudRand(slot, 4) * 0.30) * fade;
-      const puffs = cloudRand(slot, 5) < 0.45 ? 2 : 3;
-      for (let p = 0; p < puffs; p += 1) {
-        const px = x + (cloudRand(slot, 10 + p) - 0.5) * widthPx * 0.72;
-        const py = y - cloudRand(slot, 20 + p) * widthPx * 0.12;
-        const rx = widthPx * (0.30 + cloudRand(slot, 30 + p) * 0.22);
-        const ry = rx * (0.40 + cloudRand(slot, 40 + p) * 0.20);
-        // A radial fade gives the soft edge a flat ellipse cannot; squashing
-        // the whole thing vertically keeps that softness in both axes.
-        const r = Math.max(rx, 1);
-        ctx.save();
-        ctx.translate(px, py);
-        ctx.scale(1, Math.max(ry / r, 0.05));
-        const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
-        grad.addColorStop(0, `rgba(255,255,255,${alpha})`);
-        grad.addColorStop(0.55, `rgba(252,254,255,${alpha * 0.80})`);
-        grad.addColorStop(1, 'rgba(248,252,255,0)');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      }
-    }
-    ctx.restore();
   }
 
   /** Horizontal km ticks in world space, so altitude reads off the world. */
@@ -746,7 +815,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     ctx.save();
     // Ink follows the sky: dark and semi-transparent over daylight, the muted
     // grey of the night palette once it is dark.
-    const lineCol = mix(DAY_INK, rgbBorder, sky.dark);
+    const lineCol = lineOver(sky);
     // The labels reach their night grey sooner than the lines do: a linear
     // crossfade bottoms out around 40 km, where dark ink and the dark sky are
     // both too close together to read.
@@ -798,8 +867,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     if (gy > h) return;
     // Land under a day sky, fading to the night strip on the same curve the
     // sky's horizon band uses, so the palette stays coherent all the way up.
-    const groundCol = mix(DAY_GROUND, rgbBorder, sky.horizon);
-    const groundLine = mix(DAY_GROUND_LINE, rgbMuted, sky.horizon);
+    const { fill: groundCol, line: groundLine } = groundOver(sky);
     ctx.fillStyle = rgba(groundCol, 1);
     ctx.fillRect(0, gy, w, Math.max(h - gy, 0));
     ctx.strokeStyle = rgba(groundLine, 1);
@@ -936,7 +1004,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
   // white tubes); the nose the accent.
 
   /** Ink colour for the current sky: dark by day, muted grey by night. */
-  const inkRgb = () => mix(DAY_INK, rgbMuted, sky.dark);
+  const inkRgb = () => inkOver(sky);
   const inkColor = () => rgba(inkRgb(), 1);
 
   /** One stage's tube, with a darker panel line down one side so it reads as a cylinder. */

@@ -29,6 +29,20 @@
 // unaffected: everything passed in is derived from a burn that has already
 // happened, the constants in js/core/moon.js, and the playback clock.
 //
+// TWO BODIES, ONE SHOT. The moon is where it started — a descent, a touchdown,
+// a stay and a liftoff on grey ground under a black sky — and the planet is
+// where a `return` profile finishes, with the capsule coming down through the
+// atmosphere it launched through. Both are the same picture: the same ruler,
+// the same camera, the same ground marks, the same site under it. What differs
+// is what is overhead and what is falling, so `state.body` picks between them
+// and nothing else in here is duplicated.
+//
+// The sky, the starfield and the cloud layer of the planet's half are the
+// LAUNCH VIEW'S OWN (js/ui/ascent.js: skyAt, paintSky, drawStarField,
+// drawCloudLayer). Not a second sky that looks like it: the same functions,
+// the same constants, so 40 km looks the way 40 km looked on the way up and
+// the capsule comes down through the weather the rocket climbed through.
+//
 // TWO THINGS ARE THIS MODULE'S OWN OPINION, both of them about the sprite
 // rather than the flight:
 //
@@ -48,6 +62,7 @@
 
 import {
   GROUND_H, GROUND_MARK_M, MINOR_STEP_M, SCREEN_ANCHOR, TICK_STEP_M, VIEW_SPAN_M,
+  drawCloudLayer, drawStarField, groundOver, inkOver, lineOver, paintSky, rgba, skyAt,
 } from './ascent.js';
 
 /**
@@ -77,6 +92,34 @@ const NOZZLE_H = 4;
 
 /** Dust starts kicking up below this altitude, m, whenever the engine is lit. */
 const DUST_ALT = 140;
+
+// ---- coming home ----------------------------------------------------------
+/** Capsule sprite, px: the body, and the heat shield under it. */
+const CAP_W = 13;
+const CAP_H = 9;
+/** Canopy: full width and height, px, and the risers' length. */
+const CHUTE_W = 30;
+const CHUTE_H = 15;
+const RISER_H = 15;
+/**
+ * Altitude the canopy comes out at, m, and the drop it takes to fill.
+ *
+ * Drogues out at about 8 km and the mains at 3 is the real sequence; one
+ * canopy at 6 km is that sequence at the resolution a fifteen-kilometre view
+ * has, which is 190 pixels for the whole of it.
+ */
+const CHUTE_ALT = 6000;
+const CHUTE_FILL_M = 900;
+/**
+ * The plasma sheath: full between these altitudes, m, and faded out either
+ * side of them. Peak heating on a lunar return is around 60 km, and it is over
+ * well before the canopy — a capsule is a meteor and then it is a parachute,
+ * and the picture should not show both at once.
+ */
+const PLASMA_TOP_M = 100000;
+const PLASMA_HOT_M = 70000;
+const PLASMA_COOL_M = 40000;
+const PLASMA_OUT_M = 25000;
 
 /** World spacing of the crater field, m, and the biggest a crater gets, m. */
 const CRATER_STEP_M = 700;
@@ -138,12 +181,16 @@ function slot(k) {
  * Draw one frame of the shot.
  *
  * @param {CanvasRenderingContext2D} ctx
- * @param {object} view    { w, h, colors } — CSS pixels and the map's palette
+ * @param {object} view    { w, h, colors, stars } — CSS pixels, the map's
+ *        palette, and its starfield (makeStars): the shot paints its own
+ *        background, because at the planet that background is a sky.
  * @param {object} state
+ * @param {'moon'|'earth'} [state.body]  which surface this is; 'moon' default
  * @param {number} state.alt        altitude above the surface, m
  * @param {number} state.x          signed downrange to the site, m: negative on
  *        the way in, zero on it, positive once an ascent has left it
- * @param {'descent'|'ascent'|'surface'} state.kind  which leg is under way
+ * @param {'descent'|'ascent'|'surface'|'entry'|'landed'} state.kind  which leg
+ *        is under way — the three lunar ones, and the two at home
  * @param {boolean} [state.aborted] the descent was waved off; draw it in the
  *        failure colour, short of a site it never reached
  * @param {boolean} [state.engine]  the engine is lit
@@ -151,15 +198,17 @@ function slot(k) {
  */
 export function drawSurface(ctx, view, state) {
   const { w, h, colors } = view;
+  const stars = view.stars ?? [];
   const cam = surfaceView(w, h);
   const alt = Math.max(0, state.alt);
   const x = state.x;
   const kind = state.kind;
+  const earth = state.body === 'earth';
   const engine = state.engine === true;
   const realT = Number(state.realT) || 0;
   const color = state.aborted ? colors.fail : colors.accent;
 
-  // The camera: the lander is always at the horizontal centre, and at
+  // The camera: the vehicle is always at the horizontal centre, and at
   // `anchorY` once it is high enough for the ground to be off the bottom.
   const camAlt = Math.max(alt, cam.liftAlt);
   const altToY = (a) => cam.anchorY - (a - camAlt) / cam.mPerPx;
@@ -168,24 +217,58 @@ export function drawSurface(ctx, view, state) {
   const xToDr = (px) => x + (px - w / 2) * cam.mPerPx;
 
   const gy = altToY(0);
+  // At the planet everything drawn over the world is blended against the sky
+  // the way the launch view blends it, which is what stops a black-sky palette
+  // being painted onto a blue one.
+  const sky = earth ? skyAt(alt) : null;
 
+  drawBackdrop();
   drawTicks();
   if (gy < h) {
     drawGround();
-    drawCraters();
+    if (!earth) drawCraters();
     drawSite();
-    if (engine && alt < DUST_ALT) drawDust();
+    if (!earth && engine && alt < DUST_ALT) drawDust();
   }
-  drawLander();
+  if (earth) drawCapsule();
+  else drawLander();
+
+  /**
+   * What is overhead: space at the moon, and at the planet the launch view's
+   * own sky, stars and cloud layer (see the header). The clouds go here rather
+   * than with the ground because they are above it and the capsule comes down
+   * THROUGH them.
+   */
+  function drawBackdrop() {
+    if (!earth) {
+      ctx.fillStyle = colors.bg;
+      ctx.fillRect(0, 0, w, h);
+      // No air, so no sky and no fading: the stars are simply there.
+      drawStarField(ctx, w, h, stars, { stars: 1 }, 0, 0, colors.fg);
+      return;
+    }
+    paintSky(ctx, w, h, sky);
+    drawStarField(
+      ctx, w, h, stars, sky,
+      (x / cam.mPerPx) * 0.04,
+      ((camAlt - cam.liftAlt) / cam.mPerPx) * 0.12,
+      colors.fg,
+    );
+    drawCloudLayer(
+      ctx,
+      { w, h, mPerPx: cam.mPerPx, drToX, altToY, xToDr, yToAlt },
+      sky.day,
+    );
+  }
 
   /** The altitude ruler: the launch view's, unlabelled at 1 km, labelled at 5. */
   function drawTicks() {
     const top = yToAlt(0);
     const bottom = Math.max(yToAlt(Math.min(h, gy)), 0);
     ctx.save();
-    ctx.strokeStyle = colors.muted;
+    ctx.strokeStyle = earth ? rgba(lineOver(sky), 1) : colors.muted;
     ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.16;
+    ctx.globalAlpha = earth ? 0.3 : 0.16;
     const mFirst = Math.max(1, Math.ceil(bottom / MINOR_STEP_M));
     const mLast = Math.floor(top / MINOR_STEP_M);
     if (mLast - mFirst < 60) {
@@ -199,7 +282,7 @@ export function drawSurface(ctx, view, state) {
         ctx.stroke();
       }
     }
-    ctx.globalAlpha = 0.4;
+    ctx.globalAlpha = earth ? 0.75 : 0.4;
     ctx.font = '9px "Courier New", monospace';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'bottom';
@@ -213,7 +296,7 @@ export function drawSurface(ctx, view, state) {
       ctx.lineTo(w, y);
       ctx.stroke();
       if (y > 12) {
-        ctx.fillStyle = colors.muted;
+        ctx.fillStyle = earth ? rgba(inkOver(sky), 1) : colors.muted;
         ctx.fillText(`${Math.round(a / 1000)} km`, w - 6, y - 3);
       }
     }
@@ -228,12 +311,13 @@ export function drawSurface(ctx, view, state) {
    */
   function drawGround() {
     ctx.save();
+    const land = earth ? groundOver(sky) : null;
     const g = ctx.createLinearGradient(0, gy, 0, h);
-    g.addColorStop(0, REGOLITH);
-    g.addColorStop(1, REGOLITH_DARK);
+    g.addColorStop(0, land ? rgba(land.fill, 1) : REGOLITH);
+    g.addColorStop(1, land ? rgba(land.fill, 1) : REGOLITH_DARK);
     ctx.fillStyle = g;
     ctx.fillRect(0, gy, w, Math.max(h - gy, 0));
-    ctx.strokeStyle = REGOLITH_RIM;
+    ctx.strokeStyle = land ? rgba(land.line, 1) : REGOLITH_RIM;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, gy + 0.5);
@@ -299,7 +383,7 @@ export function drawSurface(ctx, view, state) {
     if (px < -40 || px > w + 40) return;
     ctx.save();
     ctx.globalAlpha = 0.85;
-    ctx.strokeStyle = colors.muted;
+    ctx.strokeStyle = earth ? rgba(inkOver(sky), 1) : colors.muted;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(px - 16, gy + 0.5);
@@ -409,6 +493,133 @@ export function drawSurface(ctx, view, state) {
       ctx.lineTo(0, from + len);
       ctx.closePath();
       ctx.fill();
+    }
+  }
+
+  /**
+   * COMING HOME. The capsule, its heat shield, the plasma sheath while it is
+   * still a meteor, and the canopy once it is not.
+   *
+   * Everything here is keyed on the altitude alone — the sheath fades in at the
+   * interface and is gone by 25 km, the canopy comes out at CHUTE_ALT and fills
+   * over CHUTE_FILL_M — so the sequence is a property of where the capsule is,
+   * never of how the flight ends. There is nothing to decide: entry is free
+   * (js/core/moon.js), the heat shield was a hardware gate before the burn for
+   * home, and a capsule that is drawn here is one that is coming down.
+   */
+  function drawCapsule() {
+    const px = drToX(x);
+    const py = altToY(alt);
+    const down = kind === 'landed';
+    const ink = rgba(inkOver(sky), 1);
+    ctx.save();
+    ctx.translate(px, py);
+
+    if (!down) {
+      drawPlasma();
+      drawChute();
+    }
+
+    // The body: a blunt cone, flat end down, standing on its shield. Landed,
+    // it tips over onto its side the way a capsule on the ground does.
+    if (down) ctx.rotate(0.42);
+    const top = -CAP_H;
+    ctx.beginPath();
+    ctx.moveTo(-CAP_W / 2, 0);
+    ctx.lineTo(CAP_W / 2, 0);
+    ctx.lineTo(CAP_W * 0.28, top);
+    ctx.lineTo(-CAP_W * 0.28, top);
+    ctx.closePath();
+    ctx.fillStyle = colors.fg;
+    ctx.fill();
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // The shield: the part that does the work, and the only part that is hot.
+    ctx.beginPath();
+    ctx.moveTo(-CAP_W / 2, 0);
+    ctx.quadraticCurveTo(0, 4.5, CAP_W / 2, 0);
+    ctx.closePath();
+    ctx.fillStyle = down ? ink : '#3b2b26';
+    ctx.fill();
+    // A stripe, so the sprite reads as the same craft the accent has drawn all
+    // flight rather than a white wedge.
+    ctx.fillStyle = colors.accent;
+    ctx.fillRect(-CAP_W * 0.28, top + 1.5, CAP_W * 0.56, 2);
+    ctx.restore();
+
+    if (down) drawSpentCanopy();
+
+    /** The sheath, and the trail of it streaming back downrange. */
+    function drawPlasma() {
+      const heat = alt >= PLASMA_HOT_M
+        ? clamp01((PLASMA_TOP_M - alt) / (PLASMA_TOP_M - PLASMA_HOT_M))
+        : clamp01((alt - PLASMA_OUT_M) / (PLASMA_COOL_M - PLASMA_OUT_M));
+      if (heat <= 0.02) return;
+      // Backwards is -x: the capsule is always flying toward the site.
+      const len = 26 + 34 * heat;
+      const g = ctx.createLinearGradient(0, 2, -len, -len * 0.18);
+      g.addColorStop(0, `rgba(255,246,214,${0.95 * heat})`);
+      g.addColorStop(0.35, `rgba(255,150,50,${0.6 * heat})`);
+      g.addColorStop(1, 'rgba(255,70,30,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(-CAP_W * 0.6, 3);
+      ctx.lineTo(CAP_W * 0.6, 3);
+      ctx.lineTo(-len, -len * 0.1);
+      ctx.closePath();
+      ctx.fill();
+      // The bow shock itself, right under the shield.
+      ctx.beginPath();
+      ctx.ellipse(0, 3, CAP_W * 0.75, 4.5, 0, 0, Math.PI);
+      ctx.fillStyle = `rgba(255,236,196,${0.85 * heat})`;
+      ctx.fill();
+    }
+
+    /** The canopy, filling over the first CHUTE_FILL_M below CHUTE_ALT. */
+    function drawChute() {
+      if (alt > CHUTE_ALT) return;
+      const open = clamp01((CHUTE_ALT - alt) / CHUTE_FILL_M);
+      const wide = CHUTE_W * (0.25 + 0.75 * open);
+      const high = CHUTE_H * (0.3 + 0.7 * open);
+      const topY = -CAP_H - RISER_H * open - high;
+      ctx.save();
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 1;
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(side * CAP_W * 0.3, -CAP_H);
+        ctx.lineTo(side * wide * 0.42, topY + high);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.moveTo(-wide / 2, topY + high);
+      ctx.quadraticCurveTo(0, topY - high * 0.8, wide / 2, topY + high);
+      ctx.closePath();
+      ctx.fillStyle = '#f2f5f8';
+      ctx.fill();
+      ctx.stroke();
+      // Two gores in the accent, so the canopy is this game's canopy.
+      ctx.fillStyle = colors.accent;
+      ctx.globalAlpha = 0.8;
+      ctx.fillRect(-wide * 0.09, topY + high * 0.15, wide * 0.18, high * 0.85);
+      ctx.restore();
+    }
+
+    /** Down: the canopy collapsed on the ground beside it. */
+    function drawSpentCanopy() {
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = '#f2f5f8';
+      ctx.beginPath();
+      ctx.moveTo(px + 6, gy);
+      ctx.quadraticCurveTo(px + 20, gy - 7, px + 34, gy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
     }
   }
 }

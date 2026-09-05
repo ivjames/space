@@ -1099,7 +1099,10 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
  *            and ASCENT_TIME more of it to get there
  *   tei      trans-earth injection, a quarter of a lunar orbit after that.
  *            Entry itself is free: the atmosphere does the braking, and the
- *            heat shield is a hardware gate rather than a rung.
+ *            heat shield is a hardware gate rather than a rung. Free, but not
+ *            silent — the coast home is one transfer of flight and the fall at
+ *            the end of it is ENTRY_TIME, and both are on the timeline as
+ *            events, because the burn for home is not the arrival.
  *
  * WHICH of those the vehicle flies is the profile's business (LUNAR_PROFILES),
  * and the profile is the mission — there is no loadout control for it and no
@@ -1368,6 +1371,30 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
       // event, so it stopped with the vehicle still on the surface at the
       // start of a climb it had already completed, and `reached` said it had.
       events.push({ t: stepTime.orbited, kind: 'lunar-orbit', text: 'Back in lunar orbit.' });
+    }
+
+    if (step === 'tei') {
+      // THE WAY HOME, for the same reason the ascent's own event exists: the
+      // burn is not the arrival. A return profile's last event used to be the
+      // trans-earth injection itself, so the flight the contract pays for
+      // ENDING AT HOME ended 380 000 km from it, on the frame the engine cut
+      // off — the map plays the timeline and stops at its last event, so the
+      // whole coast back, the entry and the landing were never drawn and the
+      // readout announced a return the player had not seen.
+      //
+      // Neither of these is a step or a burn: no delta-v is spent, no restart
+      // is used, `reached` does not move, and the profile's success is still
+      // the injection's. Entry is free (js/core/moon.js, approximation 5) —
+      // the atmosphere does the braking and the heat shield is the gate, which
+      // was checked in front of the burn. They are the two moments the coast
+      // home is made of: the top of the atmosphere, one time of flight later,
+      // and the ground ENTRY_TIME after that.
+      events.push({
+        t: stepTime.entry,
+        kind: 'entry',
+        text: 'Entry interface: the atmosphere does the braking.',
+      });
+      events.push({ t: stepTime.home, kind: 'recovery', text: 'Down, and recovered.' });
     }
 
     reached = LUNAR_STEPS.indexOf(step);

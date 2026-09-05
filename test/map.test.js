@@ -202,7 +202,11 @@ function returnOutcome() {
     { t: steps.ascent, kind: 'burn', text: 'Lunar ascent burn.' },
     { t: steps.orbited, kind: 'lunar-orbit', text: 'Back in lunar orbit.' },
     { t: steps.tei, kind: 'burn', text: 'Trans-Earth injection.' },
-    { t: steps.tei + 60, kind: 'end', text: 'Flight ends.' },
+    // The way home: the top of the atmosphere one transfer after the burn, and
+    // the ground ENTRY_TIME after that (js/core/moon.js, lunarSchedule).
+    { t: steps.entry, kind: 'entry', text: 'Entry interface.' },
+    { t: steps.home, kind: 'recovery', text: 'Down, and recovered.' },
+    { t: steps.home, kind: 'end', text: 'Landed on the moon and returned.' },
   ];
   return { steps, outcome };
 }
@@ -424,7 +428,7 @@ test('playOrbital: the descent is flown, and the altitude counts down to nothing
   });
 });
 
-test('playOrbital: the landing and the liftoff are shot at the launch scale', async () => {
+test('playOrbital: the landing, the liftoff and the way home are all shot at the launch scale', async () => {
   // The shot on the ground (js/ui/surface.js). The close-up above it is a
   // picture of an ORBIT — the moon at true size and a hundred kilometres of
   // altitude stretched x6 — and the last kilometres of a descent are two pixels
@@ -432,7 +436,7 @@ test('playOrbital: the landing and the liftoff are shot at the launch scale', as
   // the rocket leave the planet on, and cuts back once the climb home is clear
   // of it. The corner note says which scale a frame is drawn at, which is how
   // the pictures are told apart from out here.
-  const { playOrbital, SHOT_RATE } = await import('../js/ui/map.js');
+  const { playOrbital, ENTRY_ALT, SHOT_RATE } = await import('../js/ui/map.js');
   const { SURFACE_ALT } = await import('../js/ui/surface.js');
   withBrowser((canvas, pump, record) => {
     const { outcome } = returnOutcome();
@@ -446,7 +450,8 @@ test('playOrbital: the landing and the liftoff are shot at the launch scale', as
 
     assert.deepEqual(
       seen.map((e) => e.kind),
-      ['burn', 'burn', 'burn', 'landing', 'burn', 'lunar-orbit', 'burn', 'end'],
+      ['burn', 'burn', 'burn', 'landing', 'burn', 'lunar-orbit', 'burn',
+        'entry', 'recovery', 'end'],
     );
 
     const notes = record.frames.filter((f) => f.note).map((f) => f.note);
@@ -462,27 +467,50 @@ test('playOrbital: the landing and the liftoff are shot at the launch scale', as
       'launch scale',
       'lunar altitude ×6',
       'bodies not to scale',
+      // And home: the coast back is the wide picture again, and the entry is
+      // the shot on the ground for the second time, at the other body.
+      'launch scale',
     ]);
 
-    // The shot is the low part of the flight and nothing else: every frame it
-    // owns is at or below the altitude the cut is made at, and the ones either
-    // side of it are the orbit, a hundred kilometres up.
     const metres = (f) => {
       const [, n, unit] = f.alt.match(/^ALTITUDE ([\d.]+) (m|km)$/);
       return Number(n) * (unit === 'km' ? 1000 : 1);
     };
-    const shot = record.frames.filter((f) => f.note === 'launch scale' && f.alt);
-    assert.ok(shot.length > 20, `frames in the shot: ${shot.length}`);
-    for (const f of shot) {
-      assert.ok(metres(f) <= SURFACE_ALT, `shot frame at ${f.alt}`);
+    // The two runs of frames the shot owns, in order: the moon, then home.
+    const shots = [];
+    for (const f of record.frames) {
+      if (!f.alt) continue;
+      if (f.note !== 'launch scale') { if (shots.at(-1)?.length) shots.push([]); continue; }
+      if (!shots.length) shots.push([]);
+      shots.at(-1).push(f);
     }
+    const [moon, back] = shots.filter((run) => run.length);
+    assert.equal(shots.filter((run) => run.length).length, 2, 'two shots on the ground');
+
+    // AT THE MOON the shot is the low part of the flight and nothing else:
+    // every frame it owns is at or below the altitude the cut is made at, and
+    // the ones either side of it are the orbit, a hundred kilometres up.
+    assert.ok(moon.length > 20, `frames in the lunar shot: ${moon.length}`);
+    for (const f of moon) assert.ok(metres(f) <= SURFACE_ALT, `lunar shot at ${f.alt}`);
     // It is a landing and a liftoff, not one of them: the altitude inside the
     // shot goes to zero and then back up.
-    const zero = shot.findIndex((f) => metres(f) === 0);
+    const zero = moon.findIndex((f) => metres(f) === 0);
     assert.ok(zero > 0, 'the shot reaches the ground');
-    assert.ok(metres(shot.at(-1)) > 0, `the shot ends climbing: ${shot.at(-1).alt}`);
-    // And it plays at its own rate: the whole descent at LUNAR_BURN_RATE would
-    // put the last eight kilometres inside a couple of frames.
+    assert.ok(metres(moon.at(-1)) > 0, `the shot ends climbing: ${moon.at(-1).alt}`);
+
+    // AT HOME it is the whole entry, which starts at the top of the atmosphere
+    // rather than at the surface shot's own eight kilometres — an entry has no
+    // orbital part to hand over from — and it finishes on the ground, having
+    // never once gone back up.
+    assert.ok(back.length > 10, `frames coming home: ${back.length}`);
+    assert.ok(metres(back[0]) > SURFACE_ALT, `entry opens at ${back[0].alt}`);
+    assert.ok(metres(back[0]) <= ENTRY_ALT, `entry opens at ${back[0].alt}`);
+    assert.equal(metres(back.at(-1)), 0, 'and it is down');
+    for (let i = 1; i < back.length; i += 1) {
+      assert.ok(metres(back[i]) <= metres(back[i - 1]), `entry rose at frame ${i}`);
+    }
+    // And each plays at its own rate: the whole descent at LUNAR_BURN_RATE
+    // would put the last eight kilometres inside a couple of frames.
     assert.ok(SHOT_RATE < 60, `shot rate: ${SHOT_RATE}`);
   });
 });
