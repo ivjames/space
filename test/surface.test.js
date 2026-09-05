@@ -9,7 +9,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { GROUND_H, SCREEN_ANCHOR, VIEW_SPAN_M } from '../js/ui/ascent.js';
-import { SURFACE_ALT, drawSurface, pitchAt, surfaceView } from '../js/ui/surface.js';
+import {
+  SURFACE_ALT, drawSurface, landedLift, pitchAt, surfaceView,
+} from '../js/ui/surface.js';
 
 test('surfaceView: a pixel is the same number of metres it is at launch', () => {
   // js/ui/ascent.js sets its own mPerPx to viewSpan / canvas height, from this
@@ -76,12 +78,18 @@ const COLORS = {
   bg: '#05060a', fg: '#e8e8e8', muted: '#a4adb9', accent: '#00d4ff', fail: '#ff6b6b',
 };
 
-/** Draw one frame and report where the ground and the lander were put. */
+/**
+ * Draw one frame and report where the ground and the vehicle were put. The
+ * shot paints its own backdrop, which is also a full-width fill starting at
+ * y = 0, so the ground is the LAST of them rather than the first.
+ */
 function draw(state, w = 360, h = 480) {
   const record = { fills: [], translates: [] };
-  drawSurface(stubContext(record), { w, h, colors: COLORS }, state);
-  const ground = record.fills.find((f) => f.x === 0 && f.w === w);
-  return { groundY: ground ? ground.y : null, lander: record.translates[0] ?? null };
+  drawSurface(stubContext(record), { w, h, colors: COLORS, stars: [] }, state);
+  const full = record.fills.filter((f) => f.x === 0 && f.w === w && f.y > 0);
+  // The vehicle is the LAST thing translated to: at the planet the cloud layer
+  // translates once per puff on its way past.
+  return { groundY: full.length ? full.at(-1).y : null, lander: record.translates.at(-1) ?? null };
 }
 
 test('drawSurface: the lander stands on the surface, not in it', () => {
@@ -112,4 +120,35 @@ test('drawSurface: an ascent is the same shot the other way up', () => {
   // The camera is on the vehicle in both directions, so a climb away from the
   // site scrolls the site off the left rather than moving the lander.
   assert.equal(up.lander.x, 180);
+});
+
+test('drawSurface: the capsule comes home on the same ruler the rocket left on', () => {
+  const { mPerPx, anchorY, liftAlt } = surfaceView(360, 480);
+  // High up it is a meteor, and the ground is nowhere in the picture yet: the
+  // shot at the planet opens at the interface, not at the surface.
+  const hot = draw({ alt: 90000, x: -1.1e6, kind: 'entry', body: 'earth' });
+  assert.equal(hot.lander.y, anchorY, 'pinned at the anchor, world scrolling past');
+  assert.equal(hot.groundY, null, 'no ground at 90 km');
+
+  // Under the canopy the ground is back, at exactly the altitude's worth of
+  // pixels below it — the same arithmetic the lander lands by.
+  const chute = draw({ alt: 1200, x: -1800, kind: 'entry', body: 'earth' });
+  assert.ok(chute.groundY !== null, 'the ground is in frame under the canopy');
+  assert.ok(Math.abs((chute.groundY - chute.lander.y) - 1200 / mPerPx) < 0.01);
+  assert.ok(1200 < liftAlt, 'and the camera is on the ground by then');
+
+  // Down: the capsule sits ON the surface it came back to, not in it. It is
+  // drawn tipped over, and the sprite's origin is the point its shield touches
+  // — so the tilt is taken out of the anchor, or the downhill corner and the
+  // shield's belly end up under a ground that was painted before them.
+  const down = draw({ alt: 0, x: 0, kind: 'landed', body: 'earth' });
+  const lift = landedLift();
+  assert.ok(lift > 0, `a tilted capsule needs lifting: ${lift}`);
+  assert.ok(Math.abs((down.groundY - down.lander.y) - lift) < 1e-9, 'lifted by exactly that');
+  // And it is the shield's own reach rather than a guess: flat on its base the
+  // capsule still has a belly under the origin, and tipping it over puts more
+  // of it down there.
+  assert.ok(landedLift(0) > 0, 'the shield bulges below the origin even upright');
+  assert.ok(lift > landedLift(0), 'and the tilt adds to it');
+  assert.ok(lift < 9, `a lift the size of the capsule would be a bug: ${lift}`);
 });

@@ -12,10 +12,14 @@ below is a change to this file first.
   `Math.random()`. Everything it needs comes in as arguments. This is what
   makes it testable under `node --test` and reusable by the Capacitor build.
 - `js/ui/*` is browser-only and imports from `js/core/*`, never the reverse.
-  One view may import another's constants where the two have to agree about
-  something visible — `js/ui/surface.js` takes `VIEW_SPAN_M` and the rest of
-  the ruler from `js/ui/ascent.js`, which is what makes the landing at the
-  moon the same scale as the launch rather than a scale that looks like it.
+  One view may import another's constants, and its world-drawing, where the two
+  have to agree about something visible — `js/ui/surface.js` takes `VIEW_SPAN_M`
+  and the rest of the ruler from `js/ui/ascent.js`, which is what makes the
+  landing at the moon the same scale as the launch rather than a scale that
+  looks like it, and it takes `skyAt`, `paintSky`, `drawStarField`,
+  `drawCloudLayer` and the ink/ground blends as well, so the capsule comes home
+  through the atmosphere the rocket launched through rather than a second one
+  that resembles it.
 - `js/data/*` is content: plain objects exported from JS modules (JSON can't
   be imported without a bundler in every target we care about).
 - Tests: `node --test test/` on Node 22. No test framework.
@@ -1622,6 +1626,28 @@ is removed. `data.test.js` checks both against the real resolver.
   its OUTCOME is not — both the `landing` and the `landing-failure` event
   arrive at the far end of it — which is what makes a descent something to
   watch rather than something to have watched.
+- **The flight home is on the timeline.** A `return` profile's last event used
+  to be the trans-earth injection itself, on the reasoning that entry is free —
+  the atmosphere does the braking and the heat shield is a hardware gate rather
+  than a rung. Free is not the same as eventless: the burn for home is 380 000
+  km from home, and the map plays the timeline and stops at its last event, so
+  the flight the contract pays for RETURNING from ended with the vehicle still
+  at the moon. `lunarSchedule` therefore carries two more moments — `entry`,
+  one `RETURN_TOF` after the burn, and `home`, `ENTRY_TIME` (600 s, Apollo's
+  interface-to-splashdown was about 840) after that — and the resolver emits an
+  `entry` and a `recovery` event at them. The leg home is **aimed at the
+  atmosphere**: a trans-earth injection targets an entry corridor, not the
+  parking orbit it left from, so the conic the resolver hands the map for it has
+  its periapsis at `ENTRY_ALT` and `RETURN_TOF` is that conic's own half-period
+  — sixty seconds longer than the way out over five days, and the reason the
+  coast home ends at the altitude and on the frame the entry view opens at.
+  Handing back the outbound ellipse instead flew the capsule down to the parking
+  orbit's periapsis, 40 km under it, and announced the interface a minute and a
+  half after the vehicle had crossed it. Neither is a step or a burn: no delta-v, no restart, `reached`
+  does not move, and the profile's success is still the injection's, exactly as
+  the ascent's `lunar-orbit` event and the flyby's pass are. A `flyby`'s free
+  return is deliberately untouched: its mission is the pass, and its timeline
+  ends there.
 - **The shot on the ground, a third picture and a CUT.** The close-up is a
   picture of an orbit, and in the last kilometres of a descent it stops being a
   picture of a landing: at a fit set by the drawn lunar orbit the moon is ninety
@@ -1659,6 +1685,25 @@ is removed. `data.test.js` checks both against the real resolver.
   picture shows that the close-up could not: `ABORT_U` leaves the vehicle 360 m
   up and two kilometres short of the site, which at this scale is visibly short
   of a site that is drawn.
+- **Coming home, in the same two pictures.** The coast back is flown in the
+  cislunar frame the transfer out was flown in — the same fading arc, the same
+  radius-scaled rate — with the closing range in the corner pointed the other
+  way (`TO EARTH`, the vehicle's own altitude above the planet, measured off
+  the picture like the range to the moon is). At the `entry` event the view
+  cuts to the surface shot again, at the PLANET this time: `state.body` picks
+  between grey ground under a black sky and the launch view's own sky, stars
+  and cloud layer, and the sprite becomes a capsule — a plasma sheath keyed on
+  altitude alone (in at the interface, gone by 25 km) and a canopy that comes
+  out at 6 km and fills over 900 m. That shot opens at `ENTRY_ALT` rather than
+  at `SURFACE_ALT`, because an entry has no orbital half to hand over from: all
+  120 km of it is weather. `entryAt` is the only opinion anything has about its
+  shape, as `poweredAt` is for the descent — altitude as `(1-u)^1.9` and the
+  distance still to run as `(1-u)^3`, so the capsule crosses the interface at
+  11 km/s about two degrees below the horizon, loses the downrange in the first
+  minute of atmosphere, and comes down the last kilometres nearly vertically
+  with both rates reaching zero at the ground. The chrome says `ENTRY PHASE`
+  there rather than `CISLUNAR PHASE`, which at 8 km under a canopy is the sort
+  of label a player reads twice.
 - **Playback rate, the one invariant this phase widens.** Tier 3's rule is that
   the rate is a constant (`MAP_RATE`, 600×). No constant works across cislunar
   distances: one fast enough to cross five days of transfer reduces a `flyby`,
@@ -1676,8 +1721,10 @@ is removed. `data.test.js` checks both against the real resolver.
   and `SURFACE_RATE` for the stay, which is a day of nothing in two. A fourth,
   `SHOT_RATE`, takes over inside the surface shot: 240× plays the last eight
   kilometres of a descent in a fifth of a second, where this plays them in
-  about seven. All four are applied as a fraction of the playback rate, so an
-  overridden `speed` still scales everything together.
+  about seven. `ENTRY_RATE` is the fifth and last, for the empty hundred
+  kilometres between the interface and the part of the entry with a ground in
+  it, which `SHOT_RATE` plays. All of them are applied as a fraction of the
+  playback rate, so an overridden `speed` still scales everything together.
   A rate is only valid up to the next thing that changes it, so a frame never
   carries the clock past a burn or an event: one frame of `SURFACE_RATE` is
   4 320 simulated seconds, ten times the whole climb back to orbit, and

@@ -51,7 +51,8 @@ import {
   velocityAt,
 } from '../js/core/orbit.js';
 import {
-  A_MOON, ASCENT_TIME, DESCENT_TIME, LUNAR_STEPS, LLO_PERIOD, lunarLadder,
+  A_MOON, ASCENT_TIME, DESCENT_TIME, ENTRY_ALT, ENTRY_TIME, LUNAR_STEPS, LLO_PERIOD,
+  RETURN_TOF, lunarLadder,
 } from '../js/core/moon.js';
 
 // ---------------------------------------------------------------------------
@@ -1971,13 +1972,34 @@ test('the burns are scheduled on the transfer, and a return flight takes days', 
   assert.ok(touchdown, 'a return flight lands');
   assert.equal(touchdown.t, at.descent + DESCENT_TIME);
 
-  // The whole thing is a week of simulated seconds — five days out, a day on
-  // the surface — and the timeline is still sorted and still ends on the 'end'
-  // event. It ends AT the return burn: the coast home is free and eventless,
-  // because the atmosphere does the braking and entry is not a step.
+  // AND IT COMES HOME. The coast back is free — the atmosphere does the
+  // braking and entry is not a step — but free is not the same as eventless:
+  // the burn for home is 380 000 km from home, and a timeline that ended there
+  // ended with the vehicle at the moon on the flight the contract pays for
+  // returning from. So the return leg carries the two moments it is made of,
+  // out of the same schedule and the same time of flight the way out used.
+  const entry = o.timeline.find((e) => e.kind === 'entry');
+  const home = o.timeline.find((e) => e.kind === 'recovery');
+  assert.ok(entry && home, 'a return flight reaches the atmosphere and the ground');
+  assert.ok(Math.abs(entry.t - (at.tei + RETURN_TOF)) < 1e-6, 'entry one transfer after the burn');
+  assert.equal(home.t - entry.t, ENTRY_TIME);
+  // AIMED AT THE ATMOSPHERE. The leg home is not the outbound ellipse handed
+  // back: a trans-earth injection targets an entry corridor, so the conic the
+  // map is given for it has its periapsis at the interface, and RETURN_TOF is
+  // that conic's own half-period. Otherwise the coast is drawn down to the
+  // parking orbit's periapsis, 40 km under the altitude the entry view opens
+  // at, and the interface is announced a minute and a half late.
+  const teiBurn = o.lunar.burns.find((b) => b.kind === 'tei');
+  const tliBurn = o.lunar.burns.find((b) => b.kind === 'tli');
+  assert.equal(teiBurn.elements.periapsis, ENTRY_ALT);
+  assert.equal(tliBurn.elements.periapsis, o.insertion.periapsis);
+
+  // The whole thing is a week and a half of simulated seconds — five days out,
+  // a day on the surface, five days back — and the timeline is still sorted and
+  // still ends on the 'end' event, now at the moment the vehicle is down.
   const days = o.timeline.at(-1).t / 86400;
-  assert.ok(days > 5.5 && days < 7, `a return flight took ${days} days`);
-  assert.equal(o.timeline.at(-1).t, at.tei, 'the last thing that happens is the burn for home');
+  assert.ok(days > 10 && days < 12, `a return flight took ${days} days`);
+  assert.equal(o.timeline.at(-1).t, home.t, 'the last thing that happens is the landing');
   assert.equal(o.timeline.at(-1).kind, 'end');
   for (let i = 1; i < o.timeline.length; i += 1) {
     assert.ok(o.timeline[i].t >= o.timeline[i - 1].t, 'the timeline is sorted');

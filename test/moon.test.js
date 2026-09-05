@@ -14,6 +14,9 @@ import {
   SURFACE_STAY,
   lunarLadder,
   lunarSchedule,
+  ENTRY_ALT,
+  ENTRY_TIME,
+  RETURN_TOF,
 } from '../js/core/moon.js';
 import {
   MU,
@@ -320,6 +323,20 @@ test('the rest of the schedule hangs off the transfer and the lunar orbit', () =
   // Strictly ordered, which is what lets the resolver walk it as flight order.
   const times = LUNAR_STEPS.map((step) => s[step]);
   for (let i = 1; i < times.length; i += 1) assert.ok(times[i] > times[i - 1], LUNAR_STEPS[i]);
-  // Days, not minutes: the transfer dominates everything else on it.
-  assert.ok((s.tei - 500) / 86400 > 6, 'a return flight is most of a week');
+  // And the way home, which is the way out flown backwards and AIMED at the
+  // atmosphere: RETURN_TOF to the interface — the same transfer arriving at
+  // ENTRY_ALT rather than at the parking orbit's periapsis, which is a minute
+  // longer over five days and is what makes the coast end where the entry
+  // starts — then the fall to the ground. Neither is a burn (entry is free),
+  // but a schedule that stopped at `tei` stopped 380 000 km from home on the
+  // one profile that is about coming home.
+  assert.ok(Math.abs(s.entry - (s.tei + RETURN_TOF)) < 1e-9);
+  assert.ok(Math.abs(RETURN_TOF - hohmann(radiusOf(ENTRY_ALT), A_MOON).tof) < 1e-9);
+  assert.ok(RETURN_TOF > ladder.tof, 'the interface is above the parking periapsis');
+  assert.ok(RETURN_TOF - ladder.tof < 300, 'and only just: a minute over five days');
+  assert.ok(Math.abs((s.home - s.entry) - ENTRY_TIME) < 1e-6);
+  // Days, not minutes: the transfer dominates everything else on it, and there
+  // are two of them.
+  assert.ok((s.tei - 500) / 86400 > 6, 'the burn for home is most of a week in');
+  assert.ok((s.home - 500) / 86400 > 10, 'and the whole flight is a week and a half');
 });

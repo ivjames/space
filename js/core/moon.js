@@ -64,7 +64,7 @@
 // puts apoapsis at lunar distance, and the one that stops there — is the
 // honest price and not an approximation of one.
 
-import { elementsFrom, hohmann, velocityAt } from './orbit.js';
+import { elementsFrom, hohmann, radiusOf, velocityAt } from './orbit.js';
 
 /** Lunar radius, m. */
 export const R_MOON = 1.7374e6;
@@ -244,6 +244,53 @@ export const DESCENT_TIME = 720;
 export const ASCENT_TIME = 430;
 
 /**
+ * How long the flight home takes from entry interface to the ground, s.
+ *
+ * The third and last duration in this file, and it exists for exactly the
+ * reason DESCENT_TIME does: entry is not a burn but a TRIP, and a trip that
+ * begins and ends at the same instant cannot be flown, drawn, or watched. The
+ * return burn puts the vehicle on a transfer whose far end is the top of the
+ * atmosphere; what happens after that is free (approximation 5: the planet's
+ * atmosphere does the braking, and the heat shield is a hardware gate rather
+ * than a rung), so nothing here is priced — this is only how long the free
+ * part takes.
+ *
+ * A MEASURED game number, like DESCENT_TIME: Apollo's entries ran about
+ * fourteen minutes from the 122 km interface to splashdown. Ten is used
+ * because the drawn descent is watched at a fixed rate and the difference is
+ * four minutes of a canopy coming down.
+ */
+export const ENTRY_TIME = 600;
+
+/**
+ * Altitude the way home arrives at, m: the top of the atmosphere.
+ *
+ * The one altitude in this file measured from the PLANET rather than the moon,
+ * and the second exception to the radii-only rule (LLO_ALT is the first), for
+ * the same reason — an entry interface is quoted as an altitude. Apollo's was
+ * 122 km, and it is where a vehicle stops being in space and starts being in
+ * weather.
+ *
+ * It is a real number rather than a drawing constant because the return leg is
+ * AIMED at it: a trans-earth injection targets an entry corridor, not the
+ * parking orbit it left from, so the conic the resolver hands the map for the
+ * way home has its periapsis here (js/core/resolver.js) and RETURN_TOF below is
+ * that conic's own half-period. Reusing the outbound ellipse instead put the
+ * arrival 40 km under the altitude the entry is drawn from, and announced the
+ * interface a minute and a half after the vehicle had crossed it.
+ */
+export const ENTRY_ALT = 120000;
+
+/**
+ * Time of flight of the way home, s: the same Hohmann transfer as the way out,
+ * arriving at the interface instead of at the parking orbit's periapsis. Sixty
+ * seconds longer than the outbound leg over five days, which is nothing — but
+ * it is the number that makes the coast home END where the entry BEGINS, and
+ * that is worth a constant rather than a reused one.
+ */
+export const RETURN_TOF = hohmann(radiusOf(ENTRY_ALT), A_MOON).tof;
+
+/**
  * When each step of a lunar flight happens, s.
  *
  * Derived from the insertion and the ladder alone — no burn, nothing the
@@ -282,15 +329,23 @@ export const ASCENT_TIME = 430;
  * home each sit a quarter of a low lunar orbit after arriving in it, which is
  * the shortest wait that is not zero.
  *
+ * THE WAY HOME is the same transfer flown backwards, aimed at the atmosphere
+ * rather than at the parking orbit: `entry` is one RETURN_TOF after the return
+ * burn, which is the moment the vehicle reaches the interface it is aimed at —
+ * the same instant the conic the map draws for the leg reaches its own
+ * periapsis — and `home` is ENTRY_TIME after that. Neither is a burn — entry is free — but both are
+ * moments something happens at, and a flight whose timeline ended at the burn
+ * for home ended 380 000 km from home.
+ *
  * THE TWO POWERED LEGS HAVE A LENGTH, and everything after them is measured
  * from where they end rather than from where they start (DESCENT_TIME,
  * ASCENT_TIME). So `touchdown` is the moment the vehicle is on the ground —
  * which is what the landing event and the landing roll are about, and is not
  * the same instant as the burn that begins the descent — the surface stay runs
  * from there, and `orbited` is the moment the ascent has finished putting the
- * vehicle back in the orbit the return burn leaves from. Five of the seven are
- * burn times, keyed by the LUNAR_STEPS they belong to; `touchdown` and
- * `orbited` are the two ends that are not burns.
+ * vehicle back in the orbit the return burn leaves from. Five of the nine are
+ * burn times, keyed by the LUNAR_STEPS they belong to; `touchdown`, `orbited`,
+ * `entry` and `home` are the four ends that are not burns.
  *
  * @param {number} t0 insertion time, s
  * @param {number} parkPeriod period of the achieved parking orbit, s
@@ -298,7 +353,8 @@ export const ASCENT_TIME = 430;
  * @param {number} [phase=0] orbit fraction since periapsis at t0, 0..1
  *   (values outside wrap; a non-finite one is treated as 0)
  * @returns {{tli: number, loi: number, descent: number, touchdown: number,
- *            ascent: number, orbited: number, tei: number}}
+ *            ascent: number, orbited: number, tei: number, entry: number,
+ *            home: number}}
  */
 export function lunarSchedule(t0, parkPeriod, ladder, phase = 0) {
   const p = Number.isFinite(phase) ? ((phase % 1) + 1) % 1 : 0;
@@ -308,5 +364,9 @@ export function lunarSchedule(t0, parkPeriod, ladder, phase = 0) {
   const touchdown = descent + DESCENT_TIME;
   const ascent = touchdown + SURFACE_STAY;
   const orbited = ascent + ASCENT_TIME;
-  return { tli, loi, descent, touchdown, ascent, orbited, tei: orbited + LLO_PERIOD / 4 };
+  const tei = orbited + LLO_PERIOD / 4;
+  const entry = tei + RETURN_TOF;
+  return {
+    tli, loi, descent, touchdown, ascent, orbited, tei, entry, home: entry + ENTRY_TIME,
+  };
 }

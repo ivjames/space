@@ -164,6 +164,24 @@
 // it (SHOT_RATE), because 240x plays the last eight kilometres in a fifth of a
 // second.
 //
+// AND THE WAY HOME. A `return` profile's timeline used to end at the burn for
+// home, so the map — which plays the timeline and stops at its last event —
+// stopped with the vehicle at the moon on the one flight whose whole point is
+// coming back from it. The resolver now carries the leg it always priced: the
+// top of the atmosphere, one transfer of flight later, and the ground
+// ENTRY_TIME after that (js/core/moon.js). So the coast home is FLOWN, in the
+// cislunar frame the transfer out was flown in — the same fading arc, the same
+// radius-scaled rate, and the closing range in the corner pointed the other
+// way ("TO EARTH") — and then the ENTRY is the surface shot again, at the
+// planet.
+//
+// That second shot opens at the interface rather than at SURFACE_ALT, because
+// an entry has no orbital half to hand over from: there is no picture of it
+// that is an orbit, and the whole hundred and twenty kilometres of it is
+// weather. `entryAt` is the only opinion anything has about its shape, exactly
+// as `poweredAt` is for the descent, and the sky it falls through is the launch
+// view's own (js/ui/surface.js).
+//
 // THE MOON'S POSITION is drawable from the first frame for the same reason the
 // target's orbit is — it is a constant, not an outcome. Its circle is A_MOON,
 // and its phase is set so that it is at the transfer's apoapsis at the moment
@@ -207,10 +225,15 @@
 
 import { R, altitudeOf, elementsFrom, positionAt, radiusOf } from '../core/orbit.js';
 import {
-  A_MOON, ASCENT_TIME, DESCENT_TIME, LLO_ALT, LLO_PERIOD, R_MOON,
-  lunarLadder, lunarSchedule,
+  A_MOON, ASCENT_TIME, DESCENT_TIME, ENTRY_ALT, ENTRY_TIME, LLO_ALT, LLO_PERIOD,
+  R_MOON, lunarLadder, lunarSchedule,
 } from '../core/moon.js';
 import { SURFACE_ALT, drawSurface } from './surface.js';
+// The chrome is drawn over whatever the shot is drawn over, and at the planet
+// that is a sky: these are the same blends js/ui/ascent.js reads its own labels
+// against, so a clock over a daylight sky is legible for the same reason the
+// launch view's is (see drawChrome).
+import { accentOver, inkOver, parseHex, rgba, skyAt } from './ascent.js';
 
 /**
  * How much altitude is stretched relative to the planet's own radius. A 200 km
@@ -285,6 +308,39 @@ export const SURFACE_RATE = 43200;
  * ends. The stay keeps SURFACE_RATE: a day at 30x is nine hours of watching.
  */
 export const SHOT_RATE = 30;
+
+/**
+ * Simulated seconds per real second down the first hundred kilometres of the
+ * flight home, before the surface shot's own scale means anything. The same
+ * argument LUNAR_BURN_RATE makes at the moon: 120 km at 30x is a minute of
+ * watching a capsule fall through an empty sky, and the part worth watching is
+ * the part with a ground in it, which SHOT_RATE plays.
+ */
+export const ENTRY_RATE = 240;
+
+/**
+ * THE ENTRY, drawn. The resolver prices the way home as one burn and says how
+ * long the fall at the far end of it takes (js/core/moon.js, ENTRY_TIME);
+ * these three numbers are the only opinion anything has about the SHAPE of
+ * that fall, and this is where they live for the same reason `poweredAt`'s
+ * are here — this is the only place that draws it.
+ *
+ *   ENTRY_ALT    the interface, and where the shot opens — js/core/moon.js's,
+ *                not one of this module's own, because it is the periapsis the
+ *                leg home is aimed at and timed to (RETURN_TOF): the coast
+ *                ends at the altitude the fall starts from, on the same frame.
+ *   ENTRY_RANGE  how far downrange the fall covers. Chosen so that the shot
+ *                OPENS at the speed a lunar return actually arrives at — the
+ *                cubic below leaves 3 x RANGE / TIME at the interface, and at
+ *                these values that is 11 km/s.
+ *   ENTRY_FALL   the altitude's exponent. With the cubic downrange it puts the
+ *                interface crossing at about two degrees below the horizon,
+ *                which is the corridor a return from the moon has to fly, and
+ *                it brings both rates to zero at the ground rather than
+ *                arriving with either still on.
+ */
+const ENTRY_RANGE = 2.2e6;
+const ENTRY_FALL = 1.9;
 
 /**
  * How much lunar altitude is stretched in the close-up, relative to the moon's
@@ -700,6 +756,13 @@ export function playOrbital(canvas, outcome, opts = {}) {
   // half. Nothing about it reads the outcome — it is asked for by the altitude
   // the vehicle is CURRENTLY drawn at, which is a position already on screen.
   let shotFade = 0;
+  // THE FLIGHT HOME. `entering` is set by the entry event — the top of the
+  // atmosphere, one transfer after the burn for home — and is what the shot on
+  // the ground is drawn from once the vehicle is back at the planet; `home` is
+  // the recovery event at the far end of it. Both are events that have already
+  // been read out in the ticker, like everything else here.
+  let entering = null;              // { t }
+  let home = false;
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -1040,30 +1103,57 @@ export function playOrbital(canvas, outcome, opts = {}) {
    * markers on screen right now — a measurement off the picture, like the
    * separation line in the other frame, not a number read out of the outcome.
    */
-  function drawChrome(toMoon = null, altitude = null) {
+  function drawChrome(toMoon = null, altitude = null, toEarth = null) {
+    // Over a daylight sky the night palette's greys and its cyan wash out to
+    // nothing, so on the way home the chrome blends against the sky exactly as
+    // the launch view's own labels do. Everywhere else — space, the moon, the
+    // dip through black at the top of an entry — the blend is a no-op, because
+    // the sky it blends against is night.
+    const overSky = entering && shotShown() && Number.isFinite(altitude)
+      ? skyAt(Math.max(0, altitude))
+      : null;
+    const muted = overSky ? rgba(inkOver(overSky), 1) : colors.muted;
+    const accent = overSky
+      ? rgba(accentOver(overSky, parseHex(colors.accent, [0, 212, 255])), 1)
+      : colors.accent;
     ctx.save();
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillStyle = colors.muted;
+    ctx.fillStyle = muted;
     ctx.font = '10px "Courier New", monospace';
     ctx.fillText(formatClock(simT - t0), 6, 6);
-    ctx.fillStyle = colors.accent;
+    ctx.fillStyle = accent;
     ctx.font = 'bold 10px "Courier New", monospace';
-    ctx.fillText(cislunar ? 'CISLUNAR PHASE' : 'ORBITAL PHASE', 6, 20);
+    // Which phase of the flight this is. The entry is the one part of a lunar
+    // mission that is not cislunar at all — it is eight kilometres over the
+    // launch site under a canopy — and saying otherwise there is the sort of
+    // label a player reads twice.
+    ctx.fillText(
+      entering ? 'ENTRY PHASE' : cislunar ? 'CISLUNAR PHASE' : 'ORBITAL PHASE',
+      6, 20,
+    );
 
     if (Number.isFinite(toMoon)) {
-      ctx.fillStyle = colors.muted;
+      ctx.fillStyle = muted;
       ctx.font = '10px "Courier New", monospace';
       ctx.fillText(`TO MOON ${formatFarRange(toMoon)}`, 6, 34);
+    } else if (Number.isFinite(toEarth)) {
+      // The same measurement pointed the other way, on the way home. It is the
+      // vehicle's own altitude above the planet — a number off the picture,
+      // like the range to the moon is — and it is the one line that says the
+      // flight is closing rather than merely coasting.
+      ctx.fillStyle = muted;
+      ctx.font = '10px "Courier New", monospace';
+      ctx.fillText(`TO EARTH ${formatFarRange(toEarth)}`, 6, 34);
     } else if (Number.isFinite(altitude)) {
       // The same measurement one body over, and quoted in the near-field
       // format rather than the cislunar one: a descent finishes in metres.
-      ctx.fillStyle = colors.muted;
+      ctx.fillStyle = muted;
       ctx.font = '10px "Courier New", monospace';
       ctx.fillText(`ALTITUDE ${formatRange(Math.max(0, altitude))}`, 6, 34);
     }
 
-    ctx.fillStyle = colors.muted;
+    ctx.fillStyle = muted;
     ctx.font = '9px "Courier New", monospace';
     ctx.textBaseline = 'bottom';
     // Exactly one of the two is a lie in any of the three pictures, and this
@@ -1085,11 +1175,13 @@ export function playOrbital(canvas, outcome, opts = {}) {
     const word = cislunar
       ? (failed ? 'BURN FAILED'
         : landingAborted ? 'LANDING ABORTED'
-          : returning ? 'RETURNING'
-            : atMoon === 'surface' ? 'LANDED'
-              : atMoon === 'descent' ? 'DESCENT'
-                : atMoon === 'ascent' ? 'ASCENT'
-                  : flewBy ? 'FLYBY' : null)
+          : home ? 'RECOVERED'
+            : entering ? 'ENTRY'
+              : returning ? 'RETURNING'
+                : atMoon === 'surface' ? 'LANDED'
+                  : atMoon === 'descent' ? 'DESCENT'
+                    : atMoon === 'ascent' ? 'ASCENT'
+                      : flewBy ? 'FLYBY' : null)
       : (docked ? 'DOCKED' : dockFailed ? 'DOCKING ABORTED' : failed ? 'BURN FAILED' : null);
     if (word) {
       ctx.textAlign = 'right';
@@ -1098,7 +1190,7 @@ export function playOrbital(canvas, outcome, opts = {}) {
       const good = cislunar
         ? word !== 'BURN FAILED' && word !== 'LANDING ABORTED'
         : word === 'DOCKED';
-      ctx.fillStyle = good ? colors.accent : colors.fail;
+      ctx.fillStyle = good ? accent : colors.fail;
       ctx.fillText(word, w - 6, 6);
     }
     ctx.restore();
@@ -1174,6 +1266,31 @@ export function playOrbital(canvas, outcome, opts = {}) {
     return {
       r: R_MOON + (rLLO - R_MOON) * h,
       theta: leg.theta + lunarOmega * leg.span * swept,
+    };
+  }
+
+  /**
+   * Where the capsule is `u` of the way through the fall home, in the same two
+   * numbers the surface shot takes everywhere else: the altitude above the
+   * ground, and the signed downrange to the point it is coming down at, which
+   * is negative all the way in and zero on arrival.
+   *
+   * Altitude goes as (1-u)^ENTRY_FALL and the distance still to run as (1-u)^3,
+   * so the capsule crosses the interface shallow and fast — eleven kilometres a
+   * second, two degrees below the horizon — loses almost all of the downrange
+   * in the first minute of atmosphere, and comes down the last few kilometres
+   * nearly vertically with both rates falling to nothing at the ground. It is
+   * the descent's own trick (poweredAt) with the exponents that make an entry
+   * rather than a landing: there, the two shapes match and the path is a
+   * straight line; here the horizontal dies faster than the vertical, which is
+   * what a parachute looks like at the end of a re-entry.
+   */
+  function entryAt(u) {
+    const c = Math.min(1, Math.max(0, u));
+    const left = 1 - c;
+    return {
+      alt: ENTRY_ALT * (left ** ENTRY_FALL),
+      x: -ENTRY_RANGE * (left ** 3),
     };
   }
 
@@ -1366,8 +1483,9 @@ export function playOrbital(canvas, outcome, opts = {}) {
     // descent is: a hundred kilometres counted down to nothing.
     veil();
     drawChrome(
-      here ? null : Math.hypot(mp.x - vp.x, mp.y - vp.y),
+      here || returning ? null : Math.hypot(mp.x - vp.x, mp.y - vp.y),
       here ? here.r - R_MOON : null,
+      here || !returning ? null : Math.max(0, Math.hypot(vp.x, vp.y) - R),
     );
   }
 
@@ -1381,7 +1499,11 @@ export function playOrbital(canvas, outcome, opts = {}) {
    * kilometres of the ascent home are the surface's.
    */
   function nearSurface() {
-    if (!cislunar || !atMoon) return false;
+    if (!cislunar) return false;
+    // Home: the shot owns the frame from the interface down, because the whole
+    // of an entry is inside the atmosphere and none of it is an orbit.
+    if (entering) return true;
+    if (!atMoon) return false;
     if (atMoon === 'surface') return true;
     if (!powered) return false;
     return lunarPoint(simT).r - R_MOON <= SURFACE_ALT;
@@ -1403,12 +1525,23 @@ export function playOrbital(canvas, outcome, opts = {}) {
    * to show.
    */
   function surfaceState() {
+    if (entering) {
+      const p = entryAt((simT - entering.t) / ENTRY_TIME);
+      return {
+        body: 'earth',
+        alt: p.alt,
+        x: p.x,
+        kind: home ? 'landed' : 'entry',
+        realT,
+      };
+    }
     const p = lunarPoint(simT);
     const site = atMoon === 'surface' || !powered
       ? touchdownTheta
       : powered.kind === 'descent' ? poweredAt(powered, 1).theta : powered.theta;
     const kind = atMoon === 'surface' || !powered ? 'surface' : powered.kind;
     return {
+      body: 'moon',
       alt: p.r - R_MOON,
       x: R_MOON * (p.theta - site),
       kind,
@@ -1436,8 +1569,7 @@ export function playOrbital(canvas, outcome, opts = {}) {
    */
   function frameSurface() {
     const state = surfaceState();
-    drawSpace();
-    drawSurface(ctx, { w, h, colors }, state);
+    drawSurface(ctx, { w, h, colors, stars }, state);
     veil();
     drawChrome(null, state.alt);
   }
@@ -1611,6 +1743,15 @@ export function playOrbital(canvas, outcome, opts = {}) {
         // finishing on a surface the vehicle never reached (ABORT_U).
         landingAborted = true;
       }
+      // Home. The interface is the frame the shot on the ground takes over on
+      // (nearSurface), and the recovery is the far end of the fall it has spent
+      // ENTRY_TIME flying — the same shape as the descent and its touchdown,
+      // one body over.
+      else if (ev.kind === 'entry') {
+        entering = { t: ev.t };
+      } else if (ev.kind === 'recovery') {
+        home = true;
+      }
       // The pass. Nothing about the drawn orbit changes — the vehicle is still
       // coasting the transfer it departed on, which is the whole point of a
       // free return — so this only says the corner word out loud.
@@ -1635,7 +1776,7 @@ export function playOrbital(canvas, outcome, opts = {}) {
     // last frame for a beat rather than cutting to the result screen mid-move.
     // Real time with the simulation stopped, so nothing that had not already
     // happened is shown — and a tap skips it like everything else.
-    if (!skipped && cislunar && (atMoon || zoom > FRAME_CUTOFF)) {
+    if (!skipped && cislunar && (atMoon || entering || zoom > FRAME_CUTOFF)) {
       holding = true;
       holdLeft = LUNAR_HOLD_S;
       dwellUntil = 0;
@@ -1676,6 +1817,13 @@ export function playOrbital(canvas, outcome, opts = {}) {
     // anything — everything happens within a thousandth of it — so the three
     // things the vehicle can be doing there set the rate instead. Each is
     // something a burn or an event has already said (see LUNAR_RATE).
+    // Coming home: fast down the empty part, the shot's own rate once there is
+    // a ground in the picture. Keyed on the altitude it is drawn at, like
+    // everything else here.
+    if (entering) {
+      const { alt } = entryAt((simT - entering.t) / ENTRY_TIME);
+      return rate * ((alt > SURFACE_ALT ? ENTRY_RATE : SHOT_RATE) / CISLUNAR_RATE);
+    }
     if (atMoon) {
       const powering = atMoon === 'descent' || atMoon === 'ascent';
       const near = atMoon === 'surface' ? SURFACE_RATE
