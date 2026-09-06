@@ -45,7 +45,10 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(PORT, r));
 
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium' });
-const page = await browser.newPage();
+// A PHONE-SIZED VIEWPORT, because the layout checks below are the point of
+// this script now and a 1280px desktop window hides every one of them. 390 x
+// 844 is the middle of the current phone range (390 / 393 / 402 / 430).
+const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e)));
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -103,9 +106,42 @@ const checks = [
   ['prices every level after it in metals', /640 metals/.test(text)],
   ['draws the four tanks', (html.match(/class="tank/g) ?? []).length >= 4],
   ['says the unbuilt site has no base', /No base here yet/.test(text)],
+  ['shows each level against the maximum', /2\/5/.test(text)],
+  ['says when a tank fills', /full in /.test(text)],
 ];
 let bad = 0;
 for (const [what, ok] of checks) { console.log(`${ok ? 'OK  ' : 'FAIL'} ${what}`); if (!ok) bad += 1; }
+
+// 2b. LAYOUT, not text. Every check above passed while the tab was unreadable:
+// `.row` is `display: flex; flex-direction: row`, the site block reused it, and
+// its five children became five columns — the site name rendered one letter per
+// line and the tank list was pushed off the right-hand edge. A script that only
+// reads textContent cannot see that, so these measure the boxes instead.
+const layout = await page.evaluate(() => {
+  const screen = document.getElementById('screen');
+  const name = document.querySelector('[data-screen="base"] .site-head .name');
+  const line = parseFloat(getComputedStyle(document.body).lineHeight) || 21;
+  const tabs = [...document.querySelectorAll('[data-screen="base"] .tab')];
+  const tanks = [...document.querySelectorAll('[data-screen="base"] .tank')];
+  return {
+    overflow: screen.scrollWidth - screen.clientWidth,
+    nameWidth: name ? name.getBoundingClientRect().width : 0,
+    nameLines: name ? Math.round(name.getBoundingClientRect().height / line) : 0,
+    tabLines: tabs.map((t) => Math.round((t.getBoundingClientRect().height - 24) / line)),
+    tanksInside: tanks.every((t) => t.getBoundingClientRect().right <= screen.clientWidth + 1),
+  };
+});
+const layoutChecks = [
+  [`the page does not scroll sideways (overflow ${layout.overflow}px)`, layout.overflow <= 1],
+  [`the site name is a heading, not a column (${Math.round(layout.nameWidth)}px wide)`,
+    layout.nameWidth >= 150],
+  [`the site name fits on one or two lines (${layout.nameLines})`,
+    layout.nameLines > 0 && layout.nameLines <= 2],
+  [`every tab label stays on one line (${layout.tabLines.join(',')})`,
+    layout.tabLines.every((n) => n <= 1)],
+  ['every tank sits inside the screen', layout.tanksInside],
+];
+for (const [what, ok] of layoutChecks) { console.log(`${ok ? 'OK  ' : 'FAIL'} ${what}`); if (!ok) bad += 1; }
 
 // 3. A build click actually raises a level.
 const before = await page.evaluate(() => window.__space.state.bases['mare-tranquil'].equipment.storage);

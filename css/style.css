@@ -826,15 +826,20 @@ ul.ticker {
    The base tab (phase 3b): sites, equipment levels, tanks.
 
    FOUR TABS IN THE ROW NOW, not three. `.tab` is `flex: 1`, so the fourth
-   simply takes a quarter each — but the labels are what break first on a
-   narrow phone, so the padding tightens with the viewport rather than the
-   text wrapping to two lines.
+   simply takes a quarter each — but the labels are what break first, and
+   "TECH TREE" is two words, so it wraps to two lines and takes the whole
+   strip with it. The breakpoint is at 460px rather than 380 because that is
+   where the wrap actually happens: every current phone (390, 393, 402, 430)
+   sits above 380 and was breaking. `nowrap` is the belt to that brace — below
+   any width the label shortens rather than stacking.
    --------------------------------------------------------------------------- */
 
-@media (max-width: 380px) {
+.tab { white-space: nowrap; }
+
+@media (max-width: 460px) {
   .tab {
     padding: 12px 4px;
-    font-size: 0.85rem;
+    font-size: 0.8rem;
   }
 }
 
@@ -847,18 +852,82 @@ ul.ticker {
   margin-bottom: 4px;
 }
 
+.away p + p { margin-top: 4px; }
+
 .hint.warn {
   color: var(--warn);
 }
 
-/* Equipment: one row per type, level and the price of the next one. The two
-   purses read differently on purpose — a funds price is a launch, a metals
-   price is built on site — but the button is the same button, because the
-   player is doing the same thing. */
+/* A SITE IS A BLOCK, NOT A ROW, and this is the bug this section was written
+   to fix. `.row` is `display: flex; flex-direction: row` — right for a
+   contract (a title beside a price) and catastrophic for a site, whose five
+   children are a heading, two sentences and two lists: they became five
+   columns, the site name rendered one letter per line, and the tank list was
+   pushed off the right-hand edge of the phone. Nothing caught it because the
+   browser check read the tab's TEXT, which was correct throughout. So a site
+   does not reuse `.row` at all; it carries the padding and the rule itself. */
+.list.sites { display: block; }
+
+.site {
+  display: block;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.site-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.site-head .name {
+  font-weight: bold;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.site-head .tag {
+  flex: 0 0 auto;
+  font-size: 0.714rem;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.site-head .tag.on { color: var(--accent); }
+
+/* Power: the numbers, and a meter of draw against supply under them. The bar
+   is the thing that reads at a glance — a base one level from browning out
+   looks nearly full, which is the warning arriving before the percentage
+   does. */
+.power { margin-top: 6px; }
+
+.power .bar {
+  display: block;
+  height: 4px;
+  margin-top: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.power .bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.power.brown .bar i { background: var(--warn); }
+
+/* Equipment: one row per type, level out of the maximum, and the price of the
+   next one. The two purses read differently on purpose — a funds price is a
+   launch, a metals price is built on site — but the button is the same button,
+   because the player is doing the same thing. */
 .kit-list,
 .tank-list {
   list-style: none;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .kit {
@@ -870,18 +939,35 @@ ul.ticker {
 
 .kit .name {
   flex: 1;
+  min-width: 0;
   text-transform: capitalize;
 }
 
 .kit .level {
-  min-width: 1.5em;
-  text-align: right;
+  flex: 0 0 auto;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
 
-.kit.locked .level {
+/* The denominator is the thing that makes a level a position rather than a
+   number, so it is always drawn and never competes with the level itself. */
+.kit .level .of {
   color: var(--muted);
+  font-size: 0.786rem;
+}
+
+.kit.locked .level { color: var(--muted); }
+.kit.maxed .level { color: var(--muted); }
+.kit.maxed .cost { color: var(--muted); font-size: 0.786rem; }
+
+/* How far off an unaffordable metals price is, in time rather than in metals.
+   It sits between the level and the dead button, which is where the eye
+   already is when the button will not press. */
+.kit .wait {
+  flex: 0 0 auto;
+  font-size: 0.714rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .btn-small {
@@ -893,6 +979,7 @@ ul.ticker {
   font: inherit;
   font-size: 0.8rem;
   cursor: pointer;
+  white-space: nowrap;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -901,26 +988,31 @@ ul.ticker {
   cursor: default;
 }
 
-/* Tanks: a bar against its cap, with the rate beside it. The rate is the
-   number the storage upgrade is really selling, so it sits on the same line
-   rather than in a tooltip nobody on a phone can open. */
+/* Tanks: three lines each — what it is and what it is doing, the bar, then
+   what is in it and when that stops mattering. Five columns on one line is
+   what a 390px phone cannot hold, and the two numbers that were dropped for
+   width are the two the storage upgrade is actually selling. */
 .tank {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 0;
+  padding: 6px 0;
   font-size: 0.85rem;
 }
 
+.tank-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .tank .name {
-  min-width: 5.5em;
   text-transform: capitalize;
   color: var(--muted);
 }
 
 .tank .bar {
-  flex: 1;
+  display: block;
   height: 6px;
+  margin: 3px 0;
   background: var(--border);
   border-radius: 3px;
   overflow: hidden;
@@ -932,17 +1024,10 @@ ul.ticker {
   background: var(--accent);
 }
 
-.tank.full .bar i {
-  background: var(--warn);
-}
+.tank.full .bar i { background: var(--warn); }
+.tank.full .till { color: var(--warn); }
 
 .tank .num {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
-  min-width: 5.5em;
-  text-align: right;
-}
-
-.row.site .name {
-  font-weight: bold;
 }
