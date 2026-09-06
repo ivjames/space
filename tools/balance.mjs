@@ -1369,6 +1369,14 @@ console.log('\n=== Economy: storage is the offline limit, not the clamp ===');
   // other way round (js/core/base.js, TANK_SHARE): they are sized by what they
   // have to buy, so the clamp binds first there and the rule that replaces
   // this one is "the stockpile always holds the next upgrade".
+  //
+  // MEASURED IN TWO HALVES, because one number cannot say it. Where the
+  // extractor keeps the processor fed, every equal-level tank must fill inside
+  // the clamp. Where it cannot — a site whose water plentitude is below 1 —
+  // the tank fills more slowly in exact proportion, which is what makes the
+  // site poor; what has to stay true there is that the storage LADDER still
+  // starts as a real limit, so the second half reports the highest storage
+  // level each site can actually fill in a day.
   const clampHours = CLAMP / HR;
   let worstFill = 0;
   let worstWhere = '';
@@ -1376,14 +1384,36 @@ console.log('\n=== Economy: storage is the offline limit, not the clamp ===');
     const b = baseMod.newBase();
     for (const type of baseMod.EQUIPMENT) b.equipment[type] = n;
     for (const site of BALANCE_SITES) {
+      if (baseMod.rates(b, site).waterLimited) continue;
       for (const res of ['fuel', 'oxidizer']) {
         const h = baseMod.fillTime(b, site, res);
         if (h > worstFill) { worstFill = h; worstWhere = `${site.id} level ${n} ${res}`; }
       }
     }
   }
-  console.log(`  slowest propellant tank: ${worstFill.toFixed(1)}h (${worstWhere}), clamp ${clampHours}h`);
+  console.log(`  slowest tank the water can keep up with: ${worstFill.toFixed(1)}h`
+    + ` (${worstWhere}), clamp ${clampHours}h`);
   console.log(`  result: ${worstFill < clampHours ? 'PASS' : 'FAIL'}`);
+
+  let ladderFloor = baseMod.MAX_LEVEL;
+  for (const site of BALANCE_SITES) {
+    let highest = 0;
+    for (let sLvl = 1; sLvl <= baseMod.MAX_LEVEL; sLvl += 1) {
+      const b = baseMod.newBase();
+      for (const type of baseMod.EQUIPMENT) b.equipment[type] = baseMod.MAX_LEVEL;
+      b.equipment.storage = sLvl;
+      const h = Math.max(baseMod.fillTime(b, site, 'fuel'), baseMod.fillTime(b, site, 'oxidizer'));
+      if (h < clampHours) highest = sLvl;
+    }
+    const b5 = baseMod.newBase();
+    for (const type of baseMod.EQUIPMENT) b5.equipment[type] = baseMod.MAX_LEVEL;
+    const full = baseMod.fillTime(b5, site, 'fuel');
+    ladderFloor = Math.min(ladderFloor, highest);
+    console.log(`  ${site.id.padEnd(16)} storage ${highest}/${baseMod.MAX_LEVEL} fills`
+      + ` inside the clamp; a maxed tank takes ${full.toFixed(1)}h`);
+  }
+  console.log(`  result: ${ladderFloor >= 1 ? 'PASS' : 'FAIL'}`
+    + ` -- every site supports at least one storage level inside the clamp`);
 
   let lockedAt = null;
   for (let n = 1; n < baseMod.MAX_LEVEL; n += 1) {
