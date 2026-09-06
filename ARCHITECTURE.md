@@ -2138,7 +2138,56 @@ pinning that a template's `profile` agrees with its requirement.
 - **What happened while you were away.** On the first render after a `tick`
   with a non-zero elapsed, the base tab leads with what accrued and what
   filled. This is the whole visible payoff of the clock, and a game that
-  accrued silently would have built an idle mechanic nobody noticed.
+  accrued silently would have built an idle mechanic nobody noticed. It speaks
+  when nothing accrued too, which is the case that matters most: a player who
+  was away eight hours and gained nothing because a tank was full needs telling
+  that more than one who gained something. It says what the automatic route
+  delivered, and the storage-full warning carries the button that reaches the
+  board a cargo run is offered on, rather than naming a screen to go and find.
+
+## The base tab, laid out (a correction)
+
+The section above says what the tab shows and was true of the markup from the
+day it was written. What it did not say is how any of it is arranged, and the
+first version got that wrong in a way no check caught for a phase:
+
+- **A site is a block, not a row.** `.row` is `display: flex; flex-direction:
+  row` — right for a contract, which is a title beside a price, and wrong for a
+  site, whose children are a heading, two sentences and two lists. Reusing it
+  made those five children into five columns: the site name rendered one letter
+  per line and the tank list was pushed off the right-hand edge of the phone.
+  `.site` therefore carries its own padding and rule and does not reuse `.row`.
+- **The browser check reads boxes now, not only text.** Every text assertion in
+  `test/e2e/base-tab.mjs` passed throughout, because the words were right and
+  only their geometry was wrong. It runs at 390 x 844 and measures the site
+  name's width, the tab labels' line count and the screen's horizontal
+  overflow — the three things that were broken and the class of thing a
+  `textContent` check can never see.
+- **The tab strip breaks at 460px, not 380.** "TECH TREE" is two words, and
+  every phone in the current range (390 / 393 / 402 / 430) sat above the old
+  breakpoint with the strip wrapped to two lines.
+
+Three readouts were added at the same time, each one a number the core already
+computed and the screen did not show:
+
+- **When a tank fills**, from where it is rather than from empty — that is what
+  the storage upgrade sells (DESIGN.md §8), and `js/core/base.js`'s `fillTime`
+  answers the from-empty question for `tools/balance.mjs` instead. A tank whose
+  net rate is negative says when it empties, which is the same sentence about a
+  processor eating a stockpile.
+- **A level against `MAX_LEVEL`**, so a maxed piece and a first level do not
+  read alike.
+- **How long an unaffordable metals price is away**, in hours at the base's own
+  metals rate. A metals cost is paid out of the base's own store at the base's
+  own rate, so "400 short" and "two hours short" are the same fact and only the
+  second says whether to wait. A funds shortfall gets no such number: funds do
+  not accrue, and the answer to that one is a launch.
+
+And one sentence per base saying what is wrong with the chain — browned out,
+no processor, processor outrunning extractor, or extractor outrunning
+processor. Every fact in it is already on the screen; the line exists because
+reading four bars that way requires knowing the chain, and the chain is the
+mechanic rather than something to infer.
 - **The storage-full notification** (DESIGN.md §8) fires when a resource
   reaches its cap while its route is manual, and stops once auto-transport is
   bought — that is what the player is buying. Web build: the Notifications API

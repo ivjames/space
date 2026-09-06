@@ -17,7 +17,7 @@ import {
 import { LUNAR_STEPS } from '../core/moon.js';
 import { resolveHaul } from '../core/haul.js';
 import {
-  EQUIPMENT, RESOURCES, rates, capacity, powerBalance, buildCost,
+  EQUIPMENT, RESOURCES, MAX_LEVEL, rates, capacity, powerBalance, buildCost,
 } from '../core/base.js';
 import { SITES } from '../data/sites.js';
 import { totalDeltaV, G0 } from '../core/vehicle.js';
@@ -1040,21 +1040,47 @@ export function mountScreens(ctx) {
     const kg = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} t` : `${Math.round(v)} kg`);
     const perHour = (v) => (v > 0 ? `+${kg(v)}/h` : v < 0 ? `${kg(v)}/h` : '—');
 
+    // WHILE YOU WERE AWAY NOW SPEAKS WHEN NOTHING ACCRUED, and that is the
+    // whole change: the case a player most needs told is the one where a full
+    // tank meant the last eight hours produced nothing, and the block that
+    // only appeared on a gain was silent in exactly that case. It still says
+    // nothing when there is nothing to say — no base, or a base that has never
+    // run — because news that is always on screen stops being read.
     let away = '';
-    if (view.accrued) {
-      const { produced, elapsed, full } = view.accrued;
+    if (view.accrued && (view.accrued.elapsed ?? 0) > 0 && Object.keys(bases).length > 0) {
+      const { produced, elapsed, full = [], hauled = 0 } = view.accrued;
       const gained = RESOURCES.filter((r) => (produced?.[r] ?? 0) > 0);
+      const lines = [];
       if (gained.length > 0) {
         const list = gained.map((r) => `${kg(produced[r])} of ${r}`).join(', ');
-        const fullLine = full.length > 0
-          ? `<p class="hint warn">Storage full: ${escapeHtml(full.join(', '))}. ${
-            vehicle?.autoHaul ? 'The route is running itself.' : 'Fly a cargo run, or buy the routing.'
-          }</p>`
-          : '';
+        lines.push(`<p class="hint">${escapeHtml(hoursText(elapsed))} of production:
+          ${escapeHtml(list)}.</p>`);
+      } else if (full.length > 0) {
+        lines.push(`<p class="hint">${escapeHtml(hoursText(elapsed))} away, and nothing
+          was produced.</p>`);
+      }
+      if (hauled > 0) {
+        lines.push(`<p class="hint">The route ran itself: ${escapeHtml(kg(hauled))}
+          delivered to the depot.</p>`);
+      }
+      if (full.length > 0) {
+        // A WARNING WITH THE WAY OUT OF IT ON IT. "Fly a cargo run" named a
+        // screen the player then had to go and find; the board is one tab
+        // away and the tab strip already handles [data-tab], so the sentence
+        // carries the button that gets there.
+        lines.push(`<p class="hint warn">Storage full:
+          ${escapeHtml(full.join(', '))}. ${vehicle?.autoHaul
+  ? 'The route is running itself.'
+  : 'Production has stopped until it is hauled.'}</p>`);
+        if (!vehicle?.autoHaul) {
+          lines.push(`<p class="hint"><button class="btn-small"
+            data-tab="contracts">Find a cargo run</button></p>`);
+        }
+      }
+      if (lines.length > 0) {
         away = `<div class="pad away">
             <h2 class="sub">While you were away</h2>
-            <p class="hint">${escapeHtml(hoursText(elapsed))} of production: ${escapeHtml(list)}.</p>
-            ${fullLine}
+            ${lines.join('\n')}
           </div>`;
       }
     }
@@ -1080,8 +1106,8 @@ export function mountScreens(ctx) {
       const numbers = `<p class="hint">Water ${w.plentitude.toFixed(2)}× at
         ${w.quality.toFixed(2)}× quality · metals ${m.plentitude.toFixed(2)}×</p>`;
       if (!base) {
-        return `<li class="row site">
-            <div class="row-main"><span class="name">${escapeHtml(site.name)}</span>
+        return `<li class="site">
+            <div class="site-head"><span class="name">${escapeHtml(site.name)}</span>
               <span class="tag">surveyed</span></div>
             ${numbers}
             <p class="hint">No base here yet. A landing contract for this site
@@ -1091,43 +1117,106 @@ export function mountScreens(ctx) {
       const r = rates(base, site);
       const caps = capacity(base);
       const power = powerBalance(base);
+      const held = (res) => base.store[res] ?? 0;
+
       const kit = EQUIPMENT.map((type) => {
         const level = base.equipment[type] ?? 0;
         const next = level + 1;
         const cost = buildCost(type, next);
-        const label = cost === null
-          ? 'max'
-          : cost.funds !== undefined
-            ? `${cost.funds.toLocaleString()} funds`
-            : `${Math.round(cost.metals).toLocaleString()} metals`;
-        const affordable = cost !== null && (cost.funds !== undefined
+        if (cost === null) {
+          return `<li class="kit maxed">
+              <span class="name">${type}</span>
+              <span class="level">${level}<span class="of">/${MAX_LEVEL}</span></span>
+              <span class="cost">MAX</span>
+            </li>`;
+        }
+        const label = cost.funds !== undefined
+          ? `${cost.funds.toLocaleString()} funds`
+          : `${Math.round(cost.metals).toLocaleString()} metals`;
+        const affordable = cost.funds !== undefined
           ? state.funds >= cost.funds
-          : (base.store.metals ?? 0) >= cost.metals);
+          : held('metals') >= cost.metals;
+        // HOW LONG THE SHORTFALL IS, NOT JUST THAT THERE IS ONE. A metals
+        // price is paid out of the base's own store at the base's own rate,
+        // so "you are 400 short" and "you are two hours short" are the same
+        // fact and only the second one tells the player whether to wait.
+        // Funds do not accrue, so a funds shortfall says nothing here — the
+        // answer to that one is a launch.
+        let wait = '';
+        if (!affordable && cost.metals !== undefined && r.metals > 0) {
+          wait = `<span class="wait">${escapeHtml(
+            waitText((cost.metals - held('metals')) / r.metals),
+          )}</span>`;
+        }
         return `<li class="kit ${affordable ? '' : 'locked'}">
             <span class="name">${type}</span>
-            <span class="level">${level}</span>
-            ${cost === null ? '<span class="cost">max</span>'
-    : `<button class="btn-small" data-build="${escapeHtml(site.id)}:${type}"
-                   ${affordable ? '' : 'disabled'}>${escapeHtml(label)}</button>`}
+            <span class="level">${level}<span class="of">/${MAX_LEVEL}</span></span>
+            ${wait}
+            <button class="btn-small" data-build="${escapeHtml(site.id)}:${type}"
+              aria-label="Build ${escapeHtml(type)} level ${next} for ${escapeHtml(label)}"
+              ${affordable ? '' : 'disabled'}>${escapeHtml(label)}</button>
           </li>`;
       }).join('');
+
       const tanks = RESOURCES.map((res) => {
-        const held = base.store[res] ?? 0;
+        const have = held(res);
         const cap = caps[res] ?? 0;
-        const pct = cap > 0 ? Math.min(100, (held / cap) * 100) : 0;
+        const pct = cap > 0 ? Math.min(100, (have / cap) * 100) : 0;
         const rate = res === 'water' ? r.water : r[res];
-        return `<li class="tank ${cap > 0 && held >= cap - 1e-6 ? 'full' : ''}">
-            <span class="name">${res}</span>
+        const isFull = cap > 0 && have >= cap - 1e-6;
+        // THE TANK'S OWN CLOCK, which is the number the storage upgrade is
+        // actually selling (DESIGN.md §8: storage caps the offline limit).
+        // Time to FULL from where the tank is now rather than from empty —
+        // "come back in four hours" is the question a player is asking of
+        // this screen, and js/core/base.js's fillTime answers a different
+        // one, for the balance tool.
+        let till = '—';
+        if (isFull) till = 'full';
+        else if (rate > 0 && cap > 0) till = `full in ${waitText((cap - have) / rate)}`;
+        else if (rate < 0 && have > 0) till = `empty in ${waitText(have / -rate)}`;
+        return `<li class="tank ${isFull ? 'full' : ''}">
+            <div class="tank-line">
+              <span class="name">${res}</span>
+              <span class="num rate">${perHour(rate)}</span>
+            </div>
             <span class="bar"><i style="width:${pct.toFixed(1)}%"></i></span>
-            <span class="num">${kg(held)} / ${kg(cap)}</span>
-            <span class="num">${perHour(rate)}</span>
+            <div class="tank-line">
+              <span class="num">${kg(have)} / ${kg(cap)}</span>
+              <span class="num till">${escapeHtml(till)}</span>
+            </div>
           </li>`;
       }).join('');
-      return `<li class="row site built">
-          <div class="row-main"><span class="name">${escapeHtml(site.name)}</span></div>
+
+      // ONE LINE THAT SAYS WHAT IS WRONG WITH THE CHAIN. Every fact in it is
+      // already on the screen — the power numbers, the water rate — but the
+      // player has to know the chain to read them that way, and the chain is
+      // the mechanic rather than a thing they should have to infer from four
+      // bars. Brown-out first, because a throttle scales everything under it.
+      let diagnosis = '';
+      if (power.ratio < 1) {
+        diagnosis = 'Under-powered — every machine here runs slow until the reactor grows.';
+      } else if ((base.equipment.processor ?? 0) === 0) {
+        diagnosis = 'No processor: water comes out of the ground and stays water.';
+      } else if (r.water < 0) {
+        diagnosis = 'The processor outruns the extractor — it is eating the water tank.';
+      } else if (r.water > 0) {
+        diagnosis = 'The extractor outruns the processor — water is piling up unprocessed.';
+      }
+
+      return `<li class="site built">
+          <div class="site-head"><span class="name">${escapeHtml(site.name)}</span>
+            <span class="tag on">base</span></div>
           ${numbers}
-          <p class="hint ${power.ratio < 1 ? 'warn' : ''}">Power ${power.supply} supplied,
-            ${power.draw} drawn${power.ratio < 1 ? ` — everything runs at ${Math.round(power.ratio * 100)}%` : ''}</p>
+          <div class="power ${power.ratio < 1 ? 'brown' : ''}">
+            <p class="hint ${power.ratio < 1 ? 'warn' : ''}">Power ${power.supply} supplied,
+              ${power.draw} drawn${power.ratio < 1
+  ? ` — everything runs at ${Math.round(power.ratio * 100)}%`
+  : ''}</p>
+            <span class="bar"><i style="width:${(power.supply > 0
+    ? Math.min(100, (power.draw / power.supply) * 100)
+    : 100).toFixed(1)}%"></i></span>
+          </div>
+          ${diagnosis ? `<p class="hint ${power.ratio < 1 ? 'warn' : ''}">${diagnosis}</p>` : ''}
           <ul class="kit-list">${kit}</ul>
           <ul class="tank-list">${tanks}</ul>
         </li>`;
@@ -1156,9 +1245,23 @@ export function mountScreens(ctx) {
         <div class="pad">
           <h1 class="title">Bases</h1>
           ${ask}
-          <ul class="list">${siteRows}</ul>
+          <ul class="list sites">${siteRows}</ul>
         </div>
       </div>`;
+  }
+
+  /**
+   * A wait, in the largest unit that still reads as a wait: minutes under an
+   * hour, hours under two days, days above that. Not `hoursText` — that one
+   * rounds a span the player has already lived through, and this one is a
+   * span they are deciding whether to sit out, where "90 min" and "2 hours"
+   * are different answers.
+   */
+  function waitText(hours) {
+    if (!Number.isFinite(hours) || hours <= 0) return 'now';
+    if (hours < 1) return `${Math.max(1, Math.round(hours * 60))} min`;
+    if (hours < 48) return `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
+    return `${(hours / 24).toFixed(1)} d`;
   }
 
   /** "3 hours" / "40 minutes" — how long the game was closed for. */
