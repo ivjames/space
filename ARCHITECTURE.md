@@ -2107,6 +2107,30 @@ sell rather than trusting it. A 4 t run at
 isp 450 burns 2 441 kg to deliver 4 000, netting **+1 559 kg** at the depot; at
 isp 320 it nets +230 kg, which is a chore that pays nothing.
 
+**The smallest haul worth flying is half a tank, not a tonne.** A floor on the
+cargo exists so a launch is not spent on a gesture, and its whole content is
+the advice "let the tanks fill". An ABSOLUTE floor cannot give that advice
+honestly: what a base can send is `maxCargo`, and with full tanks that is
+`223.6 kg` per storage level (STORE_PER_LEVEL 360, split at the mixture ratio,
+less what the 1 879 m/s ascent burns). A one-tonne floor was therefore
+unreachable below storage 5 — a full level-1 farm holds 224 kg and can never
+hold more — so the base tab's "Storage full … find a cargo run" prompt pointed
+at a run the resolver refused, and `tools/balance.mjs`'s own model of the
+economy (five manual runs out of a level-1 farm to afford auto-transport) was
+counting flights the game would not fly. So the floor is `MIN_HAUL_FRACTION`
+(0.5) of `fullCargo` — what this base could send with its tanks at their cap —
+and "let the tanks fill" is true at every storage level. `tools/balance.mjs`
+walks all five and `test/haul.test.js` pins it.
+
+**Advice is not a flight.** The three refusals — no tanker, no transport
+equipment, tanks below the floor — are things `haul.js` says without anything
+leaving the pad. Resolving one anyway still spent a launch, wrote a history row
+and charged the mission's `repLoss`, so a player was docked reputation for
+being told their tanks were not full yet. `haulBlocker(vehicle, base)` returns
+the reason or null; `js/ui/screens.js` asks it BEFORE resolving and shows the
+answer as a screen error the way it already does for a missing base or depot,
+and `resolveHaul` asks the same function so the two can never drift.
+
 ## js/data/missions.js — 3b's rungs
 
 No new tier, so these are `tier: 4` templates that appear once their gates

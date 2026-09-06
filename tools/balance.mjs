@@ -1332,6 +1332,36 @@ console.log('\n=== Economy: hauling pays from the first trip (DESIGN.md §8) ===
   }
 }
 
+console.log('\n=== Economy: a base that has filled its tanks can fly a cargo run ===');
+{
+  // THE ONE THING A FULL BASE MUST BE ABLE TO DO. A base whose tanks are at
+  // their cap has stopped producing (js/core/base.js, `accrue`), the base tab
+  // says so and points at the board, and hauling is the only way out of it. A
+  // full base that cannot fly is a stall the game itself steers the player
+  // into, so this walks every site at every equipment level and asks
+  // js/core/haul.js directly rather than trusting a rate.
+  const isp = Math.max(...nodes.flatMap((n) => (n.effects ?? [])
+    .filter((e) => e.stat === 'haulIsp').map((e) => e.value)), 0);
+  const stalled = [];
+  let smallest = { cargo: Infinity, where: '' };
+  for (let n = 1; n <= baseMod.MAX_LEVEL; n += 1) {
+    const b = baseMod.newBase();
+    for (const type of baseMod.EQUIPMENT) b.equipment[type] = n;
+    const caps = baseMod.capacity(b);
+    b.store = {
+      water: caps.water, fuel: caps.fuel, oxidizer: caps.oxidizer, metals: caps.metals,
+    };
+    const why = haulMod.haulBlocker({ haulIsp: isp }, b);
+    const cargo = haulMod.fullCargo(isp, b);
+    if (why) stalled.push(`level ${n}: ${why}`);
+    if (cargo < smallest.cargo) smallest = { cargo, where: `level ${n}` };
+    console.log(`  full level-${n} base sends ${Math.round(cargo)} kg`
+      + ` (floor ${Math.round(haulMod.minCargo(isp, b))} kg)${why ? ` -- STALLED: ${why}` : ''}`);
+  }
+  console.log(`  smallest full-tank run: ${Math.round(smallest.cargo)} kg (${smallest.where})`);
+  console.log(`  result: ${stalled.length === 0 ? 'PASS' : `FAIL -- ${stalled.length} stalled level(s)`}`);
+}
+
 console.log('\n=== Economy: storage is the offline limit, not the clamp ===');
 {
   // The propellant tanks must fill inside the elapsed clamp, or the cap never
@@ -1419,13 +1449,19 @@ console.log('\n=== Economy: auto-transport is in reach (DESIGN.md §8) ===');
     for (const type of baseMod.EQUIPMENT) b.equipment[type] = 1;
     const caps = baseMod.capacity(b);
     const perRun = haulMod.maxCargo(isp, { fuel: caps.fuel, oxidizer: caps.oxidizer }, 1);
+    // A run the resolver would refuse is not a run. This line is why the haul
+    // floor is a fraction of the tanks rather than a tonne: the check below
+    // has always counted 224 kg runs out of a level-1 farm, and an absolute
+    // floor made every one of them a refusal the audit could not see.
+    const flyable = haulMod.haulBlocker({ haulIsp: isp }, { ...b, store: caps }) === null;
     const needed = (cost.resources?.fuel ?? 0) + (cost.resources?.oxidizer ?? 0);
     const runs = perRun > 0 ? Math.ceil(needed / perRun) : Infinity;
     console.log(`  ${route.id}: ${cost.funds.toLocaleString()} funds`
       + `${needed > 0 ? ` + ${Math.round(needed)} kg of propellant` : ''}`);
     console.log(`  a tier 4 winner ends the tier on ${endFunds.toLocaleString()} funds`);
     console.log(`  one full level-1 tank farm sends ${Math.round(perRun)} kg -> ${runs} manual run(s) to afford it`);
-    console.log(`  result: ${runs <= 6 ? 'PASS' : 'CHECK'} -- "a handful of hauls" is 6 or fewer`);
+    console.log(`  the resolver ${flyable ? 'flies' : 'REFUSES'} a run that size`);
+    console.log(`  result: ${runs <= 6 && flyable ? 'PASS' : 'CHECK'} -- "a handful of hauls" is 6 or fewer`);
   }
 }
 
