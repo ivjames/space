@@ -148,8 +148,8 @@ export const STORE_PER_LEVEL = 360;
  *
  * THE TWO NUMBERS ARE SIZED AGAINST EACH OTHER AND AGAINST THE CLAMP, and
  * `tools/balance.mjs` reports the margin rather than only a pass: at
- * STORE_PER_LEVEL 400 the slowest propellant tank (far-side-flats, level 1)
- * filled in 23.8 hours against a 24-hour clamp, which passed and would have
+ * STORE_PER_LEVEL 400 the slowest propellant tank (far-side-flats) filled in
+ * 23.8 hours against a 24-hour clamp, which passed and would have
  * stopped passing on any change to a rate, a site or the clamp. 360 puts it
  * at 21.4 hours, and the metals share moves with it so the stockpile still
  * clears the dearest next-level cost.

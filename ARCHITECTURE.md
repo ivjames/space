@@ -2156,7 +2156,7 @@ moved a number to get there:
   at the depot. Nothing in the tree can sell a losing tanker; the test walks
   every `haulIsp` effect rather than the one that exists today.
 - **Storage binds before the clamp, with margin.** The slowest propellant tank
-  is far-side-flats at level 1: **21.4 hours** against a 24-hour clamp. It was
+  is far-side-flats at level 3: **21.4 hours** against a 24-hour clamp. It was
   **23.8 hours** at the first sizing, which passed and would have stopped
   passing on any change to a rate, a site or the clamp — so `STORE_PER_LEVEL`
   came down from 400 to 360 and the metals share went up to keep the stockpile
