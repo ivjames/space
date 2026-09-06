@@ -408,6 +408,18 @@ screen. Content for a tier is written when that tier is built, not before.
   tier 4 reads as finished without a single resource in the game. Phase 3 is
   the flight tier; 3b is the economy, whole. The order inside the phase is
   unchanged, survey simply sits at the front of 3b rather than the front of 3.
+- **Phase 5 does not depend on phase 4, and §8 overstates it.** §8 says
+  refueling "is the mechanic that makes tiers 5 and 6 reachable without absurd
+  vehicles". For tier 6 that is still the claim. For tier 5 it has been
+  measured and it is not: ARCHITECTURE.md's "Phase 5 — tier 5, the neighbours"
+  prices the whole tier, goal included, from the parking orbit a tier 4 vehicle
+  actually reaches, with no refueling anywhere in it, and the ladder closes at
+  12 555 m/s against a 9 151 m/s tier 4 stack — a tier's worth of tree, not an
+  absurd vehicle. **The table's order is unchanged**: 3b and 4 still come
+  first, and building tier 5 before them is a decision nobody has made. What
+  is settled is that it would be a decision and not a blocker, and that
+  refueling makes tier 5 cheaper to build rather than possible.
+
 - **Reputation** can be introduced in phase 1 as a stat that only rises, and
   gain its cost (loss on failure, contract minimums) in phase 3 when there
   is enough contract variety for minimums to mean something.
@@ -436,6 +448,10 @@ Not decided. Each changes something concrete.
    the system, the bodies and the agency is still open and still costs
    nothing to defer; what is now decided is that unnamed is the default and
    a name is an addition, not a gap to fill before content can be written.
+   Tier 5's four bodies follow the same precedent — "the inner planet", "the
+   outer planet" and its two moons — which is the first time the default has
+   had to carry more than one body at a time, and it holds: the bodies are
+   told apart by where they are, which is what the map already draws.
 2. **Elapsed-time clamp** for offline accrual. Placeholder 24h.
 3. **Hauls in the score.** Decided yes above; revisit if it makes the manual
    phase feel punitive in playtesting.

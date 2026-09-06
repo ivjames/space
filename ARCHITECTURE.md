@@ -1814,3 +1814,446 @@ manual haul, and the storage-full notification. `state.resources` and
 `cost.resources` stay as they are: a complete, unused foundation
 (`ARCHITECTURE.md:320`). Nothing in phase 3 credits a resource, and no tree
 node is priced in one.
+
+# Phase 5 — tier 5, the neighbours
+
+Additions to the phase 0, 1, 2 and 3 contracts. Tiers 1 to 4 keep working
+unchanged; every existing test keeps passing.
+
+## Where this sits in the build order, and the conflict to settle first
+
+DESIGN.md §14's phase table puts **3b** (survey, resources, equipment, bases,
+the clock, haul) and then **4** (auto-transport, resource-gated nodes,
+refueling delta-v) before this one, and §8 says in as many words that
+refueling "is the mechanic that makes tiers 5 and 6 reachable without absurd
+vehicles". This document plans tier 5 out of that order. That is a real
+conflict with the design doc and it is recorded here rather than resolved
+here: **which of 3b/4 and tier 5 is built next is the owner's call**, and
+nothing below reorders the table.
+
+What this document does instead is remove the dependency the doc asserts. The
+ladder in §"Measured, before the tier was built" is priced **with no refueling
+anywhere in it**, from the parking orbit a tier 4 vehicle actually reaches, and
+it closes. Refueling would make tier 5 cheaper; it is not what makes tier 5
+possible. So tier 5 can be built before phase 4, after it, or between 3b and 4,
+and the only thing that changes is how much of the tier's delta-v the tree has
+to sell. The last section says exactly what phase 4 would change if it lands
+first.
+
+## What tier 5 is, and what it is not
+
+DESIGN.md §6 gives the tier one line — "Land on a body in another system.
+Transfer windows, mission duration, many bodies. Depth comes from profiles per
+body, not body count" — and two failures: "missed window" and "short by X".
+
+**Tier 5 is the flight tier again**, on the phase 3 precedent and for the same
+reason: each rung pays a contract and the tier wins on the last of them, so it
+reads as finished with no resource in the game. Nothing here surveys, extracts,
+processes, hauls or accrues.
+
+**The enemy of tier 5 is time, not thrust.** That is the sentence the whole
+phase hangs off, and it is what makes the tier different from tier 4 rather
+than being tier 4 at a longer range. The measured ladders below say why: every
+rung except the goal is already inside what a tier 4 winner's stack can spend,
+so a tier priced on delta-v alone would open with five rungs already flyable
+and one wall at the end. What a tier 4 stack cannot do is *last*: the goal is a
+**972-day** flight, the cheapest rung is **259 days**, and a lunar return is
+eleven. So the tier introduces two gates that are not delta-v —
+
+- **the window**, which costs days spent in the parking orbit waiting for the
+  next departure opportunity, and
+- **endurance**, the days of propellant, power and thermal control the vehicle
+  carries, which is what those days are spent out of
+
+— and they are the two failures DESIGN.md names, in that order.
+
+**The star is not a third attractor, for the same reason the moon was not a
+second one.** The ascent integrator keeps its one central gravity term and its
+one planet-centred frame (`resolver.js`); an interplanetary flight is resolved
+analytically after insertion, as a sequence of burns and waits the vehicle can
+or cannot afford. `js/core/system.js` is to the star what `js/core/moon.js` is
+to the planet: a set of constants and a ladder derived from them.
+
+## js/core/system.js — new, pure
+
+The star, the home planet's heliocentric orbit, the other bodies, and the
+ladder and schedule derived from them. Pure: no DOM, no `Date.now`, no
+`Math.random`. A sibling of `moon.js` one level up, and it prices everything by
+calling `orbit.js`'s own functions, so there is no magic m/s in it either.
+
+```js
+export const MU_STAR                  // the star's gravitational parameter
+export const A_HOME                   // the planet's heliocentric radius, m
+export const HOME_PERIOD              // the planet's year, s (derived)
+
+export const BODIES                   // the table, keyed by id
+export function bodyLadder(body, parkPeriapsis, parkApoapsis)
+  // -> { tmi, capture, descent, ascent, tri, tof, stay, synodic, departPhase }
+export function bodySchedule(t0, parkPeriod, ladder, phase, windowWait)
+```
+
+**The shape change from `moon.js`, and it is the only one.** `moon.js` holds
+*the* moon: module-level constants, and `lunarLadder(rp, ra)`. `system.js`
+holds a *table*, and every function takes the body as its first argument.
+Everything else — the units discipline (radii, never altitudes, with the two
+named-altitude exceptions), the "computed, not looked up" rule, the header that
+lists every approximation — carries over unchanged, and the list of
+approximations is the same five with one addition: **the transfer is coplanar
+and circular-to-circular about the star**, so no body's eccentricity or
+inclination is ever charged. Real windows move by hundreds of m/s between
+oppositions because of exactly that; the game has no clock to move them with.
+
+**The bodies.** Four, which is "many bodies" as DESIGN.md means it — depth is
+the profiles, not the count.
+
+| id | what | heliocentric a | why it is here |
+|----|------|----------------|----------------|
+| `inner` | the inner planet | 0.72 AU | a second window, in the other direction, and a body you can reach but not come home from |
+| `outer` | the outer planet | 1.52 AU | the tier's destination and its goal |
+| `outer/a` | its inner moon | 9 376 km from `outer` | a landing that is a docking |
+| `outer/b` | its outer moon | 23 460 km from `outer` | the same, further out and cheaper to reach than to leave |
+
+The moon ids are paths because a moon is priced *through* its planet: the
+capture is made at the moon's own orbital radius rather than at a low orbit, so
+`bodyLadder` for `outer/a` calls the `outer` arrival and then stops at 9 376 km
+instead of at 300 km. That is one branch in one function, not a second module.
+
+**The rungs, all derived.** `tmi` is the departure burn from the parking
+orbit's periapsis to the heliocentric transfer's excess speed — the same
+`sqrt(vInf² + 2 mu / rp) - v_park` form `moon.js` uses for `loi`, run the other
+way, which is what makes the two modules obviously the same physics. `capture`
+is that form at the destination. `descent` and `ascent` are circular speed at
+the destination's low orbit times a loss factor, and **the atmosphere is a real
+term for the first time**: on a body with one, entry does most of the braking
+and the descent is charged a quarter of circular speed rather than 1.15× it,
+which is the difference between a 6 546 m/s landing and a 10 000 m/s one. It is
+still not free — `moon.js`'s approximation 5 gives a *free* entry at the home
+planet only, where the vehicle arrives on a return trajectory it does not have
+to survive an orbit in.
+
+**`stay` is computed, and this is the one number tier 4 could not compute.**
+`moon.js`'s `SURFACE_STAY` is a game constant with a comment apologising for it
+("nothing measures it"). At another planet nothing is arbitrary about it: a
+vehicle that lands must wait on the surface until the geometry for the way home
+comes round, and that wait falls straight out of the two orbital periods and
+the time of flight. The derivation is the same phase-angle algebra the
+departure window uses, run once more at the far end. Measured: **455 days** at
+the outer planet, **467** at the inner. Nothing is chosen.
+
+## js/core/resolver.js — the interplanetary sequence
+
+**New requirement shape** (a mission has exactly one, as ever):
+
+```js
+{ body: { id: 'outer' | 'inner' | 'outer/a' | 'outer/b',
+          profile: 'flyby' | 'orbit' | 'land' | 'return' } }
+```
+
+`requirementKind` gains a `'body'` arm; `needsInsertion` gains it too;
+`needsTarget` keeps its tier 3 meaning and stays false — a body is a constant
+in `system.js`, not an entry in `state.objects`, exactly as the moon is.
+`cutoffAlt` is `ORBIT_MIN_ALT` for the same reason it is for a lunar mission,
+and with a larger payoff: the Oberth discount on the eccentric parking orbit an
+`ORBIT_MIN_ALT` cutoff actually leaves is worth **up to 893 m/s** on the goal
+rung (12 555 m/s from 85 × 194 km, 11 662 from 80 × 4 381).
+
+**The sequence loop is extracted, not duplicated.** `resolveLunarSequence` and
+the new `resolveBodySequence` are the same function: walk a ladder in flight
+order, check the hardware gate in front of each step, check the restart, check
+the delta-v, roll the landing, push the burn and the events, stop at the first
+step that cannot be flown, and report the shortfall as this step plus
+everything the profile still had to fly. The two differ only in *which* ladder,
+*which* schedule and *which* labels. So the loop moves to one place and the two
+callers supply a ladder, a schedule, a step list, a label map and a gate map.
+
+The tier 4 tests are what make that safe, and they are the condition on it: the
+lunar sequence has pinned behaviour down to its **rng draw order**, and any
+extraction that moves a draw is wrong. If the extraction distorts the lunar
+case, it is abandoned and the loop is written twice — a shared function is not
+worth a changed tier 4.
+
+**The ladder's steps keep their five names.** `LUNAR_STEPS` becomes the shape
+both ladders share (`['tli','loi','descent','ascent','tei']` for the moon,
+`['tmi','capture','descent','ascent','tri']` for a body), and `reached` stays
+an index into whichever list the mission is flying. The two lists are the same
+length by construction, and both modules' comments already say that inserting a
+step renumbers every saved best.
+
+**The window.** `loadout.window` already exists and already means "where in the
+cycle you launch" (`resolver.js`, tier 3). For a body mission it is the
+fraction of the **synodic** cycle, and the wait is forward-only:
+
+```
+windowWait = ((departPhase - window) mod 1) * synodic
+```
+
+The departure burn happens `windowWait` after the parking orbit is reached, and
+those days are spent out of `endurance`.
+
+**Why the window costs time and not delta-v, measured.** The obvious model is
+tier 3's — an error in degrees, priced per degree — and it is wrong here, which
+is worth recording because it is not obvious. Buying a different arrival with a
+faster transfer barely moves the departure geometry: at the outer planet a
+transfer with 1.5× the Hohmann semi-major axis cuts the trip from 259 days to
+108, costs **3 404 m/s** extra at departure, and moves the required departure
+phase angle by **6.9 degrees**. At 2.2 days of waiting per degree that is
+fifteen days of endurance bought for three and a half kilometres per second. So
+there is no delta-v answer to a missed window, in this model or in the real one
+— you wait, and if you cannot afford to wait you do not go. Tier 3's phasing
+burn stays what it is; the two are different problems that happen to share a
+slider.
+
+The cliff is real and is handled by **visibility, not by softening**: the wrap
+means a window set slightly *late* costs most of a synodic period (780 days at
+the outer planet), which no tier 5 vehicle survives. The map draws the bodies
+and the departure point, and the shop quotes the wait in days before the
+launch is bought, so a missed window is a decision the player made with the
+number in front of them rather than a surprise. That is the same contract the
+tier 3 window slider already keeps.
+
+**Endurance.** A new capability stat on the vehicle, in the shape of `lander`
+and `shield` (`vehicle.js`'s `CAPABILITY_STATS`, defaulting to 0), and the
+first one that is a *quantity* rather than a flag:
+
+```
+endurance   seconds of mission the vehicle's propellant, power and thermal
+            control support after insertion
+```
+
+The sequence checks it in front of every step, against the schedule's own time
+for that step, and stops with `stoppedAt: 'endurance'`:
+
+> "Consumables exhausted on day 412 of 972, waiting for the descent."
+
+It is checked before the delta-v, because a vehicle that has run out of days
+never gets to be short of m/s. It is not rolled: boiloff is not a dice throw,
+and a tier whose failures were all rolls would have nothing to buy against.
+A tier 4 mission is unaffected — the lunar ladder's longest flight is eleven
+days and every tier 4 stack has `endurance` 0, so the lunar caller passes no
+endurance ladder and the check is not made. (Making `endurance` bite on tier 4
+retroactively would break a shipped tier; the gate belongs to the sequence's
+caller, not to the loop.)
+
+## js/core/state.js, js/core/save.js — schema v5
+
+`SCHEMA_VERSION = 5` in `save.js` **and** the duplicated literal in `newGame`.
+`migrations[4]` adds `best.bodySteps: {}` and back-fills history entries with
+`bodyStep: null`, following the whole-literal rewrite the other four use.
+
+`best.lunarStep` is a single number because tier 4 has a single destination.
+Tier 5 has four, and a per-body best is what a per-body goal has to read:
+
+```js
+best.bodySteps = { [bodyId]: step }   // step is the resolver's own `reached`
+```
+
+Absent key means "nothing completed", which is the same statement `-1` makes
+for `lunarStep` and is why the map is empty on a fresh game rather than
+pre-filled with `-1`s. `recordLaunch` raises `best.bodySteps[id]` from
+`outcome.body.reached`. `tierGoalMet` gains a `{ body }` arm reading
+`best.bodySteps[req.body.id]` against the profile's required step, with the
+same `required < 0` guard the `{ moon }` arm makes and for the same reason —
+the function ends in `return false`, so an unmapped profile has to be rejected
+before the comparison rather than by it.
+
+`state.js`'s local `LUNAR_STEP_ORDER` copy gains a second list on the same
+terms and for the same two reasons the first one is a copy (`state.js` is on
+the load path of the save screen; what it needs is an ordinal, not orbital
+mechanics). `test/state.test.js` pins both orders against their modules.
+
+`objects` is untouched: an interplanetary flight deploys nothing in phase 5.
+
+## js/core/tree.js, js/data/tree.js — tier 5
+
+Tier 5 nodes (`tier: 5`), 14 to 16 — tier 4 shipped 14 — four branches, costs
+stepping up from tier 4's 80 000–240 000 the way tier 4 stepped up from
+tier 3's.
+
+- **propulsion**: a storable or actively-cooled deep-space stage (isp mul *and*
+  the first `endurance` add — the propellant is what boils off), a departure
+  propellant stretch, and a sixth relight (`restarts` add 1). An `outer`
+  `return` spends five burns — tmi, capture, descent, ascent, tri — which is
+  exactly what tier 4 already sells, so whether a sixth is bought for margin or
+  the branch spends its nodes on isp and propellant instead is a `balance.mjs`
+  question, not one to settle here.
+- **structure**: the interplanetary launch vehicle, the transfer stage
+  (`addStage`), an aeroshell rated for the destination's atmosphere
+  (`landerBonus`, and it is what makes the quarter-of-circular-speed descent
+  legitimate), and the long-duration bus (`endurance` add, the large one).
+- **guidance**: deep-space navigation, and window planning — the node that
+  narrows the window the shop will let a launch be bought inside, which is the
+  only guidance node in the game that changes a *pre-launch* number.
+- **reliability**: long-duration qualification (`endurance` mul), and landing
+  rehearsal at the second body (`landerBonus`).
+
+**Every trap phase 3 recorded still applies, and one is now load-bearing.** A
+stage-adding node must be a structure node (`collectEffects` hoists `addStage`
+in branch order, and propulsion sorts before structure), so the transfer stage
+is structure and propulsion sells its engine. Tier 5 is a launch vehicle, not
+an attachment, for the same reason tier 4 was. The cross-branch TWR rail
+extends unchanged. `data.test.js`'s ideal-full-tree delta-v bound moves with
+this tier and is re-pinned rather than deleted.
+
+**`endurance` is the first stat sold by three branches at once**, which is
+deliberate: it is the tier's real currency, and a tier whose one new axis was
+buyable from a single branch would make the other three optional.
+
+## js/data/missions.js — tier 5 ladder
+
+Seven rungs, all `tier: 5`, following tier 4's composition:
+
+- `deep-relay` — the income filler, orbit-shaped, `deploys`, repeatable, **no
+  `minReputation`**, requirement capped at hardware a tier 4 winner owns by
+  construction. Tier 3 needed one, tier 4 needed one, and a tier 5 arrival is
+  in the same position: without it the board's only income is the floor
+  contract for as long as the first transfer stage takes to buy.
+- `outer-flyby`, `outer-orbit` — the first two rungs, both flyable on a tier 4
+  stack's delta-v and gated on endurance instead.
+- `moon-land` (`outer/a`) — the landing that is a docking: 9 m/s of touchdown
+  at the end of a 259-day flight.
+- `outer-land`, `inner-orbit` — the two mid rungs, and the pair that makes the
+  tier about bodies rather than about one body.
+- `outer-return` — the goal.
+
+```js
+tierGoals[5] = { requirement: { body: { id: 'outer', profile: 'return' } },
+                 name: 'Land on another world and return' };
+```
+
+`mission.profile` keeps the meaning phase 3 gave it and `data.test.js` keeps
+pinning that it agrees with the requirement. A body rung's `profile` is the
+same four values; the body is in the requirement, not in the profile, because
+the profile is what is flown and the body is where.
+
+**Gates.** `tools/gates.mjs`'s `MAX_TIER` goes to 5 and keeps deriving gates
+for the altitude/downrange/orbit shapes. The six body rungs are hand-authored
+and *measured*, as the lunar four are: each flyable with exactly its
+`requiresNode` closure across every selectable loadout, and not flyable when
+the node the rung is really about is removed. Endurance makes that measurement
+harder than tier 4's, because a rung can now be gated by a node that changes no
+delta-v at all — `gates.mjs` must report the endurance gate separately from the
+delta-v gate, or a rung will look ungated.
+
+## js/ui — what tier 5 adds
+
+- **Map view, a third frame.** The planet-centred frame is stretched ×6 and the
+  cislunar frame fits `A_MOON`; neither can hold 2 AU. At a fit that holds
+  the outer planet's orbit the moon's entire orbit is about a pixel across, so
+  the whole tier 4 picture is one dot. So a body outcome selects a **heliocentric
+  frame**: the star at the centre, the home planet's orbit and the
+  destination's drawn as circles, both bodies at `MIN_BODY_PX`, the transfer as
+  the planet-centred code's own ellipse about the star, and the corner note
+  saying the bodies are not to scale. `drawOrbit`, `elementsFrom` and
+  `positionAt` all still apply — the transfer is a Hohmann ellipse about a
+  different focus, which is the whole payoff of resolving it as one.
+- **The camera goes in, twice.** The cislunar frame already hands off to a
+  close-up at the moon and then to `surface.js` on the ground. The same two
+  handoffs happen at the destination, and `surface.js` already takes
+  `state.body` and already draws a sky, so a third body is a data addition
+  there rather than a new module.
+- **The window is drawn before the launch.** The shop's loadout panel gets the
+  departure geometry: where the destination is, where it has to be, and the
+  wait in days for the current slider position. This is the only pre-launch
+  number in the game that comes out of `system.js`, and it is what keeps the
+  window from being a cliff (see the sequence above).
+- **Duration, everywhere.** Mission elapsed time stops being minutes and
+  becomes years. The result screen reports it in days, the playback rate needs
+  a fourth scale (a 972-day flight at the cislunar rate is a twenty-minute
+  animation), and the mission list quotes each rung's duration next to its
+  payout — a 972-day contract that pays 3× a 259-day one is a worse deal per
+  day, and the player should be able to see that.
+
+## Balance, phase 5
+
+`tools/balance.mjs` gains tier 5: the cheapest prereq-valid set reaching each
+rung, the greedy player from the tier 4 end state through the goal (target 15
+to 60 launches, dry streak 4 or under), the remaining-stack delta-v budget at
+insertion against each profile's ladder, **the endurance budget against each
+profile's duration**, and the TWR sweep extended to tier 5 sets.
+`data.test.js` asserts reachability of every tier 5 rung and greedy ≤ 80.
+
+**Measured, before the tier was built**, and reproducible: `tools/t5-ladders.mjs`
+prints every number below from `orbit.js`'s own functions, against the parking
+orbit a tier 4 `return` actually flies (85 × 194 km — the widest notch
+`balance.mjs` reports today). It exists because the module that will own these
+constants, `js/core/system.js`, does not exist yet, and **it is deleted when
+that module lands** — `balance.mjs` measures the tier against the real resolver
+from then on, and a superseded probe is a second source of truth. All m/s at
+insertion:
+
+| rung | body | tmi | capture | descent | ascent | tri | ladder | duration |
+|------|------|-----|---------|---------|--------|-----|--------|----------|
+| `outer-flyby` | `outer` | 3 603 | — | — | — | — | **3 603** | 259 d |
+| `moon-land` | `outer/a` | 3 603 | 1 881 | 9 | — | — | **5 493** | 259 d |
+| `outer-orbit` | `outer` | 3 603 | 2 091 | — | — | — | **5 694** | 259 d |
+| `outer-land` | `outer` | 3 603 | 2 091 | 852 | — | — | **6 546** | 259 d |
+| `inner-orbit` | `inner` | 3 497 | 3 318 | — | — | — | **6 815** | 146 d |
+| `outer-return` | `outer` | 3 603 | 2 091 | 852 | 3 918 | 2 091 | **12 555** | 972 d |
+
+And the schedule, derived the same way: the outer planet's transfer is
+**258.8 days** each way with a departure phase angle of **44.3°** and a
+**455-day** surface stay, for a round trip of **972 days (2.66 home years)**;
+its synodic period is **780 days**, so a degree of window error is 2.17 days of
+waiting. The inner planet is 146.1 days each way, −54.1°, a 467-day stay and a
+584-day synodic period.
+
+**Three things those numbers settle.**
+
+1. **The tier opens playable and closes hard.** A tier 4 winner's stack carries
+   **9 151 m/s** at insertion (`balance.mjs`, `moon-return`'s widest notch), so
+   five of the six body rungs are already inside its delta-v on the day the
+   tier opens and the goal is at 137% of it. That is the opposite of tier 4,
+   which opened with `flyby` at 42% of budget and closed at 93%, and it is why
+   the tier's early rungs are gated on endurance rather than on m/s. A tier
+   whose first five rungs were also delta-v walls would be tier 4 again, longer.
+2. **The inner planet is a body you cannot come home from, and that is content.**
+   Its ascent alone is **8 224 m/s** — its surface gravity is nine-tenths of the
+   home planet's and its low orbit is nearly as fast, and there is no cheap way
+   off it — which puts a `return` at **20 146 m/s**,
+   well past anything this tree will sell. So the inner planet ships with
+   `flyby` and `orbit` only, the mission list says why, and the body is a
+   standing argument for the refueling phase 4 has not built yet.
+3. **The moons are where the landings are affordable.** Capturing at
+   `outer/a`'s orbital radius costs **1 881 m/s**, *less* than capturing into a
+   low orbit at the planet (2 091), and the touchdown is **9 m/s** — the whole
+   descent is a station-keeping burn. A landing on the moon of another planet
+   is therefore cheaper than an orbit of the planet itself, which is a genuinely
+   surprising fact that falls out of the physics, and it is what makes "planets
+   and their moons" a ladder rather than a label.
+
+These are the shape, not the answer. Tier 3's contract said 200 km and shipped
+160 km because the resolver disagreed with it; tier 4's tree was sized by
+measurement against the flown parking orbit rather than the circular one it was
+first quoted from. The same applies here, and the endurance ladder in
+particular has no precedent to be sized against — it will be whatever
+`balance.mjs` says makes the greedy player take 15 to 60 launches.
+
+## Deferred, and what phase 4 would change
+
+Deferred, unchanged from phase 3's list: survey, resources beyond the ledger
+`economy.js` already carries, equipment, bases, depots, the clock, offline
+accrual, storage caps, haul, notifications. Nothing in phase 5 credits a
+resource and no tier 5 node is priced in one.
+
+Also deferred, and named because they are the obvious next questions:
+
+- **Gravity assists.** Not modelled, and the reason is the same one that keeps
+  the moon from being a second attractor. Their absence is what puts the gas
+  giant out of reach: capturing into its system costs **12 841 m/s** at a low
+  orbit, and the real answer is a decade of moon flybys the game has no clock
+  for. The giant is a tier 6 problem or a phase 4 one, not this tier's.
+- **Aerocapture.** The atmosphere brakes the descent here but not the arrival.
+  Letting a rated aeroshell take the capture burn to zero would drop the goal
+  from 12 555 to **10 464 m/s** — a fifth of the tier's climb, sold as one
+  hardware node. It is left out because the tier does not need it and because
+  a capability that large should be a tier's identity rather than a node in
+  the middle of one.
+
+**If phase 4 lands first**, refueling changes exactly one thing and it is the
+tree's job, not the resolver's: a vehicle that departs from a fuelled depot
+starts the sequence with a full tank instead of with what its ascent left, so
+the ladder above stops being measured from 9 151 m/s of remaining stack. Every
+number in this document stays true — the ladders are properties of the bodies —
+and what moves is how many propulsion and structure nodes tier 5 has to sell to
+close a 12 555 m/s goal. The tier is cheaper to build after phase 4 and
+possible without it, which is the point of pricing it this way.
