@@ -795,7 +795,25 @@ state.objects = [
 A mission with `deploys: { kind, name }` adds an object on success, in a
 circular orbit at the mission's required periapsis when it has an orbit
 requirement (the object settles at its design altitude), else at the
-achieved periapsis. Objects are always circular: an elliptical or
+achieved periapsis.
+
+**The release is also an event on the timeline**, `kind: 'deploy'`, carrying
+the object's `name` as a field beside its sentence. It is not a step: no
+delta-v, no restart, no roll, and success is decided before it — a flight that
+missed its orbit deploys nothing, the same test `state.js` applies. It exists
+because a deployment contract is not paid for reaching an orbit but for leaving
+something in one, and without it the object appeared on another screen after a
+flight that never showed it come off the stack. The flight runs on past the
+release rather than ending on it, and the wait in front of it is set by
+**which camera is watching**: `DEPLOY_COAST` seconds where there is no phase
+after insertion (the ascent view has no notion of an orbit, plays a coast at a
+fixed rate, and draws from the sample stream — so the integrator coasts far
+enough to have samples under the release); a quarter of the target's own orbit
+where the map view is playing at `MAP_RATE`; a quarter of `LLO_PERIOD` at the
+moon. `js/ui/ascent.js` draws the payload easing off the stack; `js/ui/map.js`
+draws it as a marker in the lunar close-up, lagging its own track by
+`RELEASE_LAG` for the same presentational reason (a payload let go with no burn
+stays exactly where the vehicle is, which is one marker where two objects are). Objects are always circular: an elliptical or
 arbitrarily high deploy would be unmatchable by a later launch. `unique: true` on a template means it is offered
 only while no undocked object of that kind exists. A template with
 `requiresObject: 'core'` is offered only while one exists. Contracts get
@@ -2240,6 +2258,15 @@ for the propellant `p` the depot can transfer into the stage of mass `m`. It is
 the same Tsiolkovsky term the budget is already built out of, so a refuel is
 not a new kind of number — it is more of the one number the whole game is
 about (DESIGN.md §4).
+
+**It is a stop, so it takes time on the timeline.** The `refuel` event sits at
+`loi + LLO_PERIOD / 8` — squarely between the capture and the descent burn a
+quarter of a lunar orbit after it — and not one second after the capture, which
+is where it used to be: at the map view's cislunar rate that put the two on the
+same playback frame, so the flight arrived at the moon and refuelled in one
+instant, three hundred and eighty thousand kilometres away with the camera
+still wide. Nothing about the pricing moves; the delta-v is still credited the
+moment the sequence walks past that line.
 
 **What it does to the ladders already measured.** Nothing to the ladders: they
 are properties of the bodies. What moves is the budget they are spent out of —

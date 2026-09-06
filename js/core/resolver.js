@@ -137,6 +137,30 @@ export const ORBIT_MIN_ALT = 80000;
 export const ORBIT_CONFIRM_COAST = 30;
 
 /**
+ * Seconds between the orbit being confirmed and the PAYLOAD LEAVING THE STACK
+ * on a mission that deploys one, and the reason the coast above is not the
+ * whole story for those.
+ *
+ * A deployment contract is not paid for reaching an orbit; it is paid for
+ * leaving something in it. Without this the flight ended thirty seconds after
+ * the announcement with the satellite still bolted to the upper stage, and the
+ * only evidence a comsat existed at all was a row appearing on another screen
+ * afterwards. So a deploying flight coasts, RELEASES, and then coasts the
+ * ordinary ORBIT_CONFIRM_COAST again before it ends — the release is a moment
+ * on the timeline with the picture still running on either side of it, which
+ * is what every other moment in this file already gets.
+ *
+ * It is quoted in SECONDS rather than as a fraction of the orbit because the
+ * camera watching it is the ascent view, which plays a coast at a fixed
+ * COAST_MULT × BURN_RATE and has no idea what an orbit is: a quarter of a
+ * period here would be a minute of watching a dot. The two deploys that ARE
+ * watched from an orbital camera — the lab module a dock delivers and the
+ * lunar depot — are scheduled on their own orbit instead, in `resolveLaunch`,
+ * for exactly the same reason read the other way round.
+ */
+export const DEPLOY_COAST = 60;
+
+/**
  * Seconds between an abort separation and the next stage's ignition: the
  * stack above a failed stage coasts this long to clear the debris and settle
  * its attitude before it lights (ARCHITECTURE.md "Stage abort systems"). The
@@ -1491,10 +1515,21 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng, ref
     // it does is add to the budget the remaining rungs are spent out of, which
     // is the whole of DESIGN.md §8's "propellant at a depot lets a vehicle
     // refuel there, so destinations beyond it get cheaper".
+    //
+    // IT IS A STOP, SO IT TAKES TIME. The event used to sit one second after
+    // the capture, which put it on the same PLAYBACK FRAME as the burn that
+    // arrived: two ticker lines at once, three hundred and eighty thousand
+    // kilometres away, with the camera still wide and only starting to move
+    // in. Half a lunar orbit's eighth puts it squarely between the capture and
+    // the descent that follows a quarter of one later — a beat of its own on
+    // either side, at the same LLO_PERIOD the rest of the stay is scheduled
+    // on. Nothing is priced against it: the propellant is the depot's and the
+    // delta-v is credited the moment the sequence walks past this line, as
+    // before.
     if (step === 'loi' && refuel && refuel.dv > 0) {
       dvLeft += refuel.dv;
       events.push({
-        t: stepTime.loi + 1,
+        t: stepTime.loi + LLO_PERIOD / 8,
         kind: 'refuel',
         text: `Topped up at ${refuel.name}: ${Math.round(refuel.propellant)} kg, `
           + `${Math.round(refuel.dv)} m/s.`,
@@ -1694,6 +1729,13 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   // shapes that HAVE a phase after insertion, so tier 1 and tier 2 burn to
   // depletion exactly as they always have.
   const cutoffAlt = needsInsertion(kind) ? Math.max(requirementPeri, ORBIT_MIN_ALT) : null;
+
+  // Whether this flight leaves something behind, and whether the ASCENT is the
+  // camera that has to show it. A dock's lab module and the lunar depot are
+  // deploys too, but they happen in a phase after insertion, under the map
+  // view's camera and on its clock — see THE RELEASE below.
+  const deploys = mission?.deploys ?? null;
+  const deploysPayload = deploys !== null && !needsInsertion(kind);
 
   const timeline = [];
   const samples = [];
@@ -2349,8 +2391,16 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
     // Orbit confirmed: an orbit flight coasts a little so the announcement is
     // visible and then stops; a downrange flight is already decided (an orbit
     // trivially passes any range), so it stops immediately.
+    //
+    // A DEPLOYING FLIGHT COASTS TWICE AS FAR AGAIN, because the release is
+    // still to come (DEPLOY_COAST) and the flight must not end on the frame it
+    // happens on. The integrator has to be the thing that runs on: the ascent
+    // view draws from the SAMPLE STREAM, so a timeline event past the last
+    // sample would freeze the sprite where the samples stopped and play the
+    // release against a still picture.
     if (orbitConfirmedAt !== null) {
-      if (kind === 'downrange' || t >= orbitConfirmedAt + ORBIT_CONFIRM_COAST) {
+      const coast = deploysPayload ? DEPLOY_COAST + ORBIT_CONFIRM_COAST : ORBIT_CONFIRM_COAST;
+      if (kind === 'downrange' || t >= orbitConfirmedAt + coast) {
         pushSample();
         ended = true;
         break;
@@ -2623,6 +2673,77 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
   // reason, and on a success it still points the result screen at the branch
   // that makes it rarer, the same way a survived failure does.
   for (const anomaly of anomalies) readout += ` ${anomalySentence(anomaly)}`;
+
+  // THE RELEASE. A deployment contract is not paid for reaching an orbit, it
+  // is paid for LEAVING SOMETHING IN ONE — and until now that was the one thing
+  // a deploying flight never showed. `js/core/state.js` has created the object
+  // on every successful deploy since phase 1, so the satellite, the station
+  // core, the lab module and the lunar depot all existed; what did not exist
+  // was any moment in the flight at which they left the stack. A comsat
+  // delivery ended on "Orbit: 182 km × 210 km" with the comsat still bolted to
+  // the upper stage, the depot mission ended in lunar orbit with the depot
+  // aboard, and the object turned up afterwards on another screen.
+  //
+  // So the release is an event, at the far end of a wait, and the flight ends
+  // after it rather than on it. It is NOT a step and costs nothing: no
+  // delta-v, no restart, no roll, and success was decided above — a flight
+  // that missed its orbit deploys nothing, which is the same test state.js
+  // applies. What it is, is the moment the mission is about.
+  //
+  // WHICH CAMERA IS WATCHING sets the wait, and that is the only reason there
+  // are three branches rather than one constant:
+  //
+  //   - at the moon, the map view's close-up plays a low lunar orbit at
+  //     LUNAR_RATE, so a quarter of one is a couple of seconds — the same wait
+  //     `lunarSchedule` already uses between arriving somewhere and doing the
+  //     next thing, and for the same reason.
+  //   - in a planet orbit with a phase after insertion (the lab module a dock
+  //     delivers), the map view plays at MAP_RATE, where a quarter of the
+  //     target's own orbit is again about two seconds.
+  //   - with no phase after insertion (a comsat, the station core, a relay),
+  //     the ASCENT view is the camera and it has no notion of an orbit at all:
+  //     it plays a coast at a fixed rate and draws from the sample stream. So
+  //     that one is quoted in seconds (DEPLOY_COAST) and the integrator above
+  //     coasts far enough to have samples under it.
+  if (deploys && success) {
+    const name = deploys.name ?? 'The payload';
+    let wait = null;
+    let text = null;
+    if (lunarResult) {
+      wait = LLO_PERIOD / 4;
+      text = `${name} released into lunar orbit.`;
+    } else if (orbitalResult) {
+      wait = elementsFrom(ORBIT_R + target.periapsis, ORBIT_R + target.apoapsis).period / 4;
+      // A dock delivers its module BY docking, so what happens a quarter of an
+      // orbit later is the module coming off the vehicle and staying with the
+      // station — which is a berthing and not a release into open space.
+      text = docked
+        ? `${name} berthed to ${target.name ?? target.id ?? 'the target'}.`
+        : `${name} released alongside ${target.name ?? target.id ?? 'the target'}.`;
+    } else if (orbitConfirmedAt !== null) {
+      wait = DEPLOY_COAST;
+      text = `${name} released into `
+        + `${formatElement(periapsis)} × ${formatElement(apoapsis)}.`;
+    }
+    if (wait !== null) {
+      // The ascent branch counts its wait from the ORBIT being confirmed,
+      // because that is what the integrator coasted from and what the samples
+      // under it cover; the other two count from the end of the phase they
+      // belong to, which is the arrival the release follows.
+      const deployT = (lunarResult || orbitalResult ? endT : orbitConfirmedAt) + wait;
+      // `name` is carried as a field and not only inside the sentence: the map
+      // view labels the object it draws with it, and parsing it back out of a
+      // sentence would be a second source of truth for the same string.
+      event(deployT, 'deploy', text, { alt: altOf(x, y), name });
+      // AND THE FLIGHT DOES NOT END ON THE RELEASE FRAME. Half the wait again,
+      // for exactly the reason ORBIT_CONFIRM_COAST exists one branch up: the
+      // moment needs a picture on both sides of it. On the ascent branch that
+      // coast is the integrator's, already flown above; here it is time the
+      // map view spends drawing the vehicle moving away from what it just let
+      // go of.
+      endT = Math.max(endT, deployT + wait / 2);
+    }
+  }
 
   // The end lands after the last orbital event, so the ticker's final line is
   // still its final line once the timeline is sorted.
