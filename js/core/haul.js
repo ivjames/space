@@ -69,11 +69,14 @@ export const HAUL_RELIABILITY_MAX = 0.99;
  *   isp 450 -> 1.64     a cryogenic one pays
  *
  * So DESIGN.md §8's "hauling pays from the first trip" is not a balance knob,
- * it is a constraint on the tree: the processor (which makes hydrogen and
- * oxygen out of the site's water) must be a PREREQUISITE of the transport
- * node, not its sibling, and the first tanker sold must burn what the
- * processor makes. `tools/balance.mjs` asserts the ratio rather than trusting
- * it, and `js/data/tree.js` carries the prerequisite.
+ * it is a constraint on the ONE NUMBER the tree sells: the tanker's engine.
+ * `js/data/tree.js`'s `struct-16` sets `haulIsp` to 450 — a hydrolox upper
+ * stage, which is exactly what the base's processor makes out of the site's
+ * water — so the tanker burns the thing it is there to carry and the chain
+ * closes. A cheaper hypergolic tanker would have been a node that loses the
+ * player propellant every time they used it, with nothing on screen saying so.
+ * test/data.test.js asserts the ratio for every tanker the tree can sell,
+ * rather than trusting this comment.
  *
  * @param {number} isp tanker engine specific impulse, s
  * @param {number} cargo kg to deliver
@@ -116,6 +119,63 @@ export function maxCargo(isp, store, capacityLevel) {
 }
 
 /**
+ * Automatic hauling, run as part of a production tick (phase 4).
+ *
+ * WHAT AUTOMATION BUYS IS THE LAUNCH, NOT THE PHYSICS. The propellant an
+ * automatic run burns is charged at exactly the ratio a manual one pays —
+ * `haulEconomics` is the same function — so buying `autoHaul` removes the
+ * chore DESIGN.md §8 says it removes and nothing else. A cheaper automatic
+ * haul would make the manual phase strictly worse than waiting, which is the
+ * opposite of what a tiered automation ladder is for.
+ *
+ * IT DOES NOT ROLL. `resolveHaul` risks the load on a reliability roll because
+ * the player chose to fly it and watches it happen; an automatic run happens
+ * while nobody is looking, and a dice throw the player cannot see, cannot
+ * influence and is not told about is not variance, it is an unexplained
+ * shortfall. So the automated route is safe and slower — `rate` is what the
+ * tree sells — and the reliability node keeps its job on the manual runs that
+ * open every new body.
+ *
+ * @param {object} vehicle needs `haulIsp`, `haulRate` (runs per day) and
+ *   optionally `haulCapacity` (a multiplier on the load)
+ * @param {object} base
+ * @param {number} elapsed ms (already clamped by js/core/clock.js)
+ * @returns {object|null} the same `haul` block `resolveHaul` produces, so
+ *   js/core/state.js applies it by exactly the same path — or null when
+ *   nothing moved, which is the common case on a short tick.
+ */
+export function autoHaul(vehicle, base, elapsed, depotId = null) {
+  const isp = Number(vehicle?.haulIsp) || 0;
+  const rate = Number(vehicle?.haulRate) || 0;
+  const capacityMul = Number(vehicle?.haulCapacity) || 1;
+  const level = Math.max(0, Math.floor(base?.equipment?.transport ?? 0));
+  const days = (Number.isFinite(elapsed) && elapsed > 0 ? elapsed : 0) / 86400000;
+  if (isp <= 0 || rate <= 0 || level <= 0 || days <= 0) return null;
+
+  // What the route could move in this much time, and what the tanks can pay
+  // for. The second is nearly always the binding one, which is the intended
+  // shape: automation removes the launch, storage still sets the pace.
+  const byRate = rate * days * level * HAUL_PER_LEVEL * capacityMul;
+  const byTanks = maxCargo(isp, base?.store ?? {}, level * capacityMul);
+  const cargo = Math.min(byRate, byTanks);
+  if (!(cargo > 0)) return null;
+
+  const { burned } = haulEconomics(isp, cargo);
+  return {
+    cargo,
+    burned,
+    delivered: { fuel: cargo * FUEL_FRACTION, oxidizer: cargo * OXIDIZER_FRACTION },
+    drawn: {
+      fuel: (cargo + burned) * FUEL_FRACTION,
+      oxidizer: (cargo + burned) * OXIDIZER_FRACTION,
+    },
+    to: depotId,
+    stoppedAt: null,
+    automatic: true,
+  };
+}
+
+/**
  * Fly one haul.
  *
  * @param {object} vehicle  needs `haulIsp` (the tanker engine) and
@@ -140,7 +200,9 @@ export function resolveHaul(vehicle, base, depot, rng) {
     success: false,
     readout,
     events,
-    haul: { cargo: 0, burned: 0, delivered: null, to: depot?.id ?? null, stoppedAt: readout },
+    haul: {
+      cargo: 0, burned: 0, delivered: null, drawn: null, to: depot?.id ?? null, stoppedAt: readout,
+    },
   });
 
   if (isp <= 0) return fail('No tanker: the transport equipment has nothing to fly.');
@@ -173,7 +235,22 @@ export function resolveHaul(vehicle, base, depot, rng) {
       success: false,
       readout: `Tanker lost: ${Math.round(cargo)} kg did not arrive.`,
       events,
-      haul: { cargo: 0, burned: cargo + burned, delivered: null, to: depot?.id ?? null, stoppedAt: 'lost' },
+      haul: {
+        cargo: 0,
+        burned: cargo + burned,
+        delivered: null,
+        // DRAWN IS WHAT LEAVES THE TANKS, and it is the full load on a failed
+        // haul: the tanker lit, left, and took the cargo with it. The base
+        // pays the same either way, which is what makes the reliability node
+        // worth buying and what keeps a failed haul a real cost rather than a
+        // re-roll.
+        drawn: {
+          fuel: (cargo + burned) * FUEL_FRACTION,
+          oxidizer: (cargo + burned) * OXIDIZER_FRACTION,
+        },
+        to: depot?.id ?? null,
+        stoppedAt: 'lost',
+      },
     };
   }
 

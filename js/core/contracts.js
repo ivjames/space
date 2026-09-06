@@ -43,10 +43,17 @@ function requiredNodes(m) {
 //                                          object of m.deploys.kind exists
 //   { kind: 'surveyed', site }             requiresUnsurveyed, and that site
 //                                          has already been surveyed
+//   { kind: 'unsurveyed', site }           requiresSurveyed, and that site has
+//                                          NOT been surveyed yet
+//   { kind: 'base', site }                 requiresBase, and there is no base
+//                                          at that site
+//   { kind: 'built', site }                requiresNoBase, and a base is
+//                                          already built there
 //
-// Checks run in that order — tier, reputation, node(s), object, unique,
-// surveyed — and every unmet gate is reported, not just the first, so a
-// player two purchases and a core delivery away from `dock` sees all three.
+// Checks run in that order — tier, reputation, node(s), object, unique, then
+// the four site gates — and every unmet gate is reported, not just the first,
+// so a player two purchases and a core delivery away from `dock` sees all
+// three.
 //
 // The gates themselves are the tier/reputation gates phase 0/1 had plus
 // phase 2's three object-aware gates (ARCHITECTURE.md, "Persistent objects
@@ -81,6 +88,17 @@ function requiredNodes(m) {
 //     leaves nothing behind for `requiresObject` to notice. It is the same
 //     shape as `unique` — "this has already happened" — against `state.sites`
 //     instead of `state.objects`.
+//   - `requiresSurveyed: <siteId>` (phase 3b) — the mirror, and the pair is
+//     what makes the survey a prerequisite rather than a suggestion: a landing
+//     that plants a base is offered only for ground the player has actually
+//     looked at. Without it the survey would be optional flavour and the site
+//     table would be a lottery.
+//   - `requiresBase: <siteId>` / `requiresNoBase: <siteId>` (phase 3b) — a
+//     haul needs somewhere to haul FROM, and a base landing needs the site to
+//     still be empty. Two flags rather than one tri-state because every other
+//     gate in this list is a single named condition, and a `site: { base:
+//     false }` shape would be the first thing here a reader had to parse
+//     rather than read.
 export function lockReasons(state, m) {
   const reasons = [];
   const tier = state.tier ?? 1;
@@ -106,6 +124,16 @@ export function lockReasons(state, m) {
   const sites = state.sites ?? {};
   if (m.requiresUnsurveyed !== undefined && sites[m.requiresUnsurveyed]?.surveyed) {
     reasons.push({ kind: 'surveyed', site: m.requiresUnsurveyed });
+  }
+  if (m.requiresSurveyed !== undefined && !sites[m.requiresSurveyed]?.surveyed) {
+    reasons.push({ kind: 'unsurveyed', site: m.requiresSurveyed });
+  }
+  const bases = state.bases ?? {};
+  if (m.requiresBase !== undefined && !bases[m.requiresBase]) {
+    reasons.push({ kind: 'base', site: m.requiresBase });
+  }
+  if (m.requiresNoBase !== undefined && bases[m.requiresNoBase]) {
+    reasons.push({ kind: 'built', site: m.requiresNoBase });
   }
   return reasons;
 }

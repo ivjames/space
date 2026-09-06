@@ -84,6 +84,18 @@ const NAMED_VEHICLE_FIELDS = new Set(['stages', 'payloadMass', 'dragArea', 'drag
  *   lander     0/1   a lander: without one the lunar sequence cannot descend
  *   shield     0/1   a heat shield: without one it cannot come home
  *   landerBonus 0..1 added to the landing roll's threshold
+ *   haulIsp    s     the cargo tanker's engine (phase 3b). 0 means no tanker,
+ *                    so a haul cannot fly at all — the same "absent is 0"
+ *                    shape as lander/shield, but a QUANTITY rather than a
+ *                    flag, because what the tanker's engine is decides
+ *                    whether a haul delivers more than it burns
+ *                    (js/core/haul.js)
+ *   haulBonus  0..1  added to the haul roll's threshold
+ *   refuel     0/1   a depot docking fitting (phase 4): without one a vehicle
+ *                    passing a stocked depot cannot take anything from it
+ *   autoHaul   0/1   the base-to-depot route runs itself (phase 4)
+ *   haulRate   /day  automatic runs per day, once autoHaul is owned
+ *   haulCapacity mul multiplier on what one run carries
  *
  * The last three are phase 3's, and are the same kind of thing the phase 2 ones
  * are: a structure node sets `lander` and `shield`, a reliability node adds
@@ -96,7 +108,7 @@ const NAMED_VEHICLE_FIELDS = new Set(['stages', 'payloadMass', 'dragArea', 'drag
  */
 const CAPABILITY_STATS = [
   'guidance', 'restarts', 'nav', 'docking', 'rcs', 'dockBonus', 'escape',
-  'lander', 'shield', 'landerBonus',
+  'lander', 'shield', 'landerBonus', 'haulIsp', 'haulBonus', 'refuel', 'autoHaul', 'haulRate', 'haulCapacity',
 ];
 
 const REQUIRED_STAGE_FIELDS = ['dryMass', 'propMass', 'thrust', 'isp', 'reliability'];

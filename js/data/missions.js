@@ -46,6 +46,7 @@
 // against the gate's 2 600, which the gate does not admit); the ladder tab
 // names the purchase, so the path is still visible.
 import { SITES } from './sites.js';
+import { LLO_ALT } from '../core/moon.js';
 
 export const missions = [
   {
@@ -813,6 +814,101 @@ const surveyMissions = SITES.map((site) => ({
 }));
 
 missions.push(...surveyMissions);
+
+// The base landing, one per site, generated for the same reason the surveys
+// are. `moon-land` (the tier 4 rung) stays exactly what it is — a landing
+// scored as a landing, with no site and no consequence beyond the contract —
+// and these are a different mission that happens to share its profile: a
+// landing that leaves something behind.
+//
+// GATES. `requiresSurveyed` is what makes the survey a prerequisite rather
+// than flavour: you may only plant a base on ground you have looked at, so
+// the site table is a decision instead of a lottery. `requiresNoBase` closes
+// the offer once one is there. Hardware is `moon-land`'s own, because it is
+// `moon-land`'s flight.
+//
+// It pays LESS than moon-land, which is the one surprising number here and is
+// deliberate: the customer is not paying for a landing, the player is buying a
+// base. Pricing it above the rung it copies would make the tier's goal ladder
+// the slower way to do the same thing.
+const baseMissions = SITES.map((site) => ({
+  id: `base-${site.id}`,
+  tier: 4,
+  name: `Base landing: ${site.name}`,
+  profile: 'land',
+  requirement: { moon: { profile: 'land', site: site.id } },
+  requiresNode: ['struct-13', 'prop-11', 'guide-1'],
+  requiresSurveyed: site.id,
+  requiresNoBase: site.id,
+  payout: 120000,
+  repGain: 11,
+  repLoss: 6,
+  minReputation: 75,
+}));
+
+// The depot: the orbital half of the transport pair, and the only object in
+// the game that orbits something other than the planet.
+//
+// Its orbit is LLO_ALT rather than an achieved insertion, because the flight
+// that puts it there is resolved analytically at the moon and never reports
+// one (js/core/state.js's objectOrbitFrom). Importing the altitude from
+// js/core/moon.js rather than writing 100000 here is the same discipline the
+// rest of the phase keeps: the depot sits in the orbit the whole lunar ladder
+// is priced against, and it should move if that does.
+const depotMission = {
+  id: 'depot-deploy',
+  tier: 4,
+  name: 'Lunar depot',
+  profile: 'orbit',
+  requirement: { moon: { profile: 'orbit' } },
+  deploys: {
+    kind: 'depot',
+    name: 'Lunar depot',
+    body: 'moon',
+    orbit: { periapsis: LLO_ALT, apoapsis: LLO_ALT },
+    store: { fuel: 0, oxidizer: 0 },
+  },
+  unique: true,
+  requiresNode: ['struct-11', 'prop-11', 'guide-1'],
+  payout: 100000,
+  repGain: 9,
+  repLoss: 5,
+  minReputation: 60,
+};
+
+// The haul, one per site. `requiresBase` gives it somewhere to haul from and
+// `requiresObject: 'depot'` somewhere to haul to; without both there is
+// nothing for the flight to mean.
+//
+// IT PAYS NOTHING IN FUNDS, and that is the point rather than an oversight. A
+// haul moves propellant from the surface to orbit; DESIGN.md §15 excludes a
+// resource that just converts to funds, and a cargo run that also paid a
+// contract would be exactly that with a launch attached. What it pays is the
+// delivery, and js/core/haul.js prices that.
+//
+// It still carries reputation, both ways: DESIGN.md §8 says hauls count toward
+// the launch score, and a flight that could not cost anything would be a free
+// roll.
+const haulMissions = SITES.map((site) => ({
+  id: `haul-${site.id}`,
+  tier: 4,
+  name: `Cargo run: ${site.name}`,
+  profile: 'haul',
+  requirement: { haul: { site: site.id, to: 'depot' } },
+  requiresBase: site.id,
+  requiresObject: 'depot',
+  requiresNode: ['struct-16'],
+  payout: 0,
+  // In the tier's reputation band like everything else, rather than a special
+  // case: a cargo run is a real flight that can be lost, and a flight that
+  // cost less standing than the contract beside it would make the safe thing
+  // the cheap thing. It is not a reputation farm either -- every run spends
+  // propellant the base had to make, and reputation is capped at 100.
+  repGain: 6,
+  repLoss: 4,
+}));
+
+missions.push(...baseMissions, depotMission, ...haulMissions);
 
 export const tierGoals = {
   1: { requirement: { altitude: 100000 }, name: 'Reach 100 km' },

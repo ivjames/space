@@ -1291,3 +1291,140 @@ if (!tier4Greedy.won) {
     console.log(`    ${m.id}: minReputation ${m.minReputation} -> first crossed at tier 4 launch ${first ? first.launch : 'NEVER'}`);
   }
 }
+
+// ===========================================================================
+// The economy: phases 3b and 4 (ARCHITECTURE.md, "Balance, phase 3b" and
+// "Balance, phase 4").
+//
+// Nothing here flies through the integrator, because nothing here is a launch:
+// a base is a rate against a cap and a haul is one burn. So this section is
+// arithmetic over js/core/base.js and js/core/haul.js — but it is the same
+// KIND of audit as the tiers above, and for the same reason: DESIGN.md states
+// four things about the economy as requirements, and a requirement nobody
+// measures is a hope.
+// ===========================================================================
+
+const { ELAPSED_CLAMP: CLAMP, HOUR: HR } = await import(core('clock.js'));
+const baseMod = await import(core('base.js'));
+const haulMod = await import(core('haul.js'));
+const { SITES: BALANCE_SITES } = await import(new URL('../js/data/sites.js', import.meta.url).href);
+
+console.log('\n=== Economy: hauling pays from the first trip (DESIGN.md §8) ===');
+{
+  // Every tanker the tree can sell, and what it delivers per unit it burns.
+  // Under 1 the node is a way of destroying the player's propellant.
+  const tankers = nodes.flatMap((n) => (n.effects ?? [])
+    .filter((e) => e.stat === 'haulIsp')
+    .map((e) => ({ id: n.id, isp: e.value })));
+  if (tankers.length === 0) {
+    console.log('  the tree sells no tanker: nothing to check');
+  } else {
+    let worst = Infinity;
+    for (const t of tankers) {
+      const { ratio, burned } = haulMod.haulEconomics(t.isp, 4000);
+      worst = Math.min(worst, ratio);
+      console.log(`  ${t.id.padEnd(12)} isp ${String(t.isp).padStart(4)}: `
+        + `a 4 t run burns ${Math.round(burned)} kg -> ${ratio.toFixed(2)} delivered per burned, `
+        + `net ${Math.round(4000 - burned) >= 0 ? '+' : ''}${Math.round(4000 - burned)} kg`);
+    }
+    console.log(`  result: ${worst > 1 ? 'PASS' : 'FAIL'} -- worst tanker ratio ${worst.toFixed(2)}`
+      + `${worst > 1 ? '' : ', a haul that loses propellant every trip'}`);
+  }
+}
+
+console.log('\n=== Economy: storage is the offline limit, not the clamp ===');
+{
+  // The propellant tanks must fill inside the elapsed clamp, or the cap never
+  // binds and the storage upgrade sells nothing. Metals are deliberately the
+  // other way round (js/core/base.js, TANK_SHARE): they are sized by what they
+  // have to buy, so the clamp binds first there and the rule that replaces
+  // this one is "the stockpile always holds the next upgrade".
+  const clampHours = CLAMP / HR;
+  let worstFill = 0;
+  let worstWhere = '';
+  for (let n = 1; n <= baseMod.MAX_LEVEL; n += 1) {
+    const b = baseMod.newBase();
+    for (const type of baseMod.EQUIPMENT) b.equipment[type] = n;
+    for (const site of BALANCE_SITES) {
+      for (const res of ['fuel', 'oxidizer']) {
+        const h = baseMod.fillTime(b, site, res);
+        if (h > worstFill) { worstFill = h; worstWhere = `${site.id} level ${n} ${res}`; }
+      }
+    }
+  }
+  console.log(`  slowest propellant tank: ${worstFill.toFixed(1)}h (${worstWhere}), clamp ${clampHours}h`);
+  console.log(`  result: ${worstFill < clampHours ? 'PASS' : 'FAIL'}`);
+
+  let lockedAt = null;
+  for (let n = 1; n < baseMod.MAX_LEVEL; n += 1) {
+    const b = baseMod.newBase();
+    for (const type of baseMod.EQUIPMENT) b.equipment[type] = n;
+    const cap = baseMod.capacity(b).metals;
+    const dearest = Math.max(...baseMod.EQUIPMENT.map((t) => baseMod.buildCost(t, n + 1).metals));
+    if (cap < dearest) lockedAt = `storage ${n} holds ${Math.round(cap)}, dearest level ${n + 1} costs ${dearest}`;
+  }
+  console.log(`  metals stockpile holds the next upgrade at every level: ${lockedAt ? `FAIL (${lockedAt})` : 'PASS'}`);
+}
+
+console.log('\n=== Economy: metals pay for the next piece of equipment ===');
+{
+  const b = baseMod.newBase();
+  for (const type of baseMod.EQUIPMENT) b.equipment[type] = 1;
+  const cheapest = Math.min(...baseMod.EQUIPMENT.map((t) => baseMod.buildCost(t, 2).metals));
+  for (const site of BALANCE_SITES) {
+    const perHour = baseMod.rates(b, site).metals;
+    const days = perHour > 0 ? cheapest / perHour / 24 : Infinity;
+    console.log(`  ${site.id.padEnd(16)} ${perHour.toFixed(1).padStart(5)} kg/h -> `
+      + `${days.toFixed(1)} days to the cheapest level 2 (${cheapest} metals)`);
+  }
+}
+
+console.log('\n=== Economy: what a depot buys a departing vehicle (phase 4) ===');
+{
+  // The refuel has to be worth more than the hauls that filled it, or the
+  // depot is an elaborate way of destroying fuel. Measured against the full
+  // tree's own top stage, which is what would actually be drinking.
+  const fullOwnedIds = nodes.map((n) => n.id);
+  const fullVehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwnedIds }));
+  const top = fullVehicle.stages[fullVehicle.stages.length - 1];
+  const { refuelDeltaV, TANK_LIMIT } = await import(core('resolver.js'));
+  const propellant = top.propMass * TANK_LIMIT;
+  const dry = top.dryMass + (fullVehicle.payloadMass ?? 0);
+  const dv = refuelDeltaV(propellant, dry, top.isp);
+  const isp = Math.max(...nodes.flatMap((n) => (n.effects ?? [])
+    .filter((e) => e.stat === 'haulIsp').map((e) => e.value)), 0);
+  const { burned } = haulMod.haulEconomics(isp, propellant);
+  console.log(`  a full tank is ${Math.round(propellant)} kg into a ${Math.round(dry)} kg stage `
+    + `at isp ${top.isp}: ${Math.round(dv)} m/s`);
+  console.log(`  the hauls that put it there burned ${Math.round(burned)} kg of base production`);
+  console.log(`  result: ${dv > 0 && propellant > burned ? 'PASS' : 'CHECK'} -- `
+    + `${(propellant / burned).toFixed(2)} kg delivered per kg burned`);
+}
+
+console.log('\n=== Economy: auto-transport is in reach (DESIGN.md §8) ===');
+{
+  // "Priced so a player with one base and a handful of hauls can afford it."
+  // Measured against the funds a tier 4 winner has by the greedy simulation's
+  // own reckoning, and against the propellant a handful of manual runs land.
+  const route = nodes.find((n) => (n.effects ?? []).some((e) => e.stat === 'autoHaul'));
+  if (!route) {
+    console.log('  no automation node in the tree');
+  } else {
+    const endFunds = tier4Greedy.won ? tier4Greedy.curve[tier4Greedy.curve.length - 1].funds : 0;
+    const cost = route.cost;
+    const isp = Math.max(...nodes.flatMap((n) => (n.effects ?? [])
+      .filter((e) => e.stat === 'haulIsp').map((e) => e.value)), 0);
+    // One run out of a level-1 base's full tanks, as "a handful" is counted.
+    const b = baseMod.newBase();
+    for (const type of baseMod.EQUIPMENT) b.equipment[type] = 1;
+    const caps = baseMod.capacity(b);
+    const perRun = haulMod.maxCargo(isp, { fuel: caps.fuel, oxidizer: caps.oxidizer }, 1);
+    const needed = (cost.resources?.fuel ?? 0) + (cost.resources?.oxidizer ?? 0);
+    const runs = perRun > 0 ? Math.ceil(needed / perRun) : Infinity;
+    console.log(`  ${route.id}: ${cost.funds.toLocaleString()} funds`
+      + `${needed > 0 ? ` + ${Math.round(needed)} kg of propellant` : ''}`);
+    console.log(`  a tier 4 winner ends the tier on ${endFunds.toLocaleString()} funds`);
+    console.log(`  one full level-1 tank farm sends ${Math.round(perRun)} kg -> ${runs} manual run(s) to afford it`);
+    console.log(`  result: ${runs <= 6 ? 'PASS' : 'CHECK'} -- "a handful of hauls" is 6 or fewer`);
+  }
+}

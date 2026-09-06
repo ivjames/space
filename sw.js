@@ -37,6 +37,7 @@ const PRECACHE_URLS = [
   'js/core/moon.js',
   'js/core/clock.js',
   'js/core/base.js',
+  'js/core/haul.js',
   'js/core/tree.js',
   'js/core/economy.js',
   'js/core/contracts.js',

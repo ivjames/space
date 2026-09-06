@@ -1173,7 +1173,14 @@ test('every tier 2/3 mission that needs a turn (downrange, orbit, rendezvous or 
   // An altitude requirement is flown vertical whatever the profile
   // (orbit-apogee included: js/data/missions.js's HARDWARE GATE note), so
   // only the shapes that need sideways velocity are in this set.
-  const needsTurn = missions.filter((m) => m.tier >= 2 && m.requirement.altitude === undefined);
+  // A HAUL IS NOT IN THIS SET, and not because it is exempt: it never leaves
+  // the pad. js/core/haul.js resolves it analytically off a lunar surface,
+  // `pitchProgram` is never consulted, and resolveLaunch throws if it is ever
+  // handed one. So the filter is "flown from the pad, and needs sideways
+  // velocity" rather than "not an altitude requirement".
+  const needsTurn = missions.filter((m) => m.tier >= 2
+    && m.requirement.altitude === undefined
+    && m.requirement.haul === undefined);
   assert.ok(needsTurn.length >= 9, 'expected the tier 2 downrange/orbit rungs plus all of tier 3');
   for (const m of needsTurn) {
     const closure = prerequisiteClosure(requiredNodeIds(m));
@@ -1800,12 +1807,25 @@ const moonMissions = tier4Missions.filter((m) => m.requirement.moon !== undefine
 // same price, and they are ordered by site rather than by depth. Asserting
 // "payouts escalate" or "gates climb" across a set that includes them would
 // be asserting something that is not true and should not be.
-const lunarMissions = moonMissions.filter((m) => m.requirement.moon.profile !== 'survey');
+// The FLIGHT LADDER is the five rungs the tier is scored on, by id: phase 3b
+// adds lunar missions that are not rungs of it (a survey per site, a base
+// landing per site, the depot), and asserting "payouts escalate" or "gates
+// climb" across those would be asserting something that is not true and
+// should not be. They are checked on their own terms below.
+const LADDER_IDS = ['moon-flyby', 'moon-orbit', 'moon-land', 'moon-return'];
+const lunarMissions = LADDER_IDS.map((id) => moonMissions.find((m) => m.id === id));
 const surveyMissions = moonMissions.filter((m) => m.requirement.moon.profile === 'survey');
+const economyMissions = tier4Missions.filter((m) => !LADDER_IDS.includes(m.id)
+  && m.id !== 'relay' && m.requirement.moon?.profile !== 'survey');
 
-test('tier 4 nodes exist: 12 to 14 of them, across all four branches', () => {
+test('tier 4 nodes exist: 12 to 20 of them, across all four branches', () => {
+  // The band was 12-14 for the flight tier. Phases 3b and 4 add to the SAME
+  // tier rather than opening a new one -- they add no tier goal and no tier
+  // number (ARCHITECTURE.md) -- so the tanker, its qualification, the depot
+  // fitting and the three-step automation ladder land here and the band moves
+  // with them.
   assert.ok(
-    tier4Nodes.length >= 12 && tier4Nodes.length <= 14,
+    tier4Nodes.length >= 12 && tier4Nodes.length <= 20,
     `got ${tier4Nodes.length} tier 4 nodes`,
   );
   const branchesSeen = new Set(tier4Nodes.map((n) => n.branch));
@@ -1886,16 +1906,21 @@ test('every addStage node in the tree is a structure node, so the stage order st
   assert.equal(vehicle.stages.length, 5, 'the full tree is a five-stage stack: booster, second, third, departure, ascent');
 });
 
-const REQUIREMENT_SHAPES_4 = ['altitude', 'downrange', 'orbit', 'rendezvous', 'dock', 'moon'];
+const REQUIREMENT_SHAPES_4 = ['altitude', 'downrange', 'orbit', 'rendezvous', 'dock', 'moon', 'haul'];
 
 test('every tier 4 mission has exactly one of the six requirement shapes', () => {
   // Five flight rungs plus one survey per site (phase 3b, generated from
   // js/data/sites.js). Pinned against SITES.length rather than against 4, so
   // a fifth site adds a fifth contract without an edit here -- which is the
   // whole reason the survey templates are generated rather than written out.
+  // Five flight rungs, the depot, and three per site: a survey, a base
+  // landing and a cargo run (phase 3b, all generated from js/data/sites.js).
+  // Pinned against SITES.length rather than a literal, so a fifth site adds
+  // its three contracts without an edit here -- which is the whole reason
+  // those templates are generated rather than written out.
   assert.equal(
-    tier4Missions.length, 5 + SITES.length,
-    `expected 5 flight rungs + ${SITES.length} surveys, got ${tier4Missions.length}`,
+    tier4Missions.length, 6 + 3 * SITES.length,
+    `expected 5 flight rungs + a depot + 3 per site, got ${tier4Missions.length}`,
   );
   for (const m of tier4Missions) {
     const shapes = REQUIREMENT_SHAPES_4.filter((k) => m.requirement[k] !== undefined);
@@ -1904,9 +1929,33 @@ test('every tier 4 mission has exactly one of the six requirement shapes', () =>
 });
 
 test('the tier 4 ladder matches ARCHITECTURE.md exactly: relay, moon-flyby, moon-orbit, moon-land, moon-return', () => {
-  const flight = tier4Missions.filter((m) => m.requirement.moon?.profile !== 'survey');
-  assert.deepEqual(flight.map((m) => m.id), ['relay', 'moon-flyby', 'moon-orbit', 'moon-land', 'moon-return']);
+  const flight = ['relay', ...LADDER_IDS];
+  for (const id of flight) assert.ok(missions.find((m) => m.id === id), `${id} is missing`);
   assert.deepEqual(lunarMissions.map((m) => m.requirement.moon.profile), ['flyby', 'orbit', 'land', 'return']);
+});
+
+// The economy templates, phase 3b. They share the tier but not the ladder, and
+// what has to be true of them is that they cannot be offered before the thing
+// they depend on exists.
+test('every economy contract gates on the state that makes it mean anything', () => {
+  for (const m of economyMissions) {
+    if (m.requirement.haul !== undefined) {
+      assert.equal(m.requiresBase, m.requirement.haul.site, `${m.id} needs a base to haul from`);
+      assert.equal(m.requiresObject, 'depot', `${m.id} needs a depot to haul to`);
+      assert.equal(m.payout, 0, `${m.id} pays funds; a cargo run that also paid a contract is a resource with a detour`);
+      continue;
+    }
+    if (m.id === 'depot-deploy') {
+      assert.equal(m.deploys.kind, 'depot');
+      assert.equal(m.deploys.body, 'moon', 'a lunar depot must not be recorded as orbiting the planet');
+      assert.ok(m.unique, 'a second depot cannot be contracted for while one exists');
+      continue;
+    }
+    // A base landing.
+    assert.equal(m.requiresSurveyed, m.requirement.moon.site,
+      `${m.id} would let a player build on ground they have never looked at`);
+    assert.equal(m.requiresNoBase, m.requirement.moon.site);
+  }
 });
 
 // The survey rungs, phase 3b. One per site, in sites.js's own order, each
@@ -1971,6 +2020,15 @@ test('relay is flyable by a tier 3 winner: its periapsis never exceeds core\'s, 
 test('tier 4 mission payouts are well above tier 3\'s', () => {
   const maxTier3Payout = Math.max(...tier3Missions.map((m) => m.payout));
   for (const m of tier4Missions) {
+    // A CARGO RUN IS NOT PAID IN FUNDS AT ALL, and that is the design rather
+    // than a gap in it: it moves propellant from a surface base to a depot,
+    // and a cargo run that ALSO paid a contract would be exactly the
+    // "resource that just converts to funds" DESIGN.md §15 excludes, with a
+    // launch attached. What it pays is the delivery (js/core/haul.js).
+    if (m.requirement.haul !== undefined) {
+      assert.equal(m.payout, 0, `${m.id} should pay in cargo, not funds`);
+      continue;
+    }
     assert.ok(
       m.payout > maxTier3Payout,
       `${m.id}'s payout ${m.payout} should exceed tier 3's max payout ${maxTier3Payout}`,
@@ -2130,6 +2188,10 @@ test('every tier 4 mission is reachable by the full tree (simulated)', () => {
   const vehicle = buildVehicle(baseVehicle, collectEffects(fullTree, { owned: fullOwned }));
   const metrics = bestMetricsOverTurns(vehicle, 1);
   for (const m of tier4Missions) {
+    // A haul is not flown by resolveLaunch at all (js/core/haul.js), so
+    // "reachable" means something else for it and is checked in
+    // test/haul.test.js: the tree's tanker must deliver more than it burns.
+    if (m.requirement.haul !== undefined) continue;
     if (m.requirement.moon === undefined) {
       assert.ok(missionMetBy(m, metrics), `full tree does not reach ${m.id} (${JSON.stringify(m.requirement)})`);
       continue;

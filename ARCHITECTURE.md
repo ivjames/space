@@ -2071,10 +2071,12 @@ much cargo per unit of propellant it burns, at 15% dry mass:
 
 So a hypergolic tanker *loses* propellant on every trip and a storable one
 breaks even inside the noise. Hauling pays only if the tanker burns what the
-processor makes — which means **the processor is a prerequisite of the
-transport node, not its sibling**, and the first tanker the tree sells must be
-cryogenic. That is not a balance knob; it is the ascent rung and the rocket
-equation, and `balance.mjs` asserts it rather than trusting it. A 4 t run at
+processor makes — so **the one tanker the tree sells is hydrolox** (`struct-16`
+sets `haulIsp` to 450), which is exactly what the processor makes out of the
+site's water: the tanker burns the thing it is there to carry, and that is what
+closes the chain. That is not a balance knob; it is the ascent rung and the
+rocket equation, and the tests assert the ratio for every tanker the tree can
+sell rather than trusting it. A 4 t run at
 isp 450 burns 2 441 kg to deliver 4 000, netting **+1 559 kg** at the depot; at
 isp 320 it nets +230 kg, which is a chore that pays nothing.
 

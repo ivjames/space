@@ -3,6 +3,10 @@
 import { collectEffects } from './tree.js';
 
 import { phaseFor } from './orbit.js';
+// base.js is a leaf of the economy the way orbit.js is a leaf of the flight
+// model, and `newBase` is a two-field literal rather than any physics, so the
+// static import that `tierGoalMet` could not take on moon.js is fine here.
+import { newBase } from './base.js';
 
 // newGame(seed) -> State
 // Starting funds are 0: launching is free in phase 0 (the floor contract
@@ -276,6 +280,24 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
     ? (mission.requirement.moon.site ?? null)
     : null;
 
+  // A SUCCESSFUL LANDING AT A NAMED SITE PLANTS A BASE. Same shape as the
+  // survey above and for the same reason: the resolver knows nothing about
+  // sites, so the fact that this flight was a base landing is read off the
+  // mission and the fact that it worked off the outcome.
+  //
+  // The base arrives EMPTY — no equipment, no store. What lands is the site
+  // itself becoming a place the player owns; the five pieces of equipment are
+  // bought after, the first in funds and the rest in metals (js/core/base.js).
+  // Landing a fully-built base would make the equipment ladder a purchase
+  // rather than a project, and DESIGN.md §8's whole metals payoff is that the
+  // base grows itself.
+  const foundedSite = outcome.success
+    && mission.requirement?.moon?.profile === 'land'
+    && mission.requirement.moon.site
+    && !(state.bases ?? {})[mission.requirement.moon.site]
+    ? mission.requirement.moon.site
+    : null;
+
   const entry = {
     tier,
     missionId: mission.id,
@@ -356,6 +378,54 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
     ? { ...(state.sites ?? {}), [surveyedSite]: { surveyed: true } }
     : (state.sites ?? {});
 
+  // A HAUL MOVES THINGS, AND EVERY ONE OF THEM MOVES HERE (phase 3b).
+  // js/core/haul.js resolves what the tanker did; this is the only place that
+  // acts on it, so the three sides of the trade cannot get out of step:
+  //
+  //   the base   loses `drawn` — the cargo AND the propellant burned lifting
+  //              it — whether the tanker arrived or not. The tanker lit and
+  //              left either way, which is what makes a failed haul a real
+  //              cost and the reliability node worth buying.
+  //   the ledger gains `delivered`, and ONLY on success. state.resources is
+  //              what has reached orbit and can be spent on the tree, which
+  //              is the whole reason it is separate from the base's own store
+  //              (js/core/base.js): a resource-gated node means "landed,
+  //              built, produced and hauled", not "landed".
+  //   the depot  gains the same `delivered`, so its store is what a refuel
+  //              can draw on later (phase 4).
+  //
+  // A haul with no `drawn` (no tanker, no transport equipment, tanks too
+  // empty to fill one) moved nothing and is left alone: it is advice printed
+  // on the result screen, not a transaction.
+  let bases = state.bases ?? {};
+  if (foundedSite) bases = { ...bases, [foundedSite]: newBase() };
+  let resources = state.resources;
+  const haul = outcome.haul;
+  const haulSite = mission?.requirement?.haul?.site ?? null;
+  if (haul && haul.drawn && haulSite && bases[haulSite]) {
+    const from = bases[haulSite];
+    const store = { ...from.store };
+    for (const [res, amount] of Object.entries(haul.drawn)) {
+      store[res] = Math.max(0, (store[res] ?? 0) - amount);
+    }
+    bases = { ...bases, [haulSite]: { ...from, store } };
+
+    if (outcome.success && haul.delivered) {
+      resources = { ...resources };
+      for (const [res, amount] of Object.entries(haul.delivered)) {
+        resources[res] = (resources[res] ?? 0) + amount;
+      }
+      objects = objects.map((obj) => {
+        if (obj.id !== haul.to || !obj.store) return obj;
+        const next = { ...obj.store };
+        for (const [res, amount] of Object.entries(haul.delivered)) {
+          next[res] = (next[res] ?? 0) + amount;
+        }
+        return { ...obj, store: next };
+      });
+    }
+  }
+
   return {
     ...state,
     launches,
@@ -363,6 +433,8 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
     history,
     objects,
     sites,
+    bases,
+    resources,
     draws: state.draws + draws,
   };
 }

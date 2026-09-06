@@ -15,6 +15,11 @@ import {
   TURN_END_HARD,
 } from '../core/resolver.js';
 import { LUNAR_STEPS } from '../core/moon.js';
+import { resolveHaul } from '../core/haul.js';
+import {
+  EQUIPMENT, RESOURCES, rates, capacity, powerBalance, buildCost,
+} from '../core/base.js';
+import { SITES } from '../data/sites.js';
 import { totalDeltaV, G0 } from '../core/vehicle.js';
 import {
   recordLaunch, tierGoalMet, deriveVehicle, advanceTier, findTarget,
@@ -375,6 +380,10 @@ export function mountScreens(ctx) {
     handle: null,
     pending: null,   // { next, delta } committed when playback ends
     delta: null,     // { funds, reputation } shown on the result screen
+    // What the last tick accrued, for the base tab's "while you were away"
+    // block. Set by main.js through `reportAccrual` and cleared once shown,
+    // because it is news rather than state.
+    accrued: null,
   };
 
   // The derived vehicle is a pure function of the owned nodes, and deriving
@@ -417,6 +426,7 @@ export function mountScreens(ctx) {
         <div class="tab ${active === 'contracts' ? 'active' : ''}" data-tab="contracts" role="button" tabindex="0">CONTRACTS</div>
         <div class="tab ${active === 'missions' ? 'active' : ''}" data-tab="missions" role="button" tabindex="0">MISSIONS</div>
         <div class="tab ${active === 'tree' ? 'active' : ''}" data-tab="tree" role="button" tabindex="0">TECH TREE</div>
+        <div class="tab ${active === 'base' ? 'active' : ''}" data-tab="base" role="button" tabindex="0">BASE</div>
       </nav>`;
   }
 
@@ -1008,6 +1018,140 @@ export function mountScreens(ctx) {
       </div>`;
   }
 
+  /**
+   * The BASE tab (phase 3b).
+   *
+   * IT IS EMPTY-WITH-AN-EXPLANATION RATHER THAN HIDDEN before the first
+   * survey. A tab that appears out of nowhere the first time some other
+   * condition is met is a worse surprise than one that has been sitting there
+   * saying what would fill it — and what would fill it is a survey, which is a
+   * contract the player can already see on the board.
+   *
+   * WHAT ACCRUED WHILE YOU WERE AWAY leads the screen when there is something
+   * to say. That is the whole visible payoff of the clock (DESIGN.md §3,
+   * decision 9): a game that accrued silently would have built an idle
+   * mechanic nobody noticed.
+   */
+  function baseHtml() {
+    const state = getState();
+    const known = SITES.filter((site) => (state.sites ?? {})[site.id]?.surveyed);
+    const bases = state.bases ?? {};
+
+    const kg = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} t` : `${Math.round(v)} kg`);
+    const perHour = (v) => (v > 0 ? `+${kg(v)}/h` : v < 0 ? `${kg(v)}/h` : '—');
+
+    let away = '';
+    if (view.accrued) {
+      const { produced, elapsed, full } = view.accrued;
+      const gained = RESOURCES.filter((r) => (produced?.[r] ?? 0) > 0);
+      if (gained.length > 0) {
+        const list = gained.map((r) => `${kg(produced[r])} of ${r}`).join(', ');
+        const fullLine = full.length > 0
+          ? `<p class="hint warn">Storage full: ${escapeHtml(full.join(', '))}. ${
+            vehicle?.autoHaul ? 'The route is running itself.' : 'Fly a cargo run, or buy the routing.'
+          }</p>`
+          : '';
+        away = `<div class="pad away">
+            <h2 class="sub">While you were away</h2>
+            <p class="hint">${escapeHtml(hoursText(elapsed))} of production: ${escapeHtml(list)}.</p>
+            ${fullLine}
+          </div>`;
+      }
+    }
+
+    if (known.length === 0) {
+      return `
+        <div class="screen" data-screen="base">
+          ${tabsHtml('base')}
+          <div class="pad">
+            <h1 class="title">No ground surveyed</h1>
+            <p class="hint">A base sits on a site, and a site is worth building on
+              only once you know what is under it. Survey one from lunar orbit and
+              it will appear here — with how much water and metal it holds, and how
+              good the water is.</p>
+          </div>
+        </div>`;
+    }
+
+    const siteRows = known.map((site) => {
+      const base = bases[site.id];
+      const w = site.resources.water;
+      const m = site.resources.metals;
+      const numbers = `<p class="hint">Water ${w.plentitude.toFixed(2)}× at
+        ${w.quality.toFixed(2)}× quality · metals ${m.plentitude.toFixed(2)}×</p>`;
+      if (!base) {
+        return `<li class="row site">
+            <div class="row-main"><span class="name">${escapeHtml(site.name)}</span>
+              <span class="tag">surveyed</span></div>
+            ${numbers}
+            <p class="hint">No base here yet. A landing contract for this site
+              plants one.</p>
+          </li>`;
+      }
+      const r = rates(base, site);
+      const caps = capacity(base);
+      const power = powerBalance(base);
+      const kit = EQUIPMENT.map((type) => {
+        const level = base.equipment[type] ?? 0;
+        const next = level + 1;
+        const cost = buildCost(type, next);
+        const label = cost === null
+          ? 'max'
+          : cost.funds !== undefined
+            ? `${cost.funds.toLocaleString()} funds`
+            : `${Math.round(cost.metals).toLocaleString()} metals`;
+        const affordable = cost !== null && (cost.funds !== undefined
+          ? state.funds >= cost.funds
+          : (base.store.metals ?? 0) >= cost.metals);
+        return `<li class="kit ${affordable ? '' : 'locked'}">
+            <span class="name">${type}</span>
+            <span class="level">${level}</span>
+            ${cost === null ? '<span class="cost">max</span>'
+    : `<button class="btn-small" data-build="${escapeHtml(site.id)}:${type}"
+                   ${affordable ? '' : 'disabled'}>${escapeHtml(label)}</button>`}
+          </li>`;
+      }).join('');
+      const tanks = RESOURCES.map((res) => {
+        const held = base.store[res] ?? 0;
+        const cap = caps[res] ?? 0;
+        const pct = cap > 0 ? Math.min(100, (held / cap) * 100) : 0;
+        const rate = res === 'water' ? r.water : r[res];
+        return `<li class="tank ${cap > 0 && held >= cap - 1e-6 ? 'full' : ''}">
+            <span class="name">${res}</span>
+            <span class="bar"><i style="width:${pct.toFixed(1)}%"></i></span>
+            <span class="num">${kg(held)} / ${kg(cap)}</span>
+            <span class="num">${perHour(rate)}</span>
+          </li>`;
+      }).join('');
+      return `<li class="row site built">
+          <div class="row-main"><span class="name">${escapeHtml(site.name)}</span></div>
+          ${numbers}
+          <p class="hint ${power.ratio < 1 ? 'warn' : ''}">Power ${power.supply} supplied,
+            ${power.draw} drawn${power.ratio < 1 ? ` — everything runs at ${Math.round(power.ratio * 100)}%` : ''}</p>
+          <ul class="kit-list">${kit}</ul>
+          <ul class="tank-list">${tanks}</ul>
+        </li>`;
+    }).join('');
+
+    return `
+      <div class="screen" data-screen="base">
+        ${tabsHtml('base')}
+        ${away}
+        <div class="pad">
+          <h1 class="title">Bases</h1>
+          <ul class="list">${siteRows}</ul>
+        </div>
+      </div>`;
+  }
+
+  /** "3 hours" / "40 minutes" — how long the game was closed for. */
+  function hoursText(ms) {
+    const hours = ms / 3600000;
+    if (hours >= 1.5) return `${Math.round(hours)} hours`;
+    const minutes = Math.round(ms / 60000);
+    return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  }
+
   // ---- actions bar -------------------------------------------------------
 
   function actionsHtml() {
@@ -1064,6 +1208,7 @@ export function mountScreens(ctx) {
         screenEl.innerHTML = treeHtml();
         mountShop(screenEl.querySelector('[data-shop]'), { tree, getState, update });
         break;
+      case 'base': screenEl.innerHTML = baseHtml(); break;
       default: screenEl.innerHTML = '';
     }
     lastRendered = view.name;
@@ -1167,17 +1312,46 @@ export function mountScreens(ctx) {
     // reload replays identically (ARCHITECTURE.md §rng).
     const rng = makeRng(state.seed, state.draws);
     const before = rng.draws;
-    // `turn` is ignored by the resolver unless vehicle.guidance >= 1, which
-    // is exactly why the loadout screen hides the slider in that case.
-    const outcome = resolveLaunch(
-      vehicle,
-      mission,
-      // Altitude contracts fly vertical whatever the slider says (the loadout
-      // does not offer it for them).
-      { fuelFraction: view.fuelFraction, turn: view.turn, window: view.window, vertical: mission.requirement.altitude !== undefined },
-      rng,
-      target ? { target } : {},
-    );
+
+    // A HAUL IS RESOLVED SOMEWHERE ELSE, and this is the only branch it needs
+    // (phase 3b). It starts on the lunar surface, which resolveLaunch's one
+    // atmosphere and one planet-centred frame cannot express — resolveLaunch
+    // throws if handed one — so js/core/haul.js resolves it instead. The FLOW
+    // either side of this line is identical, which is what DESIGN.md §8 means
+    // by "it uses the same launch flow as a mission": same board, same
+    // playback, same result screen, same launch count.
+    let outcome;
+    if (mission.requirement.haul !== undefined) {
+      const site = mission.requirement.haul.site;
+      const base = (state.bases ?? {})[site];
+      const depot = findTarget(state, mission.requirement.haul.to);
+      if (!base || !depot) {
+        view.error = 'That cargo run has no base or no depot any more — pick another.';
+        render();
+        return;
+      }
+      outcome = resolveHaul(vehicle, base, depot, rng);
+    } else {
+      // `turn` is ignored by the resolver unless vehicle.guidance >= 1, which
+      // is exactly why the loadout screen hides the slider in that case.
+      outcome = resolveLaunch(
+        vehicle,
+        mission,
+        // Altitude contracts fly vertical whatever the slider says (the
+        // loadout does not offer it for them).
+        { fuelFraction: view.fuelFraction, turn: view.turn, window: view.window, vertical: mission.requirement.altitude !== undefined },
+        rng,
+        {
+          ...(target ? { target } : {}),
+          // The depot a lunar flight may refuel at (phase 4). Handed in rather
+          // than looked up by the resolver, which knows nothing about
+          // state.objects — the same rule the rendezvous target follows.
+          ...(mission.requirement.moon !== undefined
+            ? { depot: findTarget(state, 'depot') }
+            : {}),
+        },
+      );
+    }
 
     let next = recordLaunch(state, mission, outcome, rng.draws - before);
     const afterOutcome = applyOutcome(next, mission, outcome);
@@ -1252,6 +1426,20 @@ export function mountScreens(ctx) {
         onDone: flightDone,
       });
     };
+
+    // A HAUL HAS NO ASCENT TO PLAY. There is no pad, no sprite, no altitude
+    // trace — js/core/haul.js resolves one burn and a roll — so the flight
+    // view runs the ticker and stops. The FLOW is the same (the outcome is
+    // still committed on `flightDone`, so the HUD does not announce the
+    // delivery before the player has read it); what is missing is a picture,
+    // and inventing one would mean drawing a launch that did not happen.
+    if (mission.requirement.haul !== undefined) {
+      if (canvas) canvas.hidden = true;
+      for (const ev of outcome.events ?? []) appendTicker(ev);
+      appendTicker({ t: 2, kind: 'end', text: outcome.readout });
+      flightDone();
+      return;
+    }
 
     view.handle = playOutcome(canvas, outcome, {
       // The whole requirement, not just an altitude: phase 1 missions ask for
@@ -1336,12 +1524,60 @@ export function mountScreens(ctx) {
     if (contract) {
       view.contractId = contract.getAttribute('data-contract');
       render();
+      return;
     }
+    const build = ev.target.closest?.('[data-build]');
+    if (build) buildEquipment(build.getAttribute('data-build'));
+  }
+
+  /**
+   * Buy one level of one piece of equipment at one base.
+   *
+   * TWO PURSES, AND WHICH ONE IS SPENT IS NOT A CHOICE (js/core/base.js):
+   * level 1 of anything is a payload and costs funds; every level after it is
+   * built on site out of the base's own metals. So a funds cost is debited
+   * through economy.js's ledger and a metals cost comes straight out of the
+   * base's store — metals are never hauled and never reach state.resources,
+   * which is what makes them the thing a base grows itself with.
+   */
+  function buildEquipment(spec) {
+    const [siteId, type] = String(spec).split(':');
+    const state = getState();
+    const base = (state.bases ?? {})[siteId];
+    if (!base) return;
+    const next = (base.equipment[type] ?? 0) + 1;
+    const cost = buildCost(type, next);
+    if (!cost) return;
+
+    if (cost.funds !== undefined) {
+      if (state.funds < cost.funds) return;
+      update({
+        ...state,
+        funds: state.funds - cost.funds,
+        bases: {
+          ...state.bases,
+          [siteId]: { ...base, equipment: { ...base.equipment, [type]: next } },
+        },
+      });
+      return;
+    }
+    if ((base.store.metals ?? 0) < cost.metals) return;
+    update({
+      ...state,
+      bases: {
+        ...state.bases,
+        [siteId]: {
+          ...base,
+          equipment: { ...base.equipment, [type]: next },
+          store: { ...base.store, metals: base.store.metals - cost.metals },
+        },
+      },
+    });
   }
 
   screenEl.addEventListener('click', onScreenActivate);
   screenEl.addEventListener('keydown', (ev) => {
-    if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.closest?.('[data-tab],[data-contract]')) {
+    if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.closest?.('[data-tab],[data-contract],[data-build]')) {
       ev.preventDefault();
       onScreenActivate(ev);
     }
@@ -1414,5 +1650,18 @@ export function mountScreens(ctx) {
   // matters.
   show(view.name);
 
-  return { render, show, view };
+  /**
+   * Tell the base tab what the last production tick produced (phase 3b).
+   *
+   * News, not state: main.js has already committed the accrual to the save by
+   * the time this is called, and what is handed over here is only the summary
+   * the "while you were away" block reads. It is not cleared on read, because
+   * the player may open the base tab twice in a session and the second look
+   * should say the same thing as the first; the next tick replaces it.
+   */
+  function reportAccrual(summary) {
+    view.accrued = summary;
+  }
+
+  return { render, show, view, reportAccrual };
 }
