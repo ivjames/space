@@ -67,9 +67,12 @@ as a phantom second build.)
 
 Not one `index.html`: the game is `index.html` + `css/` + `js/` (ES modules,
 `js/core` pure logic, `js/ui` browser, `js/data` content), a PWA manifest and
-service worker, `test/*.test.js` (`npm test`, Node 22, no install), a browser
-smoke test (`test/e2e`, needs playwright-core), `tools/balance.mjs` which
-audits tier balance against the real resolver, and `tools/gates.mjs` which
+service worker, `test/*.test.js` (`npm test`, Node 22, no install), two browser
+checks in `test/e2e` (both need playwright-core: `npm run e2e` plays the game
+through three tiers, `npm run e2e:base` plants a state and looks at the base
+tab — the one screen the first never reaches), `tools/balance.mjs` which
+audits tier balance against the real resolver and the economy against
+DESIGN.md's four stated requirements, and `tools/gates.mjs` which
 derives every mission's `requiresNode` gate from it (and says `DIFFERS`
 when the data has drifted). `DESIGN.md` is the design;
 `ARCHITECTURE.md` is the module contract. Change the contract there first.

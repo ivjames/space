@@ -1133,12 +1133,29 @@ export function mountScreens(ctx) {
         </li>`;
     }).join('');
 
+    // THE PERMISSION IS ASKED FOR HERE OR NOWHERE. The storage-full
+    // notification (DESIGN.md §8) needs one, and a game that popped the
+    // browser's permission prompt at boot — before the player has a base, a
+    // tank, or any idea what would be notified — is the pattern every user has
+    // learned to dismiss. So it is a button on the screen the notification is
+    // about, it appears only once there is a base to notify about, and a
+    // player who never presses it loses nothing but the notification: the same
+    // warning is on this page.
+    const canAsk = typeof Notification !== 'undefined'
+      && Notification.permission === 'default'
+      && Object.keys(bases).length > 0;
+    const ask = canAsk
+      ? `<p class="hint"><button class="btn-small" data-action="notify">
+           Tell me when storage fills</button></p>`
+      : '';
+
     return `
       <div class="screen" data-screen="base">
         ${tabsHtml('base')}
         ${away}
         <div class="pad">
           <h1 class="title">Bases</h1>
+          ${ask}
           <ul class="list">${siteRows}</ul>
         </div>
       </div>`;
@@ -1527,7 +1544,17 @@ export function mountScreens(ctx) {
       return;
     }
     const build = ev.target.closest?.('[data-build]');
-    if (build) buildEquipment(build.getAttribute('data-build'));
+    if (build) {
+      buildEquipment(build.getAttribute('data-build'));
+      return;
+    }
+    if (ev.target.closest?.('[data-action="notify"]')) {
+      // Best effort, and silent either way: a refusal is an answer, not an
+      // error, and re-asking is what makes a permission prompt hostile.
+      try {
+        Notification.requestPermission().then(() => render(), () => {});
+      } catch { /* no Notification API here */ }
+    }
   }
 
   /**
@@ -1577,7 +1604,7 @@ export function mountScreens(ctx) {
 
   screenEl.addEventListener('click', onScreenActivate);
   screenEl.addEventListener('keydown', (ev) => {
-    if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.closest?.('[data-tab],[data-contract],[data-build]')) {
+    if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.closest?.('[data-tab],[data-contract],[data-build],[data-action="notify"]')) {
       ev.preventDefault();
       onScreenActivate(ev);
     }

@@ -2119,6 +2119,13 @@ pinning that a template's `profile` agrees with its requirement.
   if they do not. Capacitor: Local Notifications, the one native plugin
   DESIGN.md §13 identifies. It is never a badge on a timer the player is
   waiting out.
+- **The permission is asked for on the base tab or nowhere.** A button that
+  appears only once there is a base to notify about, on the screen the
+  notification is about. Asking at boot — before the player has a base, a tank,
+  or any idea what would be notified — is the pattern every user has learned to
+  dismiss, and a refusal is an answer rather than a thing to ask again. A
+  player who never presses it loses only the notification: the same warning is
+  on the page.
 
 ## Balance, phase 3b
 
@@ -2140,6 +2147,27 @@ DESIGN.md states as requirements rather than as hopes:
 4. **Metals pay for the next piece of equipment.** The metals a site yields at
    level 1 cover the level 2 build cost in a bounded number of days, or the
    metals branch is a resource that only gates.
+
+**Measured, once 3b was built.** Every one of the four passes, and two of them
+moved a number to get there:
+
+- **Hauling pays.** The one tanker the tree sells (`struct-16`, isp 450) burns
+  **2 441 kg to deliver 4 000**, a ratio of **1.64** and a net of **+1 559 kg**
+  at the depot. Nothing in the tree can sell a losing tanker; the test walks
+  every `haulIsp` effect rather than the one that exists today.
+- **Storage binds before the clamp, with margin.** The slowest propellant tank
+  is far-side-flats at level 1: **21.4 hours** against a 24-hour clamp. It was
+  **23.8 hours** at the first sizing, which passed and would have stopped
+  passing on any change to a rate, a site or the clamp — so `STORE_PER_LEVEL`
+  came down from 400 to 360 and the metals share went up to keep the stockpile
+  clearing the dearest next-level cost. A margin a tool reports is worth more
+  than a pass it does not.
+- **Metals pay quickly enough to matter.** The cheapest level 2 (storage, 350
+  metals) takes **0.5 days** at the metal-rich site, **0.8** at the middling
+  one and **1.8** at the poorest. The site choice is visible in the number,
+  which is what the survey is for.
+- **The metals stockpile holds the next upgrade at every level**, which is the
+  soft-lock rule rather than a balance one.
 
 ## Deferred out of 3b
 
@@ -2223,6 +2251,26 @@ the other side and stays true as written.
    the tier below the 15-launch floor.
 3. **No resource-gated node is reachable by funds alone**, checked by
    enumeration over the tree — the §8 rule, asserted.
+
+**Measured, once phase 4 was built.**
+
+- **A refuel is worth far more than the haul that filled it.** One tankful into
+  the full tree's top stage — **70 kg into a 14 kg stage at isp 467** — is
+  **8 201 m/s**, against the 43 kg of base production the hauls burned to put
+  it there. That is not a balance error, it is the rocket equation on a stage
+  whose dry mass is a tenth of its propellant, and it is exactly why
+  `TANK_LIMIT` caps the transfer at one tankful rather than at what the depot
+  holds. What it costs is the long way round: a survey, a base landing, five
+  equipment purchases, a depot, several hauls and two tree nodes, against the
+  two nodes the direct route to the same goal needs.
+- **Auto-transport is in reach.** `guide-8` is 150 000 funds and 900 kg of
+  propellant; a tier 4 winner ends the tier on **76 800 funds**, and one full
+  level-1 tank farm sends 248 kg, so it is **four manual runs** and a few more
+  contracts away. "A handful of hauls" is met.
+- **The greedy tier 4 player is unchanged at 18 launches**, which is the result
+  that matters most: 3b and 4 add to the tier without disturbing the ladder it
+  is scored on. None of the economy templates is on the critical path to the
+  tier goal, and the simulation confirms the board still routes around them.
 
 
 # Phase 5 — tier 5, the neighbours

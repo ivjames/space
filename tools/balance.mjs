@@ -1428,3 +1428,32 @@ console.log('\n=== Economy: auto-transport is in reach (DESIGN.md §8) ===');
     console.log(`  result: ${runs <= 6 ? 'PASS' : 'CHECK'} -- "a handful of hauls" is 6 or fewer`);
   }
 }
+
+console.log('\n=== Economy: no resource-gated node is reachable by funds alone ===');
+{
+  // DESIGN.md §8: a resource-gated node costs something NO CONTRACT PAYS OUT,
+  // so only landings unlock it. The check is on the resource, not the node: if
+  // any mission template ever paid out fuel, oxidizer, water or metals, every
+  // node priced in that resource would quietly become a funds node with extra
+  // steps -- "a resource that just sells for funds is funds with a detour",
+  // which §15 excludes by name.
+  const paid = new Set();
+  for (const m of missions) {
+    for (const key of Object.keys(m.payoutResources ?? {})) paid.add(key);
+  }
+  const gated = nodes.filter((n) => n.cost?.resources
+    && Object.values(n.cost.resources).some((v) => v > 0));
+  if (gated.length === 0) {
+    console.log('  no resource-gated nodes in the tree');
+  } else {
+    let bad = 0;
+    for (const n of gated) {
+      const priced = Object.entries(n.cost.resources).filter(([, v]) => v > 0);
+      const leak = priced.filter(([res]) => paid.has(res));
+      console.log(`  ${n.id.padEnd(12)} ${priced.map(([r, v]) => `${v} ${r}`).join(' + ')}`
+        + `${leak.length ? `  <- PAID BY A CONTRACT: ${leak.map(([r]) => r).join(', ')}` : ''}`);
+      if (leak.length) bad += 1;
+    }
+    console.log(`  ${gated.length} resource-gated node(s); result: ${bad === 0 ? 'PASS' : 'FAIL'}`);
+  }
+}

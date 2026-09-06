@@ -112,7 +112,7 @@ export const OXIDIZER_FRACTION = 1 - FUEL_FRACTION;
  * Storage per storage level, kg, as the WATER tank's size. Every other tank is
  * this scaled by its share below.
  */
-export const STORE_PER_LEVEL = 400;
+export const STORE_PER_LEVEL = 360;
 
 /**
  * Tank sizes, as a share of STORE_PER_LEVEL.
@@ -145,12 +145,20 @@ export const STORE_PER_LEVEL = 400;
  * physically: metals are stockpiled in a yard, not held in a cryogenic
  * pressure vessel, so a metals "tank" being the big one on the pad is what
  * a real base would look like.
+ *
+ * THE TWO NUMBERS ARE SIZED AGAINST EACH OTHER AND AGAINST THE CLAMP, and
+ * `tools/balance.mjs` reports the margin rather than only a pass: at
+ * STORE_PER_LEVEL 400 the slowest propellant tank (far-side-flats, level 1)
+ * filled in 23.8 hours against a 24-hour clamp, which passed and would have
+ * stopped passing on any change to a rate, a site or the clamp. 360 puts it
+ * at 21.4 hours, and the metals share moves with it so the stockpile still
+ * clears the dearest next-level cost.
  */
 export const TANK_SHARE = {
   water: 1,
   fuel: FUEL_FRACTION,
   oxidizer: OXIDIZER_FRACTION,
-  metals: 2.5,
+  metals: 2.8,
 };
 
 /** The four resources a base can hold, in ledger order. */

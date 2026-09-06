@@ -7,7 +7,10 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "e2e": "node test/e2e/smoke.mjs",
+    "e2e:base": "node test/e2e/base-tab.mjs",
     "serve": "python3 -m http.server 8080"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  }
 }
