@@ -45,6 +45,8 @@
 // flyable with struct-1 and the first three engine upgrades, 6 200 funds
 // against the gate's 2 600, which the gate does not admit); the ladder tab
 // names the purchase, so the path is still visible.
+import { SITES } from './sites.js';
+
 export const missions = [
   {
     id: 'sound-1',
@@ -757,6 +759,60 @@ export const missions = [
     minReputation: 90,
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Phase 3b: the survey rungs.
+//
+// GENERATED FROM js/data/sites.js RATHER THAN HAND-WRITTEN, which is the one
+// place in this file that happens and is worth justifying. Every other
+// template here is hand-authored because every other template is a different
+// mission — a different requirement, a different gate, a different payout, and
+// a paragraph above saying why. The survey rungs are not: there is exactly one
+// survey mission, flown once per site, and the only thing that differs between
+// them is which site it names. Writing four near-identical literals would make
+// sites.js and missions.js two places a site has to be added, and the second
+// one is the one nobody remembers.
+//
+// The mapping is total and deterministic: one template per site, in sites.js's
+// own order, so the board's draw order does not depend on how this file is
+// read. test/data.test.js pins the count against SITES.length, so a fifth site
+// gets a fifth contract without an edit here.
+//
+// GATES. The same hardware a `moon-orbit` flight needs, because a survey IS
+// that flight (js/core/resolver.js's LUNAR_PROFILES: `survey` and `orbit` fly
+// the same two rungs). What differs is the reputation gate, set below
+// moon-orbit's: the survey is the cheaper, earlier reason to fly to lunar
+// orbit, and gating it above the mission it is a variant of would mean the
+// player unlocked the survey after they no longer needed a reason.
+//
+// `requiresUnsurveyed` closes the offer once the site is mapped
+// (js/core/contracts.js). It is the only gate in the game that closes rather
+// than opens, and a survey needs it because — unlike a landing or a deploy —
+// it leaves nothing in `state.objects` for the existing gates to notice.
+//
+// PAYOUT. 60 000: above tier 3's best (55 000), below relay's 65 000, and well
+// below moon-orbit's 110 000. The floor is not a style rule — a tier 4
+// contract flown on a tier 4 vehicle that paid less than a tier 3 contract
+// would be strictly worse to fly than the tier the player has left, and
+// test/data.test.js holds the whole tier to it. The ceiling is the design: a
+// survey is a real contract and pays like one, but the thing the player is
+// actually buying is the site's numbers, and pricing it level with the orbit
+// mission would make the information free.
+const surveyMissions = SITES.map((site) => ({
+  id: `survey-${site.id}`,
+  tier: 4,
+  name: `Survey: ${site.name}`,
+  profile: 'survey',
+  requirement: { moon: { profile: 'survey', site: site.id } },
+  requiresNode: ['struct-11', 'prop-11', 'guide-1'],
+  requiresUnsurveyed: site.id,
+  payout: 60000,
+  repGain: 7,
+  repLoss: 4,
+  minReputation: 50,
+}));
+
+missions.push(...surveyMissions);
 
 export const tierGoals = {
   1: { requirement: { altitude: 100000 }, name: 'Reach 100 km' },

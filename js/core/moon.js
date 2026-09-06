@@ -153,6 +153,26 @@ export const LUNAR_STEPS = ['tli', 'loi', 'descent', 'ascent', 'tei'];
  * @returns {{ tli: number, loi: number, descent: number, ascent: number,
  *             tei: number, tof: number }} m/s, and tof in seconds
  */
+/**
+ * Delta-v to get off the moon's surface and into the low lunar orbit the
+ * ladder is priced against, m/s — circular speed there times LANDING_LOSS.
+ *
+ * Exported in its own right, rather than only reachable as `lunarLadder(...)
+ * .ascent`, because phase 3b's cargo haul (js/core/haul.js) climbs exactly
+ * this rung and nothing else: a tanker leaving a surface base for an orbital
+ * depot makes one burn, and it is this one. `lunarLadder` calls this too, so
+ * the mission that lands and the haul that follows it cannot come to disagree
+ * about what leaving the moon costs.
+ *
+ * It takes no arguments because it depends on none: unlike `tli`, which is
+ * charged from whatever parking orbit the ascent achieved, the climb from the
+ * surface starts and ends at fixed radii.
+ */
+export function ascentFromSurface() {
+  const rLLO = R_MOON + LLO_ALT;
+  return Math.sqrt(MU_MOON / rLLO) * LANDING_LOSS;
+}
+
 export function lunarLadder(parkPeriapsis, parkApoapsis) {
   const zero = { tli: 0, loi: 0, descent: 0, ascent: 0, tei: 0, tof: 0 };
   const rp = Math.min(parkPeriapsis, parkApoapsis);
@@ -180,7 +200,10 @@ export function lunarLadder(parkPeriapsis, parkApoapsis) {
   const loi = Math.sqrt(vInf * vInf + 2 * (MU_MOON / rLLO)) - vCircLunar;
 
   // --- The surface ---------------------------------------------------------
-  const descent = vCircLunar * LANDING_LOSS;
+  // The same rung `ascentFromSurface` exports, called rather than repeated:
+  // the haul climbs it too (js/core/haul.js), and two copies of one number is
+  // how the lander and the tanker would come to disagree about the moon.
+  const descent = ascentFromSurface();
 
   return { tli, loi, descent, ascent: descent, tei: loi, tof };
 }

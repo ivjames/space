@@ -1,5 +1,5 @@
 // New game state, derived vehicle, tier progress. Pure. See
-// ARCHITECTURE.md for the full state/save schema (version 4, phase 3).
+// ARCHITECTURE.md for the full state/save schema (version 5, phase 3b).
 import { collectEffects } from './tree.js';
 
 import { phaseFor } from './orbit.js';
@@ -10,7 +10,7 @@ import { phaseFor } from './orbit.js';
 // very first purchase has to come from a launch.
 //
 // `version` here is the schema a fresh game is BORN at, and must track
-// save.js's SCHEMA_VERSION (4, phase 3) — hardcoded rather than imported to
+// save.js's SCHEMA_VERSION (5, phase 3b) — hardcoded rather than imported to
 // avoid a state.js -> save.js dependency this module didn't have before
 // (the same "duplicated literal" tradeoff phase 0 already made: save.js's
 // own SCHEMA_VERSION constant is the second copy).
@@ -44,9 +44,30 @@ import { phaseFor } from './orbit.js';
 // station core, a docked module, a satellite), independent of `tier` —
 // they persist across a tier advance, which is why advanceTier below does
 // not touch this field.
+//
+// `lastTick`, `sites` and `bases` are new in phase 3b (ARCHITECTURE.md,
+// "Phase 3b — the economy, whole"), and like `objects` they survive a tier
+// advance: a base does not stop producing because the program moved on.
+//
+//   lastTick   ms epoch of the last production accrual, and NULL on a fresh
+//              game. That is the whole reason the field is nullable: 0 is
+//              the epoch, so a fresh game stamped 0 would clamp to
+//              clock.js's ELAPSED_CLAMP and be credited a full day of
+//              production before its first launch. null means "the clock
+//              has not started"; the first tick starts it and pays nothing.
+//   sites      what the player KNOWS, `{ [siteId]: { surveyed: bool } }`.
+//              What is TRUE about a site — its plentitude and quality per
+//              resource — is js/data/sites.js's, is fixed rather than
+//              rolled, and is never persisted. Keeping the two apart is
+//              what makes a survey reveal information the world already
+//              has rather than create it.
+//   bases      what the player has BUILT, `{ [siteId]: { equipment: { ... } } }`.
+//              Separate from `sites` because a site can be surveyed and
+//              unbuilt — the common case, and the whole point of the survey
+//              being a decision rather than a formality.
 export function newGame(seed) {
   return {
-    version: 4,
+    version: 5,
     seed,
     draws: 0,
     funds: 0,
@@ -67,6 +88,9 @@ export function newGame(seed) {
     contracts: [],
     history: [],
     objects: [],
+    lastTick: null,
+    sites: {},
+    bases: {},
   };
 }
 
@@ -177,6 +201,15 @@ function nextObjectId(objects, kind) {
 // on an "orbit >= 160 km" contract sits at 160 km, so every later rendezvous
 // is against a known orbit, not against the luck of one ascent.
 function objectOrbitFrom(outcome, mission) {
+  // A deploy at ANOTHER BODY carries its own orbit (phase 3b): a lunar depot
+  // sits in the low lunar orbit the whole lunar ladder is priced against, and
+  // the flight's planet-centred insertion says nothing about where that is.
+  // There is no "achieved" orbit to prefer here for the same reason the
+  // resolver never reports one at the moon — the lunar leg is analytic.
+  if (mission?.deploys?.orbit) {
+    const { periapsis, apoapsis } = mission.deploys.orbit;
+    return { periapsis, apoapsis: apoapsis ?? periapsis };
+  }
   const design = mission?.requirement?.orbit?.periapsis;
   const achieved = outcome.insertion ? outcome.insertion.periapsis : (outcome.periapsis ?? null);
   const periapsis = typeof design === 'number' && achieved != null && achieved >= design ? design : achieved;
@@ -233,6 +266,16 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
     // through untranslated — see the newGame doc block and tierGoalMet.
     lunarStep: maxOrKeep(state.best.lunarStep ?? -1, outcome.lunar?.reached),
   };
+  // A SUCCESSFUL SURVEY IS WHAT REVEALS A SITE, and this is the only place it
+  // happens. The resolver does not know sites exist (js/core/resolver.js's
+  // LUNAR_PROFILES comment says why), so the fact that this flight was a
+  // survey is read off the MISSION's requirement and the fact that it worked
+  // is read off the outcome. A failed survey reveals nothing: the vehicle
+  // never got to lunar orbit, and the instrument was never pointed.
+  const surveyedSite = outcome.success && mission.requirement?.moon?.profile === 'survey'
+    ? (mission.requirement.moon.site ?? null)
+    : null;
+
   const entry = {
     tier,
     missionId: mission.id,
@@ -252,6 +295,14 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
     // than 0 for the same reason as `best.lunarStep` above: 0 is `tli`, a
     // rung a sounding rocket plainly did not climb.
     lunarStep: outcome.lunar?.reached ?? -1,
+    // Phase 3b. Both are the SITE ID (or the depot id, for a haul) rather than
+    // a boolean, because a history row that says "surveyed" without saying
+    // what is a row the base tab cannot use, and null rather than false for
+    // the same reason `periapsis` is null on a sounding flight: the field is
+    // "which one", and "none" is an absence rather than a value. save.js's
+    // migrations[4] back-fills the same null into older rows.
+    surveyed: surveyedSite,
+    hauled: outcome.haul?.to ?? null,
     readout: outcome.readout,
   };
   const history = [...state.history, entry].slice(-20);
@@ -277,10 +328,33 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
         apoapsis,
         phase: phaseFor(id),
         dockedTo,
+        // WHICH BODY IT ORBITS (phase 3b). 'planet' for everything phases 0
+        // to 3 deploy, which is why it defaults to that and why nothing
+        // already in a save needs migrating: a station core has always
+        // orbited the planet and its record still says so.
+        //
+        // It matters because a lunar depot's periapsis/apoapsis are
+        // altitudes above the MOON, and reading them as planet-centred would
+        // put a depot 100 km above the launch pad. `findTarget` is by KIND,
+        // so a rendezvous mission (which asks for 'core' or 'satellite')
+        // can never be handed one by accident — but the field is what makes
+        // that a fact rather than an accident of the current mission list.
+        body: mission.deploys.body ?? 'planet',
+        // A depot HOLDS something; everything else deployed so far holds
+        // nothing, and null says that rather than an empty bag that reads
+        // as "a depot with nothing in it".
+        store: mission.deploys.store ? { ...mission.deploys.store } : null,
         launchedAt: { tier, launch: launches[tier] },
       },
     ];
   }
+
+  // The site map only ever grows, and a re-survey of a site already known is
+  // a no-op rather than a rewrite: `surveyed` is a fact about the player, not
+  // a timestamp, and there is nothing a second look could add.
+  const sites = surveyedSite
+    ? { ...(state.sites ?? {}), [surveyedSite]: { surveyed: true } }
+    : (state.sites ?? {});
 
   return {
     ...state,
@@ -288,6 +362,7 @@ export function recordLaunch(state, mission, outcome, draws = 0) {
     best,
     history,
     objects,
+    sites,
     draws: state.draws + draws,
   };
 }
@@ -356,7 +431,15 @@ export function advanceTier(state) {
 // true of every state there has ever been — so an unknown profile has to
 // be rejected before the comparison, not by it.
 const LUNAR_STEP_ORDER = ['tli', 'loi', 'descent', 'ascent', 'tei'];
-const PROFILE_STEP = { flyby: 'tli', orbit: 'loi', land: 'descent', return: 'tei' };
+// `survey` maps to the same rung `orbit` does, because it flies the same
+// ladder (js/core/resolver.js's LUNAR_PROFILES). It is not a tier goal today
+// and may never be one, but the map is the resolver's success test mirrored
+// onto `best`, and a profile missing from it is reported as "never met" by the
+// `required < 0` guard below — silently, which is the failure mode this whole
+// comment block exists to warn about.
+const PROFILE_STEP = {
+  flyby: 'tli', orbit: 'loi', survey: 'loi', land: 'descent', return: 'tei',
+};
 
 // An unknown profile falls through to `false` below, deliberately: this
 // whole function ends in `return false`, so an unrecognised requirement

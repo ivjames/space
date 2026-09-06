@@ -41,10 +41,12 @@ function requiredNodes(m) {
 //                                          kind exists (docked or not)
 //   { kind: 'unique', objectKind }         unique: true, and an UNDOCKED
 //                                          object of m.deploys.kind exists
+//   { kind: 'surveyed', site }             requiresUnsurveyed, and that site
+//                                          has already been surveyed
 //
-// Checks run in that order — tier, reputation, node(s), object, unique —
-// and every unmet gate is reported, not just the first, so a player two
-// purchases and a core delivery away from `dock` sees all three.
+// Checks run in that order — tier, reputation, node(s), object, unique,
+// surveyed — and every unmet gate is reported, not just the first, so a
+// player two purchases and a core delivery away from `dock` sees all three.
 //
 // The gates themselves are the tier/reputation gates phase 0/1 had plus
 // phase 2's three object-aware gates (ARCHITECTURE.md, "Persistent objects
@@ -71,6 +73,14 @@ function requiredNodes(m) {
 //     Read off `m.deploys.kind`, since a unique template is always a
 //     deploying one — there is nothing else "one of these already exists"
 //     could mean.
+//   - `requiresUnsurveyed: <siteId>` (phase 3b) — offered only while that
+//     site has NOT been surveyed. The one gate here that closes as the player
+//     progresses rather than opening: a survey contract for a site the player
+//     has already mapped is an offer to pay for something they own, and the
+//     board would keep making it forever because a survey, unlike a landing,
+//     leaves nothing behind for `requiresObject` to notice. It is the same
+//     shape as `unique` — "this has already happened" — against `state.sites`
+//     instead of `state.objects`.
 export function lockReasons(state, m) {
   const reasons = [];
   const tier = state.tier ?? 1;
@@ -92,6 +102,10 @@ export function lockReasons(state, m) {
     if (kind && objects.some((obj) => obj.kind === kind && obj.dockedTo == null)) {
       reasons.push({ kind: 'unique', objectKind: kind });
     }
+  }
+  const sites = state.sites ?? {};
+  if (m.requiresUnsurveyed !== undefined && sites[m.requiresUnsurveyed]?.surveyed) {
+    reasons.push({ kind: 'surveyed', site: m.requiresUnsurveyed });
   }
   return reasons;
 }

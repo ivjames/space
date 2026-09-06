@@ -232,10 +232,23 @@ export const APPROACH_DV = 50;
  * flyby coasts round the moon and home again on the transfer it is already on,
  * and charging it for a burn it does not make would price it as an orbit
  * mission that failed.
+ *
+ * `survey` (phase 3b) FLIES EXACTLY WHAT `orbit` FLIES, and that identity is
+ * the whole of the resolver's part in it. DESIGN.md §8 calls a survey "an
+ * orbital mission profile", so it costs what an orbit costs, is judged on the
+ * capture the way an orbit is, and reaches the same rung — which is also what
+ * gives the orbit tier something to do after it is won, the reason §8 gives
+ * for the profile existing at all. What differs between the two is what the
+ * contract asks for and what the OUTCOME CREDITS (a site's numbers become
+ * known), and neither of those is this module's business: js/core/state.js's
+ * recordLaunch marks the site surveyed, beside where it already raises
+ * best.lunarStep. The resolver stays a function of vehicle, mission and rng
+ * that knows nothing about what the player has learned.
  */
 export const LUNAR_PROFILES = {
   flyby: ['tli'],
   orbit: ['tli', 'loi'],
+  survey: ['tli', 'loi'],
   land: ['tli', 'loi', 'descent'],
   return: ['tli', 'loi', 'descent', 'ascent', 'tei'],
 };
@@ -1464,7 +1477,15 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
         ? 'Landed on the moon.'
         : profile === 'orbit'
           ? 'In lunar orbit.'
-          : 'Lunar flyby.';
+          : profile === 'survey'
+            // The survey flies an orbit and says something else, because what
+            // it achieved is not the orbit. WHICH site it surveyed is the
+            // mission's, not the sequence's — this function is handed a
+            // profile and never the requirement — so the sentence stops at
+            // the instrument, and js/ui/screens.js names the site from the
+            // mission beside it.
+            ? 'Survey complete: the site is mapped.'
+            : 'Lunar flyby.';
   } else if (stoppedAt === 'lander') {
     readout = 'No lander aboard: cannot descend.';
   } else if (stoppedAt === 'shield') {

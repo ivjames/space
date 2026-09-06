@@ -19,9 +19,9 @@ import { missions, tierGoals } from '../js/data/missions.js';
 
 const vehicleModulePath = fileURLToPath(new URL('../js/core/vehicle.js', import.meta.url));
 
-test('newGame returns the documented schema at version 4', () => {
+test('newGame returns the documented schema at version 5', () => {
   const state = newGame(42);
-  assert.equal(state.version, 4);
+  assert.equal(state.version, 5);
   assert.equal(state.seed, 42);
   assert.equal(state.draws, 0);
   assert.equal(state.funds, 0);
@@ -42,6 +42,13 @@ test('newGame returns the documented schema at version 4', () => {
   assert.deepEqual(state.contracts, []);
   assert.deepEqual(state.history, []);
   assert.deepEqual(state.objects, []);
+  // Phase 3b. `lastTick` is null and not 0 on purpose -- see newGame's doc
+  // block and js/core/clock.js: 0 is the epoch, and a fresh game stamped 0
+  // would be credited a full clamped day of production before its first
+  // launch.
+  assert.equal(state.lastTick, null);
+  assert.deepEqual(state.sites, {});
+  assert.deepEqual(state.bases, {});
 });
 
 test('newGame with the same seed is deep-equal (no hidden nondeterminism)', () => {
@@ -522,9 +529,26 @@ test('tierGoalMet reports a { moon } requirement with an unknown profile as unme
   // indexOf on an unmapped profile is -1, and `lunarStep >= -1` would be
   // true for every state ever -- an unrecognised requirement has to read as
   // "never met", the way the fall-through at the end of tierGoalMet does.
-  const goals = { 4: { requirement: { moon: { profile: 'survey' } } } };
+  //
+  // The example used to be 'survey', which phase 3b made a real profile. That
+  // is the hazard this test is about, from the other side: a profile the
+  // resolver knows and PROFILE_STEP does not would be reported unmet forever
+  // with nothing saying why, so the name here is one that will never be added.
+  const goals = { 4: { requirement: { moon: { profile: 'not-a-profile' } } } };
   const deep = { ...newGame(1), tier: 4, best: { ...newGame(1).best, lunarStep: 4 } };
   assert.equal(tierGoalMet(deep, goals), false);
+});
+
+test('every lunar profile the resolver flies is mapped to a rung', async () => {
+  // The pairing the test above is the negative of: a profile in
+  // LUNAR_PROFILES with no PROFILE_STEP entry is a goal that can never be
+  // met, reported silently. `survey` is the one this caught.
+  const { LUNAR_PROFILES } = await import('../js/core/resolver.js');
+  const deep = { ...newGame(1), tier: 4, best: { ...newGame(1).best, lunarStep: 4 } };
+  for (const profile of Object.keys(LUNAR_PROFILES)) {
+    const goals = { 4: { requirement: { moon: { profile } } } };
+    assert.equal(tierGoalMet(deep, goals), true, profile);
+  }
 });
 
 test('tierGoalMet still answers the tier 1-3 shapes with a lunarStep in state', () => {

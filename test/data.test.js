@@ -9,6 +9,7 @@ import { phaseFor } from '../js/core/orbit.js';
 import { nodes } from '../js/data/tree.js';
 import { missions, tierGoals } from '../js/data/missions.js';
 import { baseVehicle } from '../js/data/components.js';
+import { SITES } from '../js/data/sites.js';
 
 // Tier 1 nodes/missions only — every assertion in this first half of the
 // file predates tier 2 and must keep meaning exactly what it always did.
@@ -1790,7 +1791,17 @@ test('the gates admit the ladder: each tier\'s goal set is offered every rung of
 
 const tier4Nodes = nodes.filter((n) => (n.tier ?? 1) === 4);
 const tier4Missions = missions.filter((m) => m.tier === 4);
-const lunarMissions = tier4Missions.filter((m) => m.requirement.moon !== undefined);
+// EVERY mission with a lunar requirement, surveys included -- what the
+// resolver sees.
+const moonMissions = tier4Missions.filter((m) => m.requirement.moon !== undefined);
+// The FLIGHT LADDER: the four escalating profiles the tier is scored on.
+// Phase 3b's survey rungs are lunar missions too, but they are not rungs of
+// this ladder -- there are four of them, they all fly the same profile at the
+// same price, and they are ordered by site rather than by depth. Asserting
+// "payouts escalate" or "gates climb" across a set that includes them would
+// be asserting something that is not true and should not be.
+const lunarMissions = moonMissions.filter((m) => m.requirement.moon.profile !== 'survey');
+const surveyMissions = moonMissions.filter((m) => m.requirement.moon.profile === 'survey');
 
 test('tier 4 nodes exist: 12 to 14 of them, across all four branches', () => {
   assert.ok(
@@ -1878,7 +1889,14 @@ test('every addStage node in the tree is a structure node, so the stage order st
 const REQUIREMENT_SHAPES_4 = ['altitude', 'downrange', 'orbit', 'rendezvous', 'dock', 'moon'];
 
 test('every tier 4 mission has exactly one of the six requirement shapes', () => {
-  assert.equal(tier4Missions.length, 5, `expected exactly 5 tier 4 missions, got ${tier4Missions.length}`);
+  // Five flight rungs plus one survey per site (phase 3b, generated from
+  // js/data/sites.js). Pinned against SITES.length rather than against 4, so
+  // a fifth site adds a fifth contract without an edit here -- which is the
+  // whole reason the survey templates are generated rather than written out.
+  assert.equal(
+    tier4Missions.length, 5 + SITES.length,
+    `expected 5 flight rungs + ${SITES.length} surveys, got ${tier4Missions.length}`,
+  );
   for (const m of tier4Missions) {
     const shapes = REQUIREMENT_SHAPES_4.filter((k) => m.requirement[k] !== undefined);
     assert.equal(shapes.length, 1, `${m.id} should have exactly one requirement shape, got [${shapes}]`);
@@ -1886,8 +1904,35 @@ test('every tier 4 mission has exactly one of the six requirement shapes', () =>
 });
 
 test('the tier 4 ladder matches ARCHITECTURE.md exactly: relay, moon-flyby, moon-orbit, moon-land, moon-return', () => {
-  assert.deepEqual(tier4Missions.map((m) => m.id), ['relay', 'moon-flyby', 'moon-orbit', 'moon-land', 'moon-return']);
+  const flight = tier4Missions.filter((m) => m.requirement.moon?.profile !== 'survey');
+  assert.deepEqual(flight.map((m) => m.id), ['relay', 'moon-flyby', 'moon-orbit', 'moon-land', 'moon-return']);
   assert.deepEqual(lunarMissions.map((m) => m.requirement.moon.profile), ['flyby', 'orbit', 'land', 'return']);
+});
+
+// The survey rungs, phase 3b. One per site, in sites.js's own order, each
+// naming its own site and each closing once that site is mapped.
+test('there is exactly one survey contract per site, and it names that site', () => {
+  assert.deepEqual(surveyMissions.map((m) => m.requirement.moon.site), SITES.map((s) => s.id));
+  for (const m of surveyMissions) {
+    assert.equal(m.requiresUnsurveyed, m.requirement.moon.site,
+      `${m.id} must close on the site it surveys, not another one`);
+    assert.equal(m.profile, 'survey');
+  }
+});
+
+// A survey flies what an orbit flies (js/core/resolver.js's LUNAR_PROFILES),
+// so it needs the same hardware -- and it must not be gated ABOVE the mission
+// it is a variant of, or the player unlocks the reason to fly to lunar orbit
+// after they have already been.
+test('a survey needs moon-orbit\'s hardware and opens no later than it', () => {
+  const orbit = missions.find((m) => m.id === 'moon-orbit');
+  for (const m of surveyMissions) {
+    assert.deepEqual([...m.requiresNode].sort(), [...orbit.requiresNode].sort(), m.id);
+    assert.ok(m.minReputation <= orbit.minReputation,
+      `${m.id} gates at ${m.minReputation}, above moon-orbit's ${orbit.minReputation}`);
+    assert.ok(m.payout < orbit.payout,
+      `${m.id} pays ${m.payout}; the information is the point, so it must pay less than the orbit rung`);
+  }
 });
 
 test('relay deploys a satellite and is repeatable (no unique flag)', () => {
@@ -1982,6 +2027,11 @@ test('tierGoals[4] is a lunar return requirement', () => {
 //   - a shape that can only be judged from orbit is flown as 'orbit'
 //   - a 'sounding' profile only ever carries altitude or downrange
 test('every mission template\'s profile agrees with its requirement', () => {
+  // 'orbit' is deliberately absent: it is a lunar profile AND the profile a
+  // planet-orbit mission carries. 'survey' is absent for the same reason it
+  // would be wrong to add -- it is a lunar profile today, but the name is
+  // about the instrument rather than the destination, and a later tier's
+  // survey of another body would carry it on a non-lunar requirement.
   const LUNAR_PROFILE_NAMES = ['flyby', 'land', 'return'];
   for (const m of missions) {
     assert.equal(typeof m.profile, 'string', `${m.id} has no profile`);

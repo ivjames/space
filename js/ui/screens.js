@@ -122,6 +122,7 @@ function reqKind(requirement) {
 const MOON_PROFILE_TEXT = {
   flyby: 'a lunar flyby',
   orbit: 'lunar orbit',
+  survey: 'a survey from lunar orbit',
   land: 'a landing on the moon',
   return: 'a landing and a return',
 };
@@ -136,6 +137,7 @@ const MOON_PROFILE_TEXT = {
 const MOON_OBJECTIVE_TEXT = {
   flyby: 'Fly past the moon',
   orbit: 'Enter lunar orbit',
+  survey: 'Map the site from orbit',
   land: 'Land on the moon',
   return: 'Land on the moon and return',
 };
