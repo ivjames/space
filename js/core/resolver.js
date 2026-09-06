@@ -1532,15 +1532,29 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng, ref
   // So a completed capture is followed by one revolution, at the period the
   // ladder is priced against (LLO_PERIOD). Like the flyby's pass it is an
   // EVENT and not a step: no delta-v, no restart, `reached` does not move, and
-  // the profile's success is still the capture's. Only `orbit` gets it —
-  // `land` and `return` have their own reasons to still be there afterwards,
-  // and adding two hours to a flight that is about to descend would delay the
+  // the profile's success is still the capture's. `land` and `return` do not
+  // get it — they have their own reasons to still be there afterwards, and
+  // adding two hours to a flight that is about to descend would delay the
   // descent to say something the descent already says.
-  if (profile === 'orbit' && reached >= LUNAR_STEPS.indexOf('loi')) {
+  //
+  // A SURVEY GETS IT TOO, and the reason is the whole of what a survey is.
+  // `LUNAR_PROFILES` makes `survey` and `orbit` the same two burns on purpose,
+  // so leaving the revolution to `orbit` alone left the one profile whose
+  // subject is what it sees from up there ending on the frame the capture burn
+  // cut off: a mapping flight that reached lunar orbit and was never in one,
+  // and an instrument that got no pass over the ground it is being paid to
+  // map. The pass IS the mission, so it is on the timeline, so it is on the
+  // screen. The line says so in the survey's own terms — the site's name is
+  // the mission's business and not this function's (see LUNAR_PROFILES), so it
+  // stops at the pass.
+  const revolves = profile === 'orbit' || profile === 'survey';
+  if (revolves && reached >= LUNAR_STEPS.indexOf('loi')) {
     events.push({
       t: stepTime.loi + LLO_PERIOD,
       kind: 'lunar-orbit',
-      text: 'One revolution of the moon.',
+      text: profile === 'survey'
+        ? 'Survey pass: one revolution over the site.'
+        : 'One revolution of the moon.',
     });
   }
 

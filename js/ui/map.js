@@ -278,8 +278,9 @@ const CISLUNAR_MIN_FRAC = 0.01;
  *                    what sets the number.
  *   LUNAR_BURN_RATE  the powered descent and the powered ascent — the two legs
  *                    that are a trip rather than an instant, and the only ones
- *                    worth watching closely. A twelve-minute descent takes
- *                    three seconds of it.
+ *                    worth watching closely. It covers the part of them that
+ *                    is above the surface shot's own scale: the first ninety
+ *                    kilometres of a descent, in about four seconds.
  *   SURFACE_RATE     the stay, which is a day of doing nothing (there is no
  *                    surface activity in phase 3) and is over in two seconds.
  *
@@ -290,33 +291,46 @@ const CISLUNAR_MIN_FRAC = 0.01;
  * overrides `speed` still scales all four together.
  */
 export const LUNAR_RATE = 800;
-export const LUNAR_BURN_RATE = 240;
+export const LUNAR_BURN_RATE = 120;
 export const SURFACE_RATE = 43200;
 
 /**
  * Simulated seconds per real second inside the SURFACE SHOT — the fourth rate,
  * and the slowest of them, for the same reason the other three exist: what the
  * vehicle is doing has changed, and the number that read the last leg does not
- * read this one. `LUNAR_BURN_RATE` plays the whole descent in three seconds,
- * which is right while a hundred kilometres of it is on screen at once and
- * wrong for the last eight, where the picture is a kilometre and a half of
- * canvas: at 240x the lander crosses it in a fifth of a second. At this value
- * the last 8 km of a descent take about seven seconds and the first 8 km of the
- * ascent home about four, which is a landing and a liftoff rather than two
- * cuts. Keyed on the drawn altitude, which is an observable — the same licence
+ * read this one. `LUNAR_BURN_RATE` plays the high part of the descent in a few
+ * seconds, which is right while ninety kilometres of it are on screen at once
+ * and wrong for the last eight, where the picture is a kilometre and a half of
+ * canvas: at the burn rate the lander crosses it in a fraction of a second.
+ *
+ * At this value the last 8 km of a descent take about fourteen seconds and the
+ * first 8 km of the ascent home about eight, which is a landing and a liftoff
+ * — an approach with time to watch the ground come up, a touchdown that
+ * arrives rather than lands between two frames — instead of two cuts. Both
+ * rates here and LUNAR_BURN_RATE above were halved once the descent was
+ * actually watched: at the old pair the whole trip from orbit to the ground
+ * was nine seconds, of which the part with ground in it was seven, and the
+ * approach the tier is named for was over before it read as one.
+ *
+ * Keyed on the drawn altitude, which is an observable — the same licence
  * `rateNow`'s radius scaling takes, and it says nothing about how the flight
- * ends. The stay keeps SURFACE_RATE: a day at 30x is nine hours of watching.
+ * ends. The stay keeps SURFACE_RATE: a day at this rate is an hour and a half
+ * of watching a lander sit still.
  */
-export const SHOT_RATE = 30;
+export const SHOT_RATE = 15;
 
 /**
  * Simulated seconds per real second down the first hundred kilometres of the
  * flight home, before the surface shot's own scale means anything. The same
- * argument LUNAR_BURN_RATE makes at the moon: 120 km at 30x is a minute of
- * watching a capsule fall through an empty sky, and the part worth watching is
- * the part with a ground in it, which SHOT_RATE plays.
+ * argument LUNAR_BURN_RATE makes at the moon: the whole 120 km at SHOT_RATE is
+ * minutes of watching a capsule fall through an empty sky, and the part worth
+ * watching is the part with a ground in it, which SHOT_RATE plays. Halved
+ * alongside its two siblings: the fall from the interface now takes about four
+ * seconds and the last eight kilometres — the plasma gone, the canopy out —
+ * about ten, so the landing at the far end of a return is as long as the one
+ * at the moon rather than a third of it.
  */
-export const ENTRY_RATE = 240;
+export const ENTRY_RATE = 120;
 
 /**
  * THE ENTRY, drawn. The resolver prices the way home as one burn and says how
@@ -388,6 +402,23 @@ const ZOOM_TAU = 0.42;
  * simulation stopped, so it shows nothing that had not already happened.
  */
 const LUNAR_HOLD_S = 1.6;
+
+/**
+ * The same hold, for a flight that ENDS WITH THE SHOT ON THE GROUND live —
+ * a landing on the moon, an abort a few hundred metres above one, a capsule
+ * down at the planet. Longer than LUNAR_HOLD_S, because these are the only
+ * endings whose last frame is the thing the mission was about rather than a
+ * picture on the way to it: a `land` profile's timeline stops AT the
+ * touchdown, so a hold sized for a camera still easing cut away from the
+ * lander about a second after it arrived, and a base landing put a base on the
+ * moon in less time than the player had to notice it was down.
+ *
+ * Still real time with the simulation stopped, so what it holds is the frame
+ * the flight finished on: the dust settling under the lander, the capsule on
+ * its side under a spent canopy. Nothing new happens in it, and a tap skips
+ * it like everything else.
+ */
+const SURFACE_HOLD_S = 3.2;
 
 /**
  * How long the cut to and from the surface shot takes, real seconds.
@@ -1778,7 +1809,10 @@ export function playOrbital(canvas, outcome, opts = {}) {
     // happened is shown — and a tap skips it like everything else.
     if (!skipped && cislunar && (atMoon || entering || zoom > FRAME_CUTOFF)) {
       holding = true;
-      holdLeft = LUNAR_HOLD_S;
+      // The shot on the ground gets the longer beat (SURFACE_HOLD_S). Asked of
+      // the same predicate the cut itself is asked of, so the hold and the
+      // picture cannot disagree about which camera the flight ended on.
+      holdLeft = nearSurface() ? SURFACE_HOLD_S : LUNAR_HOLD_S;
       dwellUntil = 0;
       frame();
       raf = requestAnimationFrame(tick);

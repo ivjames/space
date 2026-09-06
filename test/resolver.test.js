@@ -2148,6 +2148,47 @@ test('a vehicle with no heat shield gets home no further than lunar orbit', () =
   );
 });
 
+// A SURVEY IS A PASS OVER THE GROUND, so the pass is on the timeline. `survey`
+// and `orbit` fly the same two burns (LUNAR_PROFILES), and the revolution that
+// follows a capture used to be the `orbit` profile's alone — which left the one
+// profile whose subject is what it SEES from up there ending on the frame the
+// capture burn cut off. The map plays the timeline and stops at its last event,
+// so a survey reached lunar orbit and was never in one, and the instrument got
+// no pass over the site it is paid to map.
+test('a survey flies the pass it is paid for, not just the capture', () => {
+  const v = moonFixture();
+  const survey = resolveLaunch(v, MOON_MISSION('survey'), MOON_LOAD, makeRng(7));
+  const orbit = resolveLaunch(v, MOON_MISSION('orbit'), MOON_LOAD, makeRng(7));
+  assert.equal(survey.success, true);
+
+  const at = Object.fromEntries(survey.lunar.burns.map((b) => [b.kind, b.t]));
+  const passes = survey.timeline.filter((e) => e.kind === 'lunar-orbit');
+  assert.equal(passes.length, 1, 'one revolution, at the period the ladder is priced against');
+  assert.ok(Math.abs(passes[0].t - (at.loi + LLO_PERIOD)) < 1e-6);
+  // And the flight now ENDS there rather than at the capture.
+  assert.equal(survey.timeline.at(-1).kind, 'end');
+  assert.ok(Math.abs(survey.timeline.at(-1).t - (at.loi + LLO_PERIOD)) < 1e-6);
+
+  // It says so in the survey's own terms, and the orbit rung keeps its line.
+  assert.match(passes[0].text, /survey pass/i);
+  assert.match(
+    orbit.timeline.find((e) => e.kind === 'lunar-orbit').text, /one revolution of the moon/i,
+  );
+
+  // The two are otherwise the SAME FLIGHT — that identity is the whole of the
+  // resolver's part in a survey, and an event is not a step.
+  assert.deepEqual(survey.lunar.burns.map((b) => b.kind), orbit.lunar.burns.map((b) => b.kind));
+  assert.equal(survey.lunar.dvUsed, orbit.lunar.dvUsed);
+  assert.equal(survey.lunar.reached, orbit.lunar.reached);
+
+  // Nothing else gains one on the way out: a flyby makes no capture to coast
+  // after, and a landing has its own reason to still be there.
+  for (const profile of ['flyby', 'land']) {
+    const o = resolveLaunch(v, MOON_MISSION(profile), MOON_LOAD, makeRng(7));
+    assert.equal(o.timeline.filter((e) => e.kind === 'lunar-orbit').length, 0, profile);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Restarts. Five is what the deepest profile needs, which is what puts the
 // propulsion branch back in the shop for a tier.

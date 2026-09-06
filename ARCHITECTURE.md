@@ -1379,7 +1379,11 @@ is the capture, so without this its flight ends on the frame the engine cuts
 off: a vehicle that reached lunar orbit and was never in one. A completed
 capture is therefore followed by a `lunar-orbit` event one `LLO_PERIOD` later.
 It spends nothing, uses no restart, does not move `reached` and does not touch
-success. Only `orbit` gets it: `land` and `return` have their own reasons to
+success. `survey` gets the same event, with its own line — the two profiles are
+the same two burns by construction, and the pass over the ground is the one
+thing a survey is FOR, so leaving the revolution to `orbit` alone ended the
+mapping flight on the frame the capture cut off and gave the instrument nothing
+to look at. `land` and `return` do not get it: they have their own reasons to
 still be there afterwards, and two hours added to a flight that is about to
 descend would delay the descent to say what the descent says better.
 
@@ -1717,13 +1721,18 @@ is removed. `data.test.js` checks both against the real resolver.
   within a thousandth of `A_MOON` — so three more rates take over, keyed on
   what the vehicle is DOING, which a burn or an event has already said:
   `LUNAR_RATE` coasting (a two-hour revolution in about nine seconds),
-  `LUNAR_BURN_RATE` on the two powered legs (a twelve-minute descent in three),
-  and `SURFACE_RATE` for the stay, which is a day of nothing in two. A fourth,
-  `SHOT_RATE`, takes over inside the surface shot: 240× plays the last eight
-  kilometres of a descent in a fifth of a second, where this plays them in
-  about seven. `ENTRY_RATE` is the fifth and last, for the empty hundred
+  `LUNAR_BURN_RATE` on the high part of the two powered legs (the first ninety
+  kilometres of a descent in about four seconds), and `SURFACE_RATE` for the
+  stay, which is a day of nothing in two. A fourth, `SHOT_RATE`, takes over
+  inside the surface shot: the burn rate would put the last eight kilometres of
+  a descent inside a fraction of a second, where this plays them in about
+  fourteen. `ENTRY_RATE` is the fifth and last, for the empty hundred
   kilometres between the interface and the part of the entry with a ground in
-  it, which `SHOT_RATE` plays. All of them are applied as a fraction of the
+  it, which `SHOT_RATE` plays. The three that are not `LUNAR_RATE` or
+  `SURFACE_RATE` were halved once the descent was watched end to end: the whole
+  trip from lunar orbit to the ground took nine seconds, of which the part with
+  ground in it was seven, so the approach the tier is named for was over before
+  it read as an approach. All of them are applied as a fraction of the
   playback rate, so an overridden `speed` still scales everything together.
   A rate is only valid up to the next thing that changes it, so a frame never
   carries the clock past a burn or an event: one frame of `SURFACE_RATE` is
