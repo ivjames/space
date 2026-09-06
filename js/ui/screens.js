@@ -15,7 +15,7 @@ import {
   TURN_END_HARD,
 } from '../core/resolver.js';
 import { LUNAR_STEPS } from '../core/moon.js';
-import { resolveHaul } from '../core/haul.js';
+import { resolveHaul, haulBlocker } from '../core/haul.js';
 import {
   EQUIPMENT, RESOURCES, MAX_LEVEL, rates, capacity, powerBalance, buildCost,
 } from '../core/base.js';
@@ -1447,6 +1447,18 @@ export function mountScreens(ctx) {
       const depot = findTarget(state, mission.requirement.haul.to);
       if (!base || !depot) {
         view.error = 'That cargo run has no base or no depot any more — pick another.';
+        render();
+        return;
+      }
+      // ADVICE IS NOT A FLIGHT (js/core/haul.js's `haulBlocker`). A run with no
+      // tanker, no transport equipment or too little in the tanks never leaves
+      // the pad, so resolving it would spend the launch, write a history row
+      // and charge the mission's repLoss for a tanker that never lit. It is
+      // the same shape as the missing-base check above and is refused the same
+      // way — on this screen, with the reason, before anything is spent.
+      const blocked = haulBlocker(vehicle, base);
+      if (blocked) {
+        view.error = `${blocked} Let the tanks fill, or pick another contract.`;
         render();
         return;
       }

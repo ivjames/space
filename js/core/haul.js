@@ -24,7 +24,7 @@
 
 import { G0 } from './vehicle.js';
 import { ascentFromSurface } from './moon.js';
-import { FUEL_FRACTION, OXIDIZER_FRACTION } from './base.js';
+import { FUEL_FRACTION, OXIDIZER_FRACTION, capacity } from './base.js';
 
 /**
  * Cargo a tanker carries, kg per level of `transport` equipment.
@@ -119,6 +119,75 @@ export function maxCargo(isp, store, capacityLevel) {
 }
 
 /**
+ * The largest haul the base's TANKS could ever pay for — what `maxCargo`
+ * returns when every tank is at its cap.
+ *
+ * The base's own ceiling, in other words, rather than the tanker's: the
+ * transport level still caps it (HAUL_PER_LEVEL), but on every base the game
+ * can build it is the storage level that binds, which is exactly what
+ * HAUL_PER_LEVEL's note says it should be.
+ */
+export function fullCargo(isp, base) {
+  const level = Math.max(0, Math.floor(base?.equipment?.transport ?? 0));
+  return maxCargo(isp, capacity(base), level);
+}
+
+/**
+ * The smallest haul worth spending a launch on, as a FRACTION of what this
+ * base could send with its tanks full.
+ *
+ * IT IS A FRACTION AND NOT A TONNE, AND THAT IS THE WHOLE POINT. The floor
+ * exists to stop the player spending a launch on a gesture — "let the tanks
+ * fill" is the advice it is there to give. An ABSOLUTE floor cannot give that
+ * advice honestly, because whether it is reachable at all depends on a number
+ * the floor knows nothing about: the storage level. A full level-1 tank farm
+ * on the reference site holds about 224 kg of cargo (js/core/base.js:
+ * STORE_PER_LEVEL 360, split at the mixture ratio, less what the ascent
+ * burns), so a one-tonne floor told that player to wait for a tank that was
+ * already full and could never hold more — a dead end printed as a delay, and
+ * one the base tab actively steered them into with its "Storage full ...
+ * find a cargo run" prompt.
+ *
+ * Half a tank keeps the intent and drops the dead end: at every storage level
+ * the sentence "let the tanks fill" is both the advice and a thing that
+ * works, and the run a full base can fly is the one HAUL_PER_LEVEL's own note
+ * describes — "a haul carries what the tanks hold, not what the tanker could
+ * hold". It is also what the rest of the economy already assumed:
+ * tools/balance.mjs prices auto-transport at five manual runs out of a
+ * LEVEL-1 farm, which the old floor refused to fly.
+ */
+export const MIN_HAUL_FRACTION = 0.5;
+
+/** The smallest cargo `resolveHaul` will fly off this base, kg. */
+export function minCargo(isp, base) {
+  return MIN_HAUL_FRACTION * fullCargo(isp, base);
+}
+
+/**
+ * Why this base cannot fly a cargo run right now, or null if it can.
+ *
+ * THE SAME THREE CHECKS resolveHaul REFUSES ON, ASKED BEFORE A LAUNCH IS
+ * SPENT. All three are advice — no tanker, no transport equipment, tanks too
+ * empty — and none of them is a flight: nothing lit, nothing left the pad,
+ * nothing was lost. Resolving one anyway spent the launch, wrote a history
+ * row and cost the mission's `repLoss`, which charged the player standing for
+ * being told their tanks were not full yet. So the UI asks this first and
+ * says so without flying, and `resolveHaul` keeps the same checks as the
+ * guard they always were.
+ */
+export function haulBlocker(vehicle, base) {
+  const isp = Number(vehicle?.haulIsp) || 0;
+  const level = Math.max(0, Math.floor(base?.equipment?.transport ?? 0));
+  if (isp <= 0) return 'No tanker: the transport equipment has nothing to fly.';
+  if (level <= 0) return 'No transport equipment at the base.';
+  const cargo = maxCargo(isp, base?.store ?? {}, level);
+  if (!(cargo > 0) || cargo < minCargo(isp, base)) {
+    return 'Not enough propellant at the base: a cargo run needs half a tank.';
+  }
+  return null;
+}
+
+/**
  * Automatic hauling, run as part of a production tick (phase 4).
  *
  * WHAT AUTOMATION BUYS IS THE LAUNCH, NOT THE PHYSICS. The propellant an
@@ -205,17 +274,15 @@ export function resolveHaul(vehicle, base, depot, rng) {
     },
   });
 
-  if (isp <= 0) return fail('No tanker: the transport equipment has nothing to fly.');
-  if (level <= 0) return fail('No transport equipment at the base.');
+  // The three refusals are `haulBlocker`'s, so the check the UI makes before
+  // spending a launch and the check made while resolving one cannot drift
+  // apart. A haul too small to be worth a launch is a floor on the ACTION,
+  // not a failure, so it reads as advice — and reaching it here at all means
+  // the caller flew without asking.
+  const blocked = haulBlocker(vehicle, base);
+  if (blocked) return fail(blocked);
 
   const cargo = maxCargo(isp, store, level);
-  // A haul that would move less than a tonne is not a launch, it is a gesture:
-  // the player is told to let the tanks fill rather than being allowed to
-  // spend a launch on 40 kg. This is a floor on the ACTION, not a failure, so
-  // it reads as advice.
-  if (cargo < 1000) {
-    return fail('Not enough propellant at the base to fill a tanker.');
-  }
 
   const { burned, dv } = haulEconomics(isp, cargo);
   events.push({

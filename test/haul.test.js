@@ -6,10 +6,13 @@ import assert from 'node:assert/strict';
 
 import {
   HAUL_PER_LEVEL, DRY_FRACTION, HAUL_RELIABILITY, HAUL_RELIABILITY_MAX,
-  haulEconomics, maxCargo, resolveHaul,
+  MIN_HAUL_FRACTION, haulEconomics, maxCargo, resolveHaul, fullCargo, minCargo,
+  haulBlocker,
 } from '../js/core/haul.js';
 import { ascentFromSurface, lunarLadder, LLO_ALT } from '../js/core/moon.js';
-import { FUEL_FRACTION, OXIDIZER_FRACTION, newBase } from '../js/core/base.js';
+import {
+  FUEL_FRACTION, OXIDIZER_FRACTION, newBase, capacity, MAX_LEVEL, EQUIPMENT,
+} from '../js/core/base.js';
 import { radiusOf } from '../js/core/orbit.js';
 import { makeRng } from '../js/core/rng.js';
 import { newGame, recordLaunch } from '../js/core/state.js';
@@ -142,6 +145,71 @@ test('the reliability bonus raises the roll but never past the ceiling', () => {
     resolveHaul({ haulIsp: 450, haulBonus: 1 }, stockedBase(), DEPOT, aboveCeiling).success, false,
     'no amount of tree spending makes a haul certain',
   );
+});
+
+/** A base built to `n` at every type, with every tank at its cap. */
+function fullBase(n) {
+  const b = newBase();
+  for (const type of EQUIPMENT) b.equipment[type] = n;
+  const caps = capacity(b);
+  b.store = {
+    water: caps.water, fuel: caps.fuel, oxidizer: caps.oxidizer, metals: caps.metals,
+  };
+  return b;
+}
+
+// THE REGRESSION, AND IT IS THE WHOLE REASON THE FLOOR IS A FRACTION. A base
+// whose tanks are full has produced everything it is able to hold and has
+// stopped; the one thing it can do is haul, and the base tab tells it to. An
+// absolute one-tonne floor made that false below storage 5 — a full level-1
+// farm holds 224 kg of cargo and could never hold more, so the advice "let the
+// tanks fill" named a state the player was already in.
+test('a base with full tanks can fly a cargo run at EVERY storage level', () => {
+  for (let n = 1; n <= MAX_LEVEL; n += 1) {
+    const base = fullBase(n);
+    assert.equal(haulBlocker({ haulIsp: 450 }, base), null,
+      `a full level-${n} base cannot haul`);
+    const out = resolveHaul({ haulIsp: 450 }, base, DEPOT, ALWAYS);
+    assert.equal(out.success, true, `a full level-${n} base flew nothing`);
+    assert.ok(out.haul.cargo > 0);
+  }
+});
+
+test('the floor is a share of the tanks, not a tonne', () => {
+  for (let n = 1; n <= MAX_LEVEL; n += 1) {
+    const base = fullBase(n);
+    const full = fullCargo(450, base);
+    assert.ok(Math.abs(minCargo(450, base) - MIN_HAUL_FRACTION * full) < 1e-9);
+    // Full tanks are always above the floor; a tank at less than the share is
+    // always below it. Both sides scale with the base, which is the property
+    // an absolute floor could not have.
+    assert.equal(haulBlocker({ haulIsp: 450 }, base), null);
+    const caps = capacity(base);
+    const scant = { ...base, store: { water: 0, metals: 0,
+      fuel: caps.fuel * (MIN_HAUL_FRACTION * 0.9),
+      oxidizer: caps.oxidizer * (MIN_HAUL_FRACTION * 0.9) } };
+    assert.match(haulBlocker({ haulIsp: 450 }, scant) ?? '', /Not enough propellant/);
+  }
+});
+
+// The UI asks `haulBlocker` before it spends a launch (js/ui/screens.js), and
+// `resolveHaul` asks it again while resolving one. Two copies of the same
+// three refusals would drift; this pins that they are one.
+test('haulBlocker refuses exactly what resolveHaul refuses, and says the same thing', () => {
+  const cases = [
+    [{}, stockedBase()],
+    [{ haulIsp: 450 }, stockedBase(0)],
+    [{ haulIsp: 450 }, stockedBase(1, 10, 80)],
+  ];
+  for (const [vehicle, base] of cases) {
+    const why = haulBlocker(vehicle, base);
+    assert.ok(why, 'the blocker should refuse this one');
+    const out = resolveHaul(vehicle, base, DEPOT, ALWAYS);
+    assert.equal(out.success, false);
+    assert.equal(out.readout, why);
+    assert.equal(out.haul.drawn, null, 'nothing left the pad, so nothing is debited');
+  }
+  assert.equal(haulBlocker({ haulIsp: 450 }, stockedBase()), null);
 });
 
 test('no tanker, no transport equipment, and empty tanks each say which', () => {
