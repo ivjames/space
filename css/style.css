@@ -821,3 +821,128 @@ ul.ticker {
   user-select: none;
 }
 #update[hidden] { display: none; }
+
+/* ---------------------------------------------------------------------------
+   The base tab (phase 3b): sites, equipment levels, tanks.
+
+   FOUR TABS IN THE ROW NOW, not three. `.tab` is `flex: 1`, so the fourth
+   simply takes a quarter each — but the labels are what break first on a
+   narrow phone, so the padding tightens with the viewport rather than the
+   text wrapping to two lines.
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 380px) {
+  .tab {
+    padding: 12px 4px;
+    font-size: 0.85rem;
+  }
+}
+
+.away {
+  border-bottom: 1px solid var(--border);
+}
+
+.away .sub {
+  font-size: 1rem;
+  margin-bottom: 4px;
+}
+
+.hint.warn {
+  color: var(--warn);
+}
+
+/* Equipment: one row per type, level and the price of the next one. The two
+   purses read differently on purpose — a funds price is a launch, a metals
+   price is built on site — but the button is the same button, because the
+   player is doing the same thing. */
+.kit-list,
+.tank-list {
+  list-style: none;
+  margin-top: 8px;
+}
+
+.kit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.kit .name {
+  flex: 1;
+  text-transform: capitalize;
+}
+
+.kit .level {
+  min-width: 1.5em;
+  text-align: right;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.kit.locked .level {
+  color: var(--muted);
+}
+
+.btn-small {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn-small:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* Tanks: a bar against its cap, with the rate beside it. The rate is the
+   number the storage upgrade is really selling, so it sits on the same line
+   rather than in a tooltip nobody on a phone can open. */
+.tank {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 0.85rem;
+}
+
+.tank .name {
+  min-width: 5.5em;
+  text-transform: capitalize;
+  color: var(--muted);
+}
+
+.tank .bar {
+  flex: 1;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.tank .bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.tank.full .bar i {
+  background: var(--warn);
+}
+
+.tank .num {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  min-width: 5.5em;
+  text-align: right;
+}
+
+.row.site .name {
+  font-weight: bold;
+}

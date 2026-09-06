@@ -20,8 +20,8 @@ function makeMapBackend() {
   };
 }
 
-test('SCHEMA_VERSION is 4', () => {
-  assert.equal(SCHEMA_VERSION, 4);
+test('SCHEMA_VERSION is 5', () => {
+  assert.equal(SCHEMA_VERSION, 5);
 });
 
 test('serialize/deserialize round trip a current-version state', () => {
@@ -302,30 +302,74 @@ test('migrations[3] fills in best.lunarStep for a v3 save whose best is missing 
 // path that actually matters: a phase 2 player's real save, with history and
 // objects in it, must load into phase 3 with lunarStep at the "nothing
 // completed" sentinel everywhere and nothing else disturbed.
-test('deserialize migrates a v3 save with history entries to v4, lunarStep -1 everywhere and every other field preserved', () => {
+test('deserialize migrates a v3 save with history entries all the way up, lunarStep -1 everywhere and every other field preserved', () => {
   const v3 = v3Fixture();
   const migrated = deserialize(JSON.stringify(v3));
   assert.equal(migrated.version, SCHEMA_VERSION);
   assert.equal(migrated.best.lunarStep, -1);
   assert.deepEqual(migrated.history.map((entry) => entry.lunarStep), [-1, -1]);
   // Everything else is byte-for-byte what went in: the only difference
-  // between the v3 save and the v4 one is `version` and the new field.
+  // between the v3 save and the current one is `version` and the fields each
+  // migration in the chain introduces. This walks migrations[3] AND
+  // migrations[4], which is the point -- deserialize runs them in order, and
+  // a v3 save is the oldest real save shape a phase 2 player can still have.
   assert.deepEqual(migrated, {
     ...v3,
     version: SCHEMA_VERSION,
     best: { ...v3.best, lunarStep: -1 },
-    history: v3.history.map((entry) => ({ ...entry, lunarStep: -1 })),
+    history: v3.history.map((entry) => ({
+      ...entry, lunarStep: -1, surveyed: null, hauled: null,
+    })),
+    lastTick: null,
+    sites: {},
+    bases: {},
   });
+});
+
+// migrations[4], phase 3b. The field that matters here is `lastTick`, and it
+// matters because the wrong default is not a cosmetic difference: 0 is the
+// epoch, so a save migrated with `lastTick: 0` would hand clock.js a delta of
+// fifty-odd years, clamp it to ELAPSED_CLAMP, and credit a player who has
+// never built a base with a full day of production the first time they opened
+// the game after updating.
+test('migrations[4] starts the clock at null, not at the epoch', () => {
+  const v4 = { ...v3Fixture(), version: 4, best: { ...v3Fixture().best, lunarStep: 2 } };
+  const migrated = deserialize(JSON.stringify(v4));
+  assert.equal(migrated.lastTick, null);
+  assert.deepEqual(migrated.sites, {});
+  assert.deepEqual(migrated.bases, {});
+  // The lunar progress a v4 save really had survives the step untouched.
+  assert.equal(migrated.best.lunarStep, 2);
+});
+
+test('migrations[4] keeps a history entry that already carries the new fields', () => {
+  // Defaults-first / spread-last, the idiom every migration here uses: an
+  // entry that already has the field keeps its own value.
+  const v4 = {
+    ...v3Fixture(),
+    version: 4,
+    history: [{ tier: 4, missionId: 'moon-survey', success: true, surveyed: 'mare-tranquil' }],
+  };
+  const migrated = deserialize(JSON.stringify(v4));
+  assert.equal(migrated.history[0].surveyed, 'mare-tranquil');
+  assert.equal(migrated.history[0].hauled, null);
 });
 
 test('deserialize accepts a save already at SCHEMA_VERSION without running any migration', () => {
   // The loop in deserialize is `while (v < SCHEMA_VERSION)`, so a current
   // save must come back untouched -- including a real lunarStep, which a
   // re-run of migrations[3] would reset to -1.
-  const current = { ...newGame(2), best: { ...newGame(2).best, lunarStep: 4 } };
+  const current = {
+    ...newGame(2),
+    best: { ...newGame(2).best, lunarStep: 4 },
+    lastTick: 1700000000000,
+    sites: { 'mare-tranquil': { surveyed: true } },
+  };
   const back = deserialize(serialize(current));
   assert.deepEqual(back, current);
   assert.equal(back.best.lunarStep, 4);
+  // A re-run of migrations[4] would reset lastTick to null and lose a day.
+  assert.equal(back.lastTick, 1700000000000);
 });
 
 test('deserialize rejects a version newer than SCHEMA_VERSION', () => {

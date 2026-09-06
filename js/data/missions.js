@@ -45,6 +45,9 @@
 // flyable with struct-1 and the first three engine upgrades, 6 200 funds
 // against the gate's 2 600, which the gate does not admit); the ladder tab
 // names the purchase, so the path is still visible.
+import { SITES } from './sites.js';
+import { LLO_ALT } from '../core/moon.js';
+
 export const missions = [
   {
     id: 'sound-1',
@@ -757,6 +760,155 @@ export const missions = [
     minReputation: 90,
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Phase 3b: the survey rungs.
+//
+// GENERATED FROM js/data/sites.js RATHER THAN HAND-WRITTEN, which is the one
+// place in this file that happens and is worth justifying. Every other
+// template here is hand-authored because every other template is a different
+// mission — a different requirement, a different gate, a different payout, and
+// a paragraph above saying why. The survey rungs are not: there is exactly one
+// survey mission, flown once per site, and the only thing that differs between
+// them is which site it names. Writing four near-identical literals would make
+// sites.js and missions.js two places a site has to be added, and the second
+// one is the one nobody remembers.
+//
+// The mapping is total and deterministic: one template per site, in sites.js's
+// own order, so the board's draw order does not depend on how this file is
+// read. test/data.test.js pins the count against SITES.length, so a fifth site
+// gets a fifth contract without an edit here.
+//
+// GATES. The same hardware a `moon-orbit` flight needs, because a survey IS
+// that flight (js/core/resolver.js's LUNAR_PROFILES: `survey` and `orbit` fly
+// the same two rungs). What differs is the reputation gate, set below
+// moon-orbit's: the survey is the cheaper, earlier reason to fly to lunar
+// orbit, and gating it above the mission it is a variant of would mean the
+// player unlocked the survey after they no longer needed a reason.
+//
+// `requiresUnsurveyed` closes the offer once the site is mapped
+// (js/core/contracts.js). It is the only gate in the game that closes rather
+// than opens, and a survey needs it because — unlike a landing or a deploy —
+// it leaves nothing in `state.objects` for the existing gates to notice.
+//
+// PAYOUT. 60 000: above tier 3's best (55 000), below relay's 65 000, and well
+// below moon-orbit's 110 000. The floor is not a style rule — a tier 4
+// contract flown on a tier 4 vehicle that paid less than a tier 3 contract
+// would be strictly worse to fly than the tier the player has left, and
+// test/data.test.js holds the whole tier to it. The ceiling is the design: a
+// survey is a real contract and pays like one, but the thing the player is
+// actually buying is the site's numbers, and pricing it level with the orbit
+// mission would make the information free.
+const surveyMissions = SITES.map((site) => ({
+  id: `survey-${site.id}`,
+  tier: 4,
+  name: `Survey: ${site.name}`,
+  profile: 'survey',
+  requirement: { moon: { profile: 'survey', site: site.id } },
+  requiresNode: ['struct-11', 'prop-11', 'guide-1'],
+  requiresUnsurveyed: site.id,
+  payout: 60000,
+  repGain: 7,
+  repLoss: 4,
+  minReputation: 50,
+}));
+
+missions.push(...surveyMissions);
+
+// The base landing, one per site, generated for the same reason the surveys
+// are. `moon-land` (the tier 4 rung) stays exactly what it is — a landing
+// scored as a landing, with no site and no consequence beyond the contract —
+// and these are a different mission that happens to share its profile: a
+// landing that leaves something behind.
+//
+// GATES. `requiresSurveyed` is what makes the survey a prerequisite rather
+// than flavour: you may only plant a base on ground you have looked at, so
+// the site table is a decision instead of a lottery. `requiresNoBase` closes
+// the offer once one is there. Hardware is `moon-land`'s own, because it is
+// `moon-land`'s flight.
+//
+// It pays LESS than moon-land, which is the one surprising number here and is
+// deliberate: the customer is not paying for a landing, the player is buying a
+// base. Pricing it above the rung it copies would make the tier's goal ladder
+// the slower way to do the same thing.
+const baseMissions = SITES.map((site) => ({
+  id: `base-${site.id}`,
+  tier: 4,
+  name: `Base landing: ${site.name}`,
+  profile: 'land',
+  requirement: { moon: { profile: 'land', site: site.id } },
+  requiresNode: ['struct-13', 'prop-11', 'guide-1'],
+  requiresSurveyed: site.id,
+  requiresNoBase: site.id,
+  payout: 120000,
+  repGain: 11,
+  repLoss: 6,
+  minReputation: 75,
+}));
+
+// The depot: the orbital half of the transport pair, and the only object in
+// the game that orbits something other than the planet.
+//
+// Its orbit is LLO_ALT rather than an achieved insertion, because the flight
+// that puts it there is resolved analytically at the moon and never reports
+// one (js/core/state.js's objectOrbitFrom). Importing the altitude from
+// js/core/moon.js rather than writing 100000 here is the same discipline the
+// rest of the phase keeps: the depot sits in the orbit the whole lunar ladder
+// is priced against, and it should move if that does.
+const depotMission = {
+  id: 'depot-deploy',
+  tier: 4,
+  name: 'Lunar depot',
+  profile: 'orbit',
+  requirement: { moon: { profile: 'orbit' } },
+  deploys: {
+    kind: 'depot',
+    name: 'Lunar depot',
+    body: 'moon',
+    orbit: { periapsis: LLO_ALT, apoapsis: LLO_ALT },
+    store: { fuel: 0, oxidizer: 0 },
+  },
+  unique: true,
+  requiresNode: ['struct-11', 'prop-11', 'guide-1'],
+  payout: 100000,
+  repGain: 9,
+  repLoss: 5,
+  minReputation: 60,
+};
+
+// The haul, one per site. `requiresBase` gives it somewhere to haul from and
+// `requiresObject: 'depot'` somewhere to haul to; without both there is
+// nothing for the flight to mean.
+//
+// IT PAYS NOTHING IN FUNDS, and that is the point rather than an oversight. A
+// haul moves propellant from the surface to orbit; DESIGN.md §15 excludes a
+// resource that just converts to funds, and a cargo run that also paid a
+// contract would be exactly that with a launch attached. What it pays is the
+// delivery, and js/core/haul.js prices that.
+//
+// It still carries reputation, both ways: DESIGN.md §8 says hauls count toward
+// the launch score, and a flight that could not cost anything would be a free
+// roll.
+const haulMissions = SITES.map((site) => ({
+  id: `haul-${site.id}`,
+  tier: 4,
+  name: `Cargo run: ${site.name}`,
+  profile: 'haul',
+  requirement: { haul: { site: site.id, to: 'depot' } },
+  requiresBase: site.id,
+  requiresObject: 'depot',
+  requiresNode: ['struct-16'],
+  payout: 0,
+  // In the tier's reputation band like everything else, rather than a special
+  // case: a cargo run is a real flight that can be lost, and a flight that
+  // cost less standing than the contract beside it would make the safe thing
+  // the cheap thing. It is not a reputation farm either -- every run spends
+  // propellant the base had to make, and reputation is capped at 100.
+  repGain: 6,
+  repLoss: 4,
+}));
+
+missions.push(...baseMissions, depotMission, ...haulMissions);
 
 export const tierGoals = {
   1: { requirement: { altitude: 100000 }, name: 'Reach 100 km' },

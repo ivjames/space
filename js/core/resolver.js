@@ -232,10 +232,23 @@ export const APPROACH_DV = 50;
  * flyby coasts round the moon and home again on the transfer it is already on,
  * and charging it for a burn it does not make would price it as an orbit
  * mission that failed.
+ *
+ * `survey` (phase 3b) FLIES EXACTLY WHAT `orbit` FLIES, and that identity is
+ * the whole of the resolver's part in it. DESIGN.md §8 calls a survey "an
+ * orbital mission profile", so it costs what an orbit costs, is judged on the
+ * capture the way an orbit is, and reaches the same rung — which is also what
+ * gives the orbit tier something to do after it is won, the reason §8 gives
+ * for the profile existing at all. What differs between the two is what the
+ * contract asks for and what the OUTCOME CREDITS (a site's numbers become
+ * known), and neither of those is this module's business: js/core/state.js's
+ * recordLaunch marks the site surveyed, beside where it already raises
+ * best.lunarStep. The resolver stays a function of vehicle, mission and rng
+ * that knows nothing about what the player has learned.
  */
 export const LUNAR_PROFILES = {
   flyby: ['tli'],
   orbit: ['tli', 'loi'],
+  survey: ['tli', 'loi'],
   land: ['tli', 'loi', 'descent'],
   return: ['tli', 'loi', 'descent', 'ascent', 'tei'],
 };
@@ -254,6 +267,45 @@ export { SURFACE_STAY } from './moon.js';
 export const LANDING_RELIABILITY = 0.9;
 /** Ceiling on the landing roll, however much `landerBonus` the tree buys. */
 export const LANDING_RELIABILITY_MAX = 0.99;
+
+/**
+ * Delta-v a depot's propellant is worth to a vehicle in lunar orbit (phase 4).
+ *
+ * THE ONLY NEW NUMBER REFUELING ADDS IS ANOTHER TSIOLKOVSKY TERM, which is the
+ * point: DESIGN.md §4 makes delta-v the game's one axis, and a refuel that
+ * invented a second kind of number would be a second game. What the depot
+ * hands over is propellant; what propellant is worth is what the rocket
+ * equation says it is worth on the stage that will burn it.
+ *
+ *   dv = isp * g0 * ln((dry + propellant) / dry)
+ *
+ * `dry` is the mass the top stage has left when it is refuelled — its own dry
+ * mass plus the payload — because by the time a lunar flight is in lunar orbit
+ * every stage below it is gone. That is an APPROXIMATION and worth naming: a
+ * real depot transfer is limited by the receiving tank's volume, and this is
+ * limited only by what the depot holds. The tank limit is `TANK_LIMIT` below,
+ * and it exists so a depot with a year of production in it cannot hand a
+ * lander an infinite budget.
+ *
+ * @param {number} propellant kg the depot transfers
+ * @param {number} dryMass kg the receiving stage masses without it
+ * @param {number} isp s
+ * @returns {number} m/s
+ */
+export function refuelDeltaV(propellant, dryMass, isp) {
+  if (!(propellant > 0) || !(dryMass > 0) || !(isp > 0)) return 0;
+  return isp * G0 * Math.log((dryMass + propellant) / dryMass);
+}
+
+/**
+ * The most propellant a vehicle can take on in one visit, as a multiple of the
+ * receiving stage's own propellant capacity.
+ *
+ * A depot cannot pour a thousand tonnes into a stage built for ten. 1 means
+ * "one full tank", which is what a refuelling stop is: the stage arrives
+ * nearly empty and leaves full, and no more than full.
+ */
+export const TANK_LIMIT = 1;
 
 /**
  * The index into LUNAR_STEPS a profile has to reach to count as flown.
@@ -512,6 +564,14 @@ function requirementKind(requirement) {
   if (requirement.rendezvous && typeof requirement.rendezvous.within === 'number') return 'rendezvous';
   if (requirement.dock) return 'dock';
   if (requirement.moon && LUNAR_PROFILES[requirement.moon.profile] !== undefined) return 'moon';
+  // 'haul' is a KNOWN shape that this module deliberately does not fly
+  // (phase 3b). A cargo run starts on the lunar surface, which the integrator
+  // below cannot express — it has one atmosphere and one planet-centred frame
+  // — so js/core/haul.js resolves it instead. Naming it here rather than
+  // letting it fall through to null is what turns "the resolver was handed a
+  // haul" from a mission that silently resolves as nothing into the throw at
+  // the top of resolveLaunch.
+  if (requirement.haul && typeof requirement.haul.site === 'string') return 'haul';
   return null;
 }
 
@@ -868,6 +928,9 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
   // Budget charged per m/s of the burns the latest relight covers: 1 to spec,
   // more when the relight underperforms (see UNDERPERFORMING RELIGHTS above).
   let relightCost = 1;
+  // What the depot actually handed over, for the outcome. Null on every flight
+  // that did not stop at one, which is every flight before phase 4.
+  let refuelled = null;
 
   /**
    * Consume one restart: the restart roll against the final stage's
@@ -1163,7 +1226,7 @@ function resolveOrbitalSequence(vehicle, target, insertion, dvAvailable, phaseEr
  *     landed, readout }, with `reached` an index into LUNAR_STEPS and -1 when
  *   no step was completed at all.
  */
-function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
+function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng, refuel = null) {
   const stages = vehicle?.stages ?? [];
   const finalIndex = stages.length - 1;
   const finalStage = stages[finalIndex];
@@ -1253,6 +1316,9 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
   // Budget charged per m/s of the burn the latest relight covers: 1 to spec,
   // more when the relight underperforms.
   let relightCost = 1;
+  // What the depot actually handed over, for the outcome. Null on every flight
+  // that did not stop at one, which is every flight before phase 4.
+  let refuelled = null;
 
   /**
    * Consume one restart: the restart roll against the top stage's reliability,
@@ -1412,6 +1478,29 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
     }
 
     reached = LUNAR_STEPS.indexOf(step);
+
+    // THE REFUELLING STOP (phase 4), and it happens exactly here: after the
+    // capture, in the orbit the depot is in, before the descent that is the
+    // first rung a lunar flight cannot afford. A depot at the moon is no help
+    // to the departure — the vehicle has not left the planet yet — so the only
+    // place it can be spent is the one place the vehicle and the depot are in
+    // the same orbit.
+    //
+    // It is not a step: no restart is used (topping up a tank is not an
+    // ignition), `reached` does not move, and no profile is judged on it. What
+    // it does is add to the budget the remaining rungs are spent out of, which
+    // is the whole of DESIGN.md §8's "propellant at a depot lets a vehicle
+    // refuel there, so destinations beyond it get cheaper".
+    if (step === 'loi' && refuel && refuel.dv > 0) {
+      dvLeft += refuel.dv;
+      events.push({
+        t: stepTime.loi + 1,
+        kind: 'refuel',
+        text: `Topped up at ${refuel.name}: ${Math.round(refuel.propellant)} kg, `
+          + `${Math.round(refuel.dv)} m/s.`,
+      });
+      refuelled = refuel;
+    }
   }
 
   // THE PASS. A free-return flyby makes no burn at the moon — that is what
@@ -1464,7 +1553,15 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
         ? 'Landed on the moon.'
         : profile === 'orbit'
           ? 'In lunar orbit.'
-          : 'Lunar flyby.';
+          : profile === 'survey'
+            // The survey flies an orbit and says something else, because what
+            // it achieved is not the orbit. WHICH site it surveyed is the
+            // mission's, not the sequence's — this function is handed a
+            // profile and never the requirement — so the sentence stops at
+            // the instrument, and js/ui/screens.js names the site from the
+            // mission beside it.
+            ? 'Survey complete: the site is mapped.'
+            : 'Lunar flyby.';
   } else if (stoppedAt === 'lander') {
     readout = 'No lander aboard: cannot descend.';
   } else if (stoppedAt === 'shield') {
@@ -1489,6 +1586,7 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
       stoppedAt,
       reached,
       landed,
+      refuelled,
       readout,
     },
     events,
@@ -1527,6 +1625,12 @@ function resolveLunarSequence(vehicle, profile, insertion, dvAvailable, rng) {
  * @returns {object} Outcome (see ARCHITECTURE.md)
  */
 export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
+  if (requirementKind(mission?.requirement) === 'haul') {
+    throw new Error(
+      'resolveLaunch cannot fly a haul: it starts on a surface this integrator '
+      + 'has no frame for. Use resolveHaul (js/core/haul.js).',
+    );
+  }
   const dt = opts.dt ?? 0.1;
   const sampleEvery = opts.sampleEvery ?? 0.5;
   const maxTime = opts.maxTime ?? 2000;
@@ -2323,8 +2427,33 @@ export function resolveLaunch(vehicle, mission, loadout = {}, rng, opts = {}) {
       closestApproach = orbitalResult.orbital.closestApproach;
       docked = orbitalResult.orbital.docked;
     } else {
+      // THE DEPOT, IF THERE IS ONE AND THE VEHICLE CAN USE IT (phase 4).
+      // Priced here rather than inside the sequence because everything it
+      // needs — the top stage, its dry mass, its tank — is vehicle arithmetic,
+      // and the sequence's job is to walk a ladder spending numbers it is
+      // handed. `opts.depot` is the caller's (js/ui/screens.js reads it off
+      // state.objects); a vehicle without the fitting, or a depot with an
+      // empty store, both come out as null and the sequence is unchanged.
+      const top = stages[stages.length - 1];
+      let refuel = null;
+      if (opts.depot && (vehicle.refuel ?? 0) >= 1 && top) {
+        const store = opts.depot.store ?? {};
+        const held = Math.max(0, (store.fuel ?? 0) + (store.oxidizer ?? 0));
+        // One full tank and no more (TANK_LIMIT): a depot holding a year of
+        // production cannot hand a lander an unbounded budget.
+        const propellant = Math.min(held, top.propMass * TANK_LIMIT);
+        // The stage is refuelled with every stage below it already gone, so
+        // what it has to push is itself and the payload.
+        const dryMass = top.dryMass + (vehicle.payloadMass ?? 0);
+        const dv = refuelDeltaV(propellant, dryMass, top.isp);
+        if (dv > 0) {
+          refuel = {
+            propellant, dv, name: opts.depot.name ?? 'the depot', id: opts.depot.id ?? null,
+          };
+        }
+      }
       lunarResult = resolveLunarSequence(
-        vehicle, requirement.moon.profile, insertion, dvAvailable, rng,
+        vehicle, requirement.moon.profile, insertion, dvAvailable, rng, refuel,
       );
       sequenceResult = lunarResult;
     }

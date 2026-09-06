@@ -1815,6 +1815,464 @@ manual haul, and the storage-full notification. `state.resources` and
 (`ARCHITECTURE.md:320`). Nothing in phase 3 credits a resource, and no tree
 node is priced in one.
 
+
+# Phase 3b — the economy, whole
+
+Additions to the phase 0, 1, 2 and 3 contracts. Tiers 1 to 4 keep working
+unchanged; every existing test keeps passing.
+
+This is the half of DESIGN.md's phase 3 that phase 3 deferred: survey,
+resources as something other than a ledger, equipment, bases, depots, the
+clock, offline accrual, storage caps, manual haul, and the storage-full
+notification. Phase 3 split at survey and said why; **3b does not split
+further**, because the thing DESIGN.md §14 is protecting is exactly this set —
+"splitting it leaves half of a system visible with nothing to do", and a
+survey that reveals two hidden numbers nothing reads is the example it gives.
+
+The order inside the phase is DESIGN.md's own and is preserved: survey →
+equipment and production → storage and offline accrual → haul → notification.
+(Landing sits in that list too; it shipped in phase 3.)
+
+## What 3b is, and what it is not
+
+**3b adds no tier and no goal.** Tier 4 is already won by the time any of this
+matters, and tier 5 has not been built. What 3b adds is a second income that is
+not a contract, a second currency that funds cannot buy, and the first thing in
+the game that happens while the player is not looking.
+
+**It adds no lose condition.** DESIGN.md §7: bankruptcy cannot happen, and a
+base that produces nothing is not a soft-lock — the floor contract still pays,
+and every tier 4 rung is still flyable with no base at all. Nothing in 3b is on
+the critical path to a tier goal, which is what makes it safe to ship after the
+flight tiers rather than before them.
+
+**The clock is for production and for nothing else.** DESIGN.md §3's table is
+the contract: research, purchases, launches and hauls all resolve now; only
+base production accrues over wall-clock time. A timer the player waits on for
+anything else is the mechanic DESIGN.md §12 excludes by name.
+
+## js/core/clock.js — new, pure
+
+The one module that is *about* wall-clock time, and it never reads one.
+
+```js
+export const ELAPSED_CLAMP           // 24h in ms (DESIGN.md §3, placeholder)
+export function elapsedSince(lastTick, now)   // -> ms, clamped to [0, CLAMP]
+export function tick(state, now)              // -> { state, elapsed }
+```
+
+**`now` is always an argument.** `Date.now` appears nowhere in `js/core`, and
+this module is the reason the rule needs restating rather than the exception to
+it: a module named for the clock is exactly where a `Date.now()` would look
+harmless. The caller in `js/ui` reads the real clock and passes the number in,
+which is what keeps every accrual test a pure function of two integers.
+
+**The clamp is not a fairness device, it is a bound.** `elapsedSince` returns 0
+for a `now` at or before `lastTick` — a clock moved backwards accrues nothing
+rather than accruing negatively — and `ELAPSED_CLAMP` for anything beyond a
+day. DESIGN.md §3 is explicit that clock manipulation is the player's own
+problem and we do not fight it; the clamp exists so that a save opened after a
+month does not credit a month, which would make storage caps meaningless and
+the first app-open of a new week better than every launch in it.
+
+**Storage is the real limit and the clamp is the backstop.** Accrual stops at
+the storage cap (see `base.js`), so on a well-built base the clamp is never the
+binding constraint. That is the intended relationship: the cap is the thing the
+player upgrades, the clamp is the thing that stops arithmetic going silly.
+
+## js/data/sites.js — new
+
+The candidate landing sites, and the two hidden numbers per resource per site
+that DESIGN.md §8 asks for.
+
+```js
+export const SITES = [
+  { id, body: 'moon', name,
+    resources: { water: { plentitude, quality }, metals: { plentitude, quality } } },
+  ...
+]
+```
+
+Four sites on the moon, and they differ enough to be a decision: a site rich in
+water and poor in metals, its mirror, one middling in both, and one poor in
+both that exists so a survey can come back with bad news. A survey that always
+found a good site would be a cutscene with a delta-v cost.
+
+**Plentitude and quality are not the same number and do not do the same job.**
+Plentitude scales the *extraction* rate (how much water and metals come out of
+the ground per hour); quality scales the *processing* yield (how much fuel and
+oxidizer a unit of water becomes). So a site can be worth landing on for its
+water and worth nothing for its propellant, which is what makes the pre-landing
+decision a decision. Both are held as multipliers around 1.
+
+**They are data, not rolls.** A site's numbers are fixed in `sites.js`, not
+drawn from the rng. Two reasons: a survey is meant to *reveal* information the
+world already has, which a roll made at survey time is not; and a re-rolled
+site would make the save's `sites` entry the source of truth for the world
+rather than for what the player knows about it. What the player knows is
+`state.sites[id].surveyed`; what is true is `SITES`.
+
+## js/core/resolver.js — the survey profile
+
+`survey` joins `LUNAR_PROFILES` as a fifth entry, flying the same two rungs an
+`orbit` profile does:
+
+```js
+survey: ['tli', 'loi']
+```
+
+That is the whole resolver change, and it is deliberately that small. A survey
+*is* an orbital mission (DESIGN.md §8: "a survey, an orbital mission profile"),
+so it costs what an orbit costs, is judged on the capture the way an orbit is,
+and reaches the same `best.lunarStep`. What differs is what the contract asks
+for and what the outcome credits, and neither of those is the resolver's
+business.
+
+The requirement carries the site:
+
+```js
+{ moon: { profile: 'survey', site: 'mare-tranquil' } }
+```
+
+`requirementKind` is unchanged — it already answers `'moon'` for anything whose
+`moon.profile` is in `LUNAR_PROFILES`, and adding the key is what makes
+`survey` a legal profile rather than a rejected one. `requiredLunarStep`
+answers `loi`'s index for it by the same rule it answers for `orbit`, because
+the profile's last step is the same step.
+
+**What credits the reveal is `state.js`, not the resolver.** `recordLaunch`
+marks `state.sites[req.moon.site].surveyed = true` on a successful survey,
+beside where it already raises `best.lunarStep`. The resolver stays a function
+of vehicle, mission and rng that knows nothing about what the player has
+learned — the same separation that keeps `objects` out of it.
+
+## js/core/base.js — new, pure
+
+Equipment, production rates, storage caps, and accrual. Pure: no DOM, no
+`Date.now`, no `Math.random`. It is the economy's `orbit.js`.
+
+```js
+export const EQUIPMENT = ['power', 'extractor', 'processor', 'storage', 'transport']
+export const POWER_PER_LEVEL, DRAW                 // supply, and draw per type
+export function powerBalance(base)                 // -> { supply, draw, ratio }
+export function rates(base, site)                  // -> per-hour production
+export function capacity(base)                     // -> per-resource storage cap
+export function accrue(base, site, elapsed)        // -> { base, produced }
+export function buildCost(type, level)             // -> { funds } | { resources }
+```
+
+**Five types with levels, and the chain is the one DESIGN.md §8 draws:**
+
+```
+power  ->  extractor (water, metals)  ->  processor (water -> fuel + oxidizer)
+                                          ->  storage  ->  transport
+```
+
+**Power is a shared cap, and that is what makes the five a system rather than
+five sliders.** Every other type draws power; supply is `power` level times
+`POWER_PER_LEVEL`. When draw exceeds supply, everything runs at
+`supply / draw` — a single throttle rather than a priority order, because a
+priority order is a rule the player has to be taught and a throttle is one they
+can read off two numbers. So the bottleneck moves as the base grows, which is
+the whole point of the table in §8: every type creates one, and power creates
+the one that makes the others matter.
+
+**Extraction is plentitude, processing is quality, and neither is capacity.**
+`rates` returns water and metals at `plentitude × level × BASE_RATE`, and fuel
+and oxidizer at `quality × processor level × YIELD`, capped by the water the
+extractor actually delivers — a processor larger than its extractor is idle
+capacity, which is a legible mistake rather than a hidden one.
+
+**Storage caps offline accrual, per resource** (DESIGN.md §3). `accrue` fills
+toward `capacity(base)` and stops; the surplus is not banked, not queued, and
+not lost with a warning — it simply was never produced, which is what a full
+tank means. The cap is therefore both the offline limit and the natural
+upgrade, exactly as §3 says.
+
+**Metals are spent on-site and never launched.** `buildCost` prices the first
+level of each type in funds (it is launched) and every level after it in
+metals (it is built there). That is the payoff DESIGN.md §8 promises the metals
+branch, and it is why metals have a plentitude but no quality: nothing
+processes them.
+
+**Accrual is a pure function of a base, a site and a duration.** It does not
+know what time it is, does not clamp (that is `clock.js`), and returns the new
+base beside what it produced so the UI can say what happened while the player
+was away without diffing two states.
+
+## js/core/state.js, js/core/save.js — schema v5
+
+`SCHEMA_VERSION = 5` in `save.js` **and** the duplicated literal in `newGame`
+(the duplication is deliberate — `state.js:12`). `migrations[4]` adds the four
+new fields as a whole-object literal, like the four before it:
+
+```js
+lastTick: null,                 // ms epoch of the last accrual, null = never
+sites: {},                      // { [siteId]: { surveyed: bool } }
+bases: {},                      // { [siteId]: { equipment: { ...: level } } }
+```
+
+and back-fills history entries with `surveyed: null` and `hauled: null`.
+
+**`lastTick: null` rather than 0.** A migrated save has never ticked, and 0 is
+the epoch — an `elapsedSince(0, now)` would clamp to a full day and credit a
+save that has never had a base with a day of production the first time it is
+opened. `null` means "start the clock now, accrue nothing", which is the true
+statement, and `clock.js`'s `tick` returns `elapsed: 0` for it.
+
+**`sites` holds what the player knows, `bases` holds what they have built**, and
+the two are separate maps rather than one because they answer different
+questions and are written at different times: a survey writes `sites`, a
+landing and a purchase write `bases`. A site can be surveyed and unbuilt (the
+common case, and the one that makes the survey a decision) or built and
+unsurveyed (impossible today, but the shape should not forbid what a later
+tier might want).
+
+**`resources` stops being a complete, unused foundation.** It has carried
+`{ water, fuel, oxidizer, metals }` since phase 0 (`ARCHITECTURE.md:320`) with
+nothing crediting it. `accrue`'s output is credited through `economy.js`'s
+existing `credit`, which already takes a `resources` bag — so the ledger needs
+no change at all, which is what that foundation was for.
+
+## Depots, and the manual haul
+
+**A depot is an object, not a new collection.** `state.objects` already holds
+everything launched and left in orbit, with a `kind`; a depot is
+`kind: 'depot'` with a `store` of propellant and the body it orbits. It is
+deployed by a mission the way a station core is, and `contracts.js`'s
+`requiresObject` and `unique` gates already say what needs saying about "one of
+these already exists".
+
+**The haul is resolved analytically, and does not launch from the pad.** A haul
+flies from a base on the lunar surface to a depot in lunar orbit, and the
+integrator has one planet-centred frame and one atmosphere — the same
+constraint that kept the moon from being a second attractor. So `resolveHaul`
+is a sibling of the lunar sequence rather than a case of `resolveLaunch`: a
+delta-v ladder of exactly one rung (`moon.js`'s `ascent`, 1 879 m/s), a
+reliability roll on the tanker, and a cargo number. The launch *flow* is
+unchanged — pick it off the board, watch it, read the outcome — which is what
+DESIGN.md §8 means by "it uses the same launch flow as a mission, so nothing
+new is built". `js/ui/surface.js` already draws a lunar liftoff.
+
+**Hauls count toward the launch score** (DESIGN.md §8), so `recordLaunch`
+counts them like any other launch. That is what makes auto-transport a score
+improvement and not only a convenience.
+
+**"Hauling pays from the first trip" is a tree constraint, and the number says
+which one.** A one-way tanker climbing the 1 879 m/s ascent rung delivers this
+much cargo per unit of propellant it burns, at 15% dry mass:
+
+| tanker isp | mass ratio | cargo delivered per unit burned |
+|-----------:|-----------:|--------------------------------:|
+| 280 | 1.982 | **0.89** |
+| 320 | 1.820 | **1.06** |
+| 360 | 1.703 | 1.24 |
+| 450 | 1.531 | **1.64** |
+
+So a hypergolic tanker *loses* propellant on every trip and a storable one
+breaks even inside the noise. Hauling pays only if the tanker burns what the
+processor makes — so **the one tanker the tree sells is hydrolox** (`struct-16`
+sets `haulIsp` to 450), which is exactly what the processor makes out of the
+site's water: the tanker burns the thing it is there to carry, and that is what
+closes the chain. That is not a balance knob; it is the ascent rung and the
+rocket equation, and the tests assert the ratio for every tanker the tree can
+sell rather than trusting it. A 4 t run at
+isp 450 burns 2 441 kg to deliver 4 000, netting **+1 559 kg** at the depot; at
+isp 320 it nets +230 kg, which is a chore that pays nothing.
+
+## js/data/missions.js — 3b's rungs
+
+No new tier, so these are `tier: 4` templates that appear once their gates
+open:
+
+- `moon-survey` — the survey, one per site, `requirement: { moon: { profile:
+  'survey', site } }`, gated on the tier 4 orbit hardware and offered only for
+  a site not yet surveyed. Cheap, repeatable across sites, and the reason the
+  orbit tier still has something to do.
+- `depot-deploy` — deploys the depot, `unique: true`, gated on the depot
+  hardware.
+- `haul` — the cargo run, `requiresObject: 'depot'` plus a built base with
+  product in it. Its payout is not funds: it moves resources.
+
+`mission.profile` gains `'survey'` and `'haul'`, and `data.test.js` keeps
+pinning that a template's `profile` agrees with its requirement.
+
+## js/ui — the BASE tab and the notification
+
+- **A fourth tab.** `tabsHtml` has held CONTRACTS / MISSIONS / TECH TREE since
+  phase 2; 3b adds BASE, and it is empty-with-an-explanation until the first
+  survey rather than hidden, because a tab that appears without warning is a
+  worse surprise than one that says what would fill it.
+- **What it shows**: each site (surveyed or not, and what a survey would tell
+  you), each base's five equipment levels with the next level's cost, the
+  power balance as supply against draw, and per-resource storage as a bar
+  against its cap with the current rate beside it. The rate is the number the
+  player is buying, so it is quoted per hour and not per second.
+- **What happened while you were away.** On the first render after a `tick`
+  with a non-zero elapsed, the base tab leads with what accrued and what
+  filled. This is the whole visible payoff of the clock, and a game that
+  accrued silently would have built an idle mechanic nobody noticed.
+- **The storage-full notification** (DESIGN.md §8) fires when a resource
+  reaches its cap while its route is manual, and stops once auto-transport is
+  bought — that is what the player is buying. Web build: the Notifications API
+  behind a permission the player grants from the base tab, and nothing at all
+  if they do not. Capacitor: Local Notifications, the one native plugin
+  DESIGN.md §13 identifies. It is never a badge on a timer the player is
+  waiting out.
+- **The permission is asked for on the base tab or nowhere.** A button that
+  appears only once there is a base to notify about, on the screen the
+  notification is about. Asking at boot — before the player has a base, a tank,
+  or any idea what would be notified — is the pattern every user has learned to
+  dismiss, and a refusal is an answer rather than a thing to ask again. A
+  player who never presses it loses only the notification: the same warning is
+  on the page.
+
+## Balance, phase 3b
+
+`tools/balance.mjs` gains an economy section, and it asserts the four things
+DESIGN.md states as requirements rather than as hopes:
+
+1. **A haul pays from the first trip.** Cargo delivered per unit burned > 1
+   with the cheapest transport-node closure, computed from `moon.js`'s ascent
+   rung and the tanker's own isp. Fails the build if the tree lets a player buy
+   a losing tanker.
+2. **Auto-transport is in reach.** Its total funds cost is affordable to a
+   player with one base and a handful of hauls, measured from the tier 4 end
+   state the greedy simulation already produces (100 reputation, ~77 000
+   funds, 53 nodes).
+3. **Storage is the offline limit, not the clamp.** At every buyable
+   combination of extractor and storage levels, the time to fill storage from
+   empty is under `ELAPSED_CLAMP` — otherwise the cap never binds and the
+   upgrade sells nothing.
+4. **Metals pay for the next piece of equipment.** The metals a site yields at
+   level 1 cover the level 2 build cost in a bounded number of days, or the
+   metals branch is a resource that only gates.
+
+**Measured, once 3b was built.** Every one of the four passes, and two of them
+moved a number to get there:
+
+- **Hauling pays.** The one tanker the tree sells (`struct-16`, isp 450) burns
+  **2 441 kg to deliver 4 000**, a ratio of **1.64** and a net of **+1 559 kg**
+  at the depot. Nothing in the tree can sell a losing tanker; the test walks
+  every `haulIsp` effect rather than the one that exists today.
+- **Storage binds before the clamp, with margin.** The slowest propellant tank
+  is far-side-flats at level 3: **21.4 hours** against a 24-hour clamp. It was
+  **23.8 hours** at the first sizing, which passed and would have stopped
+  passing on any change to a rate, a site or the clamp — so `STORE_PER_LEVEL`
+  came down from 400 to 360 and the metals share went up to keep the stockpile
+  clearing the dearest next-level cost. A margin a tool reports is worth more
+  than a pass it does not.
+- **Metals pay quickly enough to matter.** The cheapest level 2 (storage, 350
+  metals) takes **0.5 days** at the metal-rich site, **0.8** at the middling
+  one and **1.8** at the poorest. The site choice is visible in the number,
+  which is what the survey is for.
+- **The metals stockpile holds the next upgrade at every level**, which is the
+  soft-lock rule rather than a balance one.
+
+## Deferred out of 3b
+
+Mining as a profile of its own, the asteroid economy, and anything that makes a
+resource sellable for funds — DESIGN.md §15 excludes the last by name, and the
+first two are tier 6.
+
+# Phase 4 — automation, resource gates, refueling
+
+The three things DESIGN.md's table lists for phase 4, and they are one phase
+because each is meaningless without 3b and none of them needs the others.
+
+## js/data/tree.js — automation flags and resource-priced nodes
+
+**Automation is tiered, and each tier removes one named chore** (DESIGN.md §8):
+
+| node | effect | the chore it removes |
+|------|--------|----------------------|
+| auto-route | `autoHaul` set 1 for one body's base→depot route | the haul launch |
+| auto-rate | `haulRate` add | waiting between automatic hauls |
+| auto-capacity | `haulCapacity` mul | a depot that fills slower than the base |
+
+Three small purchases rather than one large one, and the manual phase returns
+briefly each time a new body opens — which is the shape §8 asks for and the
+reason `autoHaul` is per route rather than global.
+
+**Resource-priced nodes are what `cost.resources` was built for.** `economy.js`
+has taken `{ funds, resources }` costs since phase 0 and `canAfford`/`debit`
+already handle them; phase 4 is where a node finally carries one. The rule
+DESIGN.md §8 sets is the one to keep: a resource-gated node costs something
+**no contract pays out**, so only landings unlock it. A node priced in funds
+*and* metals is fine; a node priced in metals that a contract could pay for in
+funds is the "funds with a detour" §8 forbids.
+
+## js/core/base.js — auto-transport on the clock
+
+With `autoHaul` owned for a route, `accrue` moves product to the depot as part
+of the same tick, at `transport level × haulRate`, and the storage cap stops
+being the binding constraint on that resource — which is precisely what the
+notification stopping means. The propellant the automatic haul burns is charged
+at the same ratio a manual one pays, so automation buys away the *launch*, not
+the physics.
+
+## js/core/resolver.js — refueling at a depot
+
+The mechanic DESIGN.md §8 calls "what makes tiers 5 and 6 reachable", and the
+smallest change in phase 4:
+
+> A vehicle that reaches a depot holding propellant tops up its remaining-stack
+> budget before the sequence spends it.
+
+Concretely, in the analytic phase, after the insertion budget is summed and
+before the ladder is walked: if the mission's route passes a depot with a
+`store`, and the vehicle carries the refuel fitting, add
+
+```
+isp * G0 * ln((m + p) / m)
+```
+
+for the propellant `p` the depot can transfer into the stage of mass `m`. It is
+the same Tsiolkovsky term the budget is already built out of, so a refuel is
+not a new kind of number — it is more of the one number the whole game is
+about (DESIGN.md §4).
+
+**What it does to the ladders already measured.** Nothing to the ladders: they
+are properties of the bodies. What moves is the budget they are spent out of —
+a lunar depot turns the tier 4 `return`'s 623 m/s of margin into whatever the
+depot holds, and the tier 5 goal's 12 555 m/s stops being measured from
+9 151 m/s of remaining stack. ARCHITECTURE.md's phase 5 section says this from
+the other side and stays true as written.
+
+## Balance, phase 4
+
+1. **A refuel is worth more than the haul that filled it.** The delta-v a
+   depot's propellant buys a departing vehicle, against the propellant the
+   hauls burned to put it there. If that is under 1 the depot is a way of
+   destroying fuel.
+2. **Automation does not break the launch score.** The greedy simulation runs
+   with and without the automation nodes; the automated run must take fewer
+   launches (§8: buying auto-transport improves the score) without collapsing
+   the tier below the 15-launch floor.
+3. **No resource-gated node is reachable by funds alone**, checked by
+   enumeration over the tree — the §8 rule, asserted.
+
+**Measured, once phase 4 was built.**
+
+- **A refuel is worth far more than the haul that filled it.** One tankful into
+  the full tree's top stage — **70 kg into a 14 kg stage at isp 467** — is
+  **8 201 m/s**, against the 43 kg of base production the hauls burned to put
+  it there. That is not a balance error, it is the rocket equation on a stage
+  whose dry mass is a tenth of its propellant, and it is exactly why
+  `TANK_LIMIT` caps the transfer at one tankful rather than at what the depot
+  holds. What it costs is the long way round: a survey, a base landing, five
+  equipment purchases, a depot, several hauls and two tree nodes, against the
+  two nodes the direct route to the same goal needs.
+- **Auto-transport is in reach.** `guide-8` is 150 000 funds and 900 kg of
+  propellant; a tier 4 winner ends the tier on **76 800 funds**, and one full
+  level-1 tank farm sends 248 kg, so it is **four manual runs** and a few more
+  contracts away. "A handful of hauls" is met.
+- **The greedy tier 4 player is unchanged at 18 launches**, which is the result
+  that matters most: 3b and 4 add to the tier without disturbing the ladder it
+  is scored on. None of the economy templates is on the critical path to the
+  tier goal, and the simulation confirms the board still routes around them.
+
+
 # Phase 5 — tier 5, the neighbours
 
 Additions to the phase 0, 1, 2 and 3 contracts. Tiers 1 to 4 keep working
@@ -1826,19 +2284,23 @@ DESIGN.md §14's phase table puts **3b** (survey, resources, equipment, bases,
 the clock, haul) and then **4** (auto-transport, resource-gated nodes,
 refueling delta-v) before this one, and §8 says in as many words that
 refueling "is the mechanic that makes tiers 5 and 6 reachable without absurd
-vehicles". This document plans tier 5 out of that order. That is a real
-conflict with the design doc and it is recorded here rather than resolved
-here: **which of 3b/4 and tier 5 is built next is the owner's call**, and
-nothing below reorders the table.
+vehicles". This document was written before either of those, and recorded the
+order as the owner's call rather than resolving it.
 
-What this document does instead is remove the dependency the doc asserts. The
-ladder in §"Measured, before the tier was built" is priced **with no refueling
-anywhere in it**, from the parking orbit a tier 4 vehicle actually reaches, and
-it closes. Refueling would make tier 5 cheaper; it is not what makes tier 5
-possible. So tier 5 can be built before phase 4, after it, or between 3b and 4,
-and the only thing that changes is how much of the tier's delta-v the tree has
-to sell. The last section says exactly what phase 4 would change if it lands
-first.
+**That call has since been made: 3b and 4 are built first, completely.** Their
+contract is the two sections immediately above this one, and the table's order
+stands as written. So tier 5 is built on a game that already has resources,
+bases, depots and refueling — which changes none of the measurements below and
+one of the conclusions, noted where it lands.
+
+The measurement that made that a free choice still stands and is still worth
+keeping. The ladder in §"Measured, before the tier was built" is priced **with
+no refueling anywhere in it**, from the parking orbit a tier 4 vehicle actually
+reaches, and it closes. Refueling makes tier 5 cheaper; it is not what makes
+tier 5 possible. Its value now is as a floor rather than as a schedule: the
+tier 5 tree must still be able to close the goal for a player who has built no
+base, because 3b adds no tier goal and nothing forces a player through it. The
+last section says what phase 4's refueling changes on top of that floor.
 
 ## What tier 5 is, and what it is not
 
@@ -2034,11 +2496,20 @@ endurance ladder and the check is not made. (Making `endurance` bite on tier 4
 retroactively would break a shipped tier; the gate belongs to the sequence's
 caller, not to the loop.)
 
-## js/core/state.js, js/core/save.js — schema v5
+## js/core/state.js, js/core/save.js — schema v6
 
-`SCHEMA_VERSION = 5` in `save.js` **and** the duplicated literal in `newGame`.
-`migrations[4]` adds `best.bodySteps: {}` and back-fills history entries with
-`bodyStep: null`, following the whole-literal rewrite the other four use.
+`SCHEMA_VERSION = 6` in `save.js` **and** the duplicated literal in `newGame`.
+`migrations[5]` adds `best.bodySteps: {}` and back-fills history entries with
+`bodyStep: null`, following the whole-literal rewrite the five before it use.
+
+**The version number, and why it is 6 rather than 5.** This section was written
+when tier 5 was the next phase and claimed v5. Phase 3b takes v5 (the clock,
+sites and bases); phase 4 takes none, because automation is owned nodes,
+resource pricing is a cost shape `economy.js` already handles, and a depot's
+store is a field 3b's `objects` already carries. So tier 5 lands at v6 — and
+the general rule this is an instance of is that **a phase's schema number is
+whatever is next when it is built, not what the plan guessed**, since the
+migration chain is walked in order and a gap in it is a save that cannot load.
 
 `best.lunarStep` is a single number because tier 4 has a single destination.
 Tier 5 has four, and a per-body best is what a per-body goal has to read:

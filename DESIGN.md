@@ -415,10 +415,12 @@ screen. Content for a tier is written when that tier is built, not before.
   prices the whole tier, goal included, from the parking orbit a tier 4 vehicle
   actually reaches, with no refueling anywhere in it, and the ladder closes at
   12 555 m/s against a 9 151 m/s tier 4 stack — a tier's worth of tree, not an
-  absurd vehicle. **The table's order is unchanged**: 3b and 4 still come
-  first, and building tier 5 before them is a decision nobody has made. What
-  is settled is that it would be a decision and not a blocker, and that
-  refueling makes tier 5 cheaper to build rather than possible.
+  absurd vehicle. **The table's order is unchanged**: 3b and 4 come first, and
+  that is now the decision rather than the default. What the measurement buys
+  is not a reordering but a floor — the tier 5 tree must close its goal for a
+  player who has built no base, because 3b adds no tier goal and nothing
+  forces a player through it. Refueling makes tier 5 cheaper to build, not
+  possible.
 
 - **Reputation** can be introduced in phase 1 as a stat that only rises, and
   gain its cost (loss on failure, contract minimums) in phase 3 when there

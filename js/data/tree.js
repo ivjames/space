@@ -1300,4 +1300,119 @@ export const nodes = [
     requires: ['rel-10'],
     effects: [{ stat: 'landerBonus', op: 'add', value: 0.05 }],
   },
+
+  // --- Phase 3b: the cargo tanker ------------------------------------------
+  // Two nodes, and they are the tree's whole part in the economy. Everything
+  // else 3b adds — the five equipment types and their levels — is bought AT
+  // the base, in funds and then in metals (js/core/base.js), because DESIGN.md
+  // §8's payoff for the metals branch is that a base grows itself rather than
+  // being shopped for. What the tree sells is the vehicle that connects the
+  // base to orbit, which is a rocket like everything else here.
+  //
+  // THE TANKER IS CRYOGENIC, AND THAT IS THE DESIGN RATHER THAN FLAVOUR.
+  // js/core/haul.js prices a haul off the rocket equation over the 1 879 m/s
+  // lunar ascent rung, and the tanker's isp decides whether it delivers more
+  // than it burns: 0.89 units of cargo per unit burned at isp 280, 1.06 at
+  // 320, 1.64 at 450. A hypergolic tanker LOSES propellant on every trip, so
+  // DESIGN.md §8's "hauling pays from the first trip" is a constraint on this
+  // node's number and not a balance knob. 450 is a hydrolox upper stage, which
+  // is also exactly what the base's processor makes out of the site's water —
+  // the tanker burns the thing it is there to carry, and that is why the
+  // chain closes. test/data.test.js asserts the ratio rather than trusting it.
+  {
+    id: 'struct-16',
+    branch: 'structure',
+    level: 16,
+    tier: 4,
+    name: 'Cargo tanker',
+    desc: 'A reusable-tank hydrolox lifter sized for the run from a surface base to lunar orbit, burning the propellant the base makes.',
+    cost: { funds: 160000 },
+    requires: ['struct-13'],
+    effects: [{ stat: 'haulIsp', op: 'set', value: 450 }],
+  },
+  {
+    id: 'rel-12',
+    branch: 'reliability',
+    level: 14,
+    tier: 4,
+    name: 'Tanker qualification',
+    desc: 'Flight-proving the cargo lifter over repeated unmanned climbs, so a run that carries a week of production is not a coin toss.',
+    cost: { funds: 90000 },
+    requires: ['rel-11'],
+    effects: [{ stat: 'haulBonus', op: 'add', value: 0.05 }],
+  },
+
+  // --- Phase 4: the depot fitting, and the automation ladder ---------------
+  // THE FIRST NODES IN THE GAME PRICED IN A RESOURCE. `cost.resources` has
+  // been part of economy.js's canAfford/debit since phase 0 with nothing
+  // carrying one (ARCHITECTURE.md called it "a complete, unused foundation");
+  // this is what it was for.
+  //
+  // The rule DESIGN.md §8 sets is the one that makes it worth doing: a
+  // resource-gated node costs something NO CONTRACT PAYS OUT, so only landings
+  // unlock it. Fuel and oxidizer reach state.resources by exactly one route --
+  // a base produced them and a haul carried them up (js/core/haul.js) -- so a
+  // node priced in them cannot be bought by flying contracts, however rich the
+  // player is. That is the whole difference between a second currency and
+  // "funds with a detour", which §15 excludes by name.
+  {
+    id: 'struct-17',
+    branch: 'structure',
+    level: 17,
+    tier: 4,
+    name: 'Depot docking fitting',
+    desc: 'A propellant transfer coupling and the plumbing to move a tankful across in vacuum, so a stage arriving at a depot can leave it full.',
+    cost: { funds: 130000, resources: { fuel: 150, oxidizer: 1200 } },
+    requires: ['struct-16'],
+    effects: [{ stat: 'refuel', op: 'set', value: 1 }],
+  },
+  {
+    id: 'guide-8',
+    branch: 'guidance',
+    level: 15,
+    tier: 4,
+    name: 'Autonomous cargo routing',
+    desc: 'The base-to-depot run flown on its own recognisance: load, climb, rendezvous, unload, land, repeat.',
+    // TIERED AUTOMATION (DESIGN.md §8): three purchases that each remove one
+    // named chore, rather than one that removes the activity. This one removes
+    // the LAUNCH -- the route runs on the clock instead of on the board -- and
+    // it is what stops the storage-full notification, which is what the player
+    // is buying. The two below it are rate and capacity.
+    //
+    // "Auto-transport is in reach" (§8) is a price constraint, not a wish: it
+    // has to be affordable to a player with one base and a handful of hauls,
+    // which is why it is priced under the fitting above and asks for about one
+    // cargo run's worth of propellant.
+    cost: { funds: 150000, resources: { fuel: 100, oxidizer: 800 } },
+    requires: ['guide-7', 'struct-16'],
+    effects: [
+      { stat: 'autoHaul', op: 'set', value: 1 },
+      // One run a day to start with: enough that a player who comes back
+      // tomorrow finds the depot fuller, slow enough that the rate upgrade
+      // below has something to sell.
+      { stat: 'haulRate', op: 'set', value: 1 },
+    ],
+  },
+  {
+    id: 'guide-9',
+    branch: 'guidance',
+    level: 16,
+    tier: 4,
+    name: 'Route turnaround',
+    desc: 'Ground handling, tank chilldown and checkout compressed until the tanker can fly again the same day.',
+    cost: { funds: 120000 },
+    requires: ['guide-8'],
+    effects: [{ stat: 'haulRate', op: 'add', value: 2 }],
+  },
+  {
+    id: 'struct-18',
+    branch: 'structure',
+    level: 18,
+    tier: 4,
+    name: 'Stretched tanker',
+    desc: 'A longer barrel section on the same engine: more cargo for the same climb, which is the only free lunch the rocket equation allows.',
+    cost: { funds: 140000, resources: { fuel: 120, oxidizer: 960 } },
+    requires: ['struct-17'],
+    effects: [{ stat: 'haulCapacity', op: 'set', value: 1.5 }],
+  },
 ];

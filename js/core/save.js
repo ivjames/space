@@ -1,7 +1,7 @@
 // Versioned save/load, migrations, storage adapter. Pure. See
 // ARCHITECTURE.md.
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 // migrations[v] transforms a save at version v into version v + 1's shape
 // (the version field itself is stamped by deserialize, not by the
@@ -187,6 +187,72 @@ export const migrations = {
       ...entry,
     })),
     objects: s.objects ?? [],
+  }),
+  // migrations[4] is phase 3b's schema bump (ARCHITECTURE.md, "Phase 3b —
+  // the economy, whole"): the three fields the economy needs, and nothing
+  // else. Resources themselves need no migration at all — `resources` has
+  // carried { water, fuel, oxidizer, metals } since phase 0 with nothing
+  // crediting it, which is exactly what that unused foundation was for.
+  //
+  //   lastTick   ms epoch of the last accrual. NULL, not 0, and the
+  //              difference is a day of free production: 0 is the epoch, so
+  //              `elapsedSince(0, now)` clamps to ELAPSED_CLAMP and would
+  //              credit every migrated save with a full day the first time it
+  //              was opened. null means "the clock has not started"; clock.js
+  //              answers 0 for it and stamps `now`, which is the true
+  //              statement about a save that has never had a base.
+  //   sites      what the player KNOWS about each site, `{ [id]: { surveyed } }`.
+  //              What is TRUE about a site lives in js/data/sites.js and is
+  //              never persisted — a save that carried the plentitude numbers
+  //              would make the save the source of truth for the world rather
+  //              than for the player's knowledge of it. Empty: a pre-3b save
+  //              has surveyed nothing, because there was no survey to fly.
+  //   bases      what the player has BUILT, `{ [siteId]: { equipment } }`.
+  //              Separate from `sites` because the two are written at
+  //              different times by different things — a survey writes one, a
+  //              purchase writes the other — and a site can legitimately be
+  //              surveyed and unbuilt, which is the common case and the whole
+  //              point of the survey being a decision.
+  //
+  // History entries gain `surveyed` and `hauled`, back-filled null, on the
+  // same "the null a pre-phase outcome could never have set" pattern the
+  // three migrations above use, and with the defaults-first / `...entry`-last
+  // ordering migrations[3] explains.
+  4: (s) => ({
+    version: 5,
+    seed: s.seed ?? 0,
+    draws: s.draws ?? 0,
+    funds: s.funds ?? 0,
+    reputation: s.reputation ?? 0,
+    resources: {
+      water: 0,
+      fuel: 0,
+      oxidizer: 0,
+      metals: 0,
+      ...(s.resources ?? {}),
+    },
+    owned: s.owned ?? [],
+    tier: s.tier ?? 1,
+    launches: s.launches ?? { 1: 0 },
+    best: {
+      maxAltitude: s.best?.maxAltitude ?? 0,
+      maxDownrange: s.best?.maxDownrange ?? 0,
+      bestPeriapsis: s.best?.bestPeriapsis ?? null,
+      bestClosestApproach: s.best?.bestClosestApproach ?? null,
+      docked: s.best?.docked ?? false,
+      lunarStep: s.best?.lunarStep ?? -1,
+      wins: s.best?.wins ?? {},
+    },
+    contracts: s.contracts ?? [],
+    history: (s.history ?? []).map((entry) => ({
+      surveyed: null,
+      hauled: null,
+      ...entry,
+    })),
+    objects: s.objects ?? [],
+    lastTick: s.lastTick ?? null,
+    sites: s.sites ?? {},
+    bases: s.bases ?? {},
   }),
 };
 
