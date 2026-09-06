@@ -224,6 +224,24 @@ const NOZZLE_H = 3;
 /** Interstage band at the top of a lower segment, px. */
 const BAND_H = 2;
 /**
+ * The deployed payload's glyph, px — the body and the two panels — and how far
+ * it drifts off the stack on screen, and over how long (see `drawDeployed`).
+ *
+ * The drift is presentational and says so: a payload is let go at a few
+ * centimetres a second, which over the whole of the coast that follows is a
+ * fraction of a pixel at this scale. What has to read is that it CAME OFF, so
+ * it separates by its own width a few times over and then holds there, in the
+ * orbit it was left in.
+ */
+const PAYLOAD_W = 7;
+const PAYLOAD_H = 5;
+const PAYLOAD_PANEL_W = 5;
+const PAYLOAD_PANEL_H = 3;
+const DEPLOY_DRIFT_PX = 26;
+const DEPLOY_RISE_PX = 9;
+const DEPLOY_DRIFT_S = 2.4;
+
+/**
  * Real seconds the stack above a spent stage takes to settle onto the sample
  * point after a separation. The nozzle of the new bottom stage would otherwise
  * re-anchor on the point and drop the whole stack by the spent stage's height
@@ -1219,6 +1237,61 @@ export function playOutcome(canvas, outcome, opts = {}) {
     return Math.max(sample.stage ?? 1, passed + 1);
   }
 
+  /**
+   * THE PAYLOAD, once it has left the stack — a comsat, a station core, a
+   * relay — drawn from the resolver's `deploy` event (js/core/resolver.js, THE
+   * RELEASE) and nothing else.
+   *
+   * It is NOT drawn like a spent stage. A dropped stage is dead: it tumbles,
+   * falls behind and fades out, and `drawDebris` freezes its WORLD position at
+   * the instant of separation because at these speeds it may as well have
+   * stopped. A deployed payload is the opposite of all three — it is the thing
+   * the contract is paid for, it is in the same orbit as the vehicle that let
+   * it go, and it is still there when the flight ends. So it is drawn at the
+   * vehicle's CURRENT position (they are coasting together; a world position
+   * frozen at release would be off the left edge within a second, the view
+   * being fifteen kilometres tall and the orbit seven and a half a second) and
+   * eased off it by a fixed screen-space drift, which is what a spring push of
+   * a few centimetres a second looks like at a scale where it is otherwise
+   * invisible. It does not fade.
+   *
+   * Reads only events at or before simT, like everything else here.
+   */
+  function drawDeployed(dr, alt) {
+    for (const ev of timeline) {
+      if (ev.kind !== 'deploy') continue;
+      if (simT < ev.t) break;
+      const drift = Math.min(ageOf(stamps.get(ev)), DEPLOY_DRIFT_S) / DEPLOY_DRIFT_S;
+      const x = drToX(dr) - DEPLOY_DRIFT_PX * drift;
+      const y = altToY(alt) - DEPLOY_RISE_PX * drift;
+      if (y > h + 30 || y < -30 || x < -30 || x > w + 30) continue;
+      drawPayload(x, y);
+    }
+  }
+
+  /**
+   * The payload glyph: a body the width of the stack's own nose with a panel
+   * out either side. Small, and the same near-white the stack is drawn in with
+   * the same daylight outline, because it came off the top of it.
+   */
+  function drawPayload(x, y) {
+    const half = PAYLOAD_W / 2;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.fillStyle = colors.fg;
+    ctx.fillRect(-half, -PAYLOAD_H / 2, PAYLOAD_W, PAYLOAD_H);
+    ctx.fillStyle = rgba(rgbAccent, 0.75);
+    for (const side of [-1, 1]) {
+      ctx.fillRect(side * half, -PAYLOAD_PANEL_H / 2, side * PAYLOAD_PANEL_W, PAYLOAD_PANEL_H);
+    }
+    if (sky.day > 0.05) {
+      ctx.strokeStyle = rgba(DAY_INK, 0.65 * sky.day);
+      ctx.lineWidth = 1;
+      ctx.strokeRect(-half - 0.5, -PAYLOAD_H / 2 - 0.5, PAYLOAD_W + 1, PAYLOAD_H + 1);
+    }
+    ctx.restore();
+  }
+
   function drawDebris() {
     // A spent stage drops away and falls behind. Its world position is the
     // position at separation (a past event); the fall itself is a screen-space
@@ -1670,6 +1743,7 @@ export function playOutcome(canvas, outcome, opts = {}) {
     drawGround();
     drawTrail(dr, alt);
     drawDebris();
+    drawDeployed(dr, alt);
     drawAnomalies();
     // The rocket keeps being drawn through an escaped failure — the stack
     // above separates clear and relights, and the camera follows it — and

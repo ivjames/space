@@ -33,6 +33,7 @@ import {
   ENGINE_DEFICIT_MIN,
   ENGINE_DEFICIT_MAX,
   ORBIT_CONFIRM_COAST,
+  DEPLOY_COAST,
   ESCAPE_DELAY,
   ESCAPE_MIN_ALT,
   LUNAR_PROFILES,
@@ -2146,6 +2147,112 @@ test('a vehicle with no heat shield gets home no further than lunar orbit', () =
     o.timeline.some((e) => e.kind === 'lunar-orbit' && e.t === at.ascent + ASCENT_TIME),
     'the ascent arrives somewhere',
   );
+});
+
+// A DEPLOYMENT IS PAID FOR LEAVING SOMETHING BEHIND, so the release is on the
+// timeline. js/core/state.js has created the object on every successful deploy
+// since phase 1, so the comsat, the station core, the lab module and the lunar
+// depot all existed — but no flight ever had a moment at which they left the
+// stack, so the map and the ascent views had nothing to draw and the ticker
+// nothing to say. Every one of the three shapes now releases, and none of them
+// ENDS on the release: the flight runs on past it.
+test('a deployment releases its payload, and does not end on the frame it does', () => {
+  const tree = loadTree(treeNodes);
+  const vehicle = buildVehicle(baseVehicle, collectEffects(tree, { owned: treeNodes.map((n) => n.id) }));
+  const load = { fuelFraction: 1, turn: 0.35, window: 0 };
+  const deployOf = (o) => o.timeline.filter((e) => e.kind === 'deploy');
+
+  // 1. NO PHASE AFTER INSERTION: the ascent view is the camera, so the wait is
+  // DEPLOY_COAST seconds and the INTEGRATOR has to coast far enough that the
+  // samples cover it — a release drawn past the last sample plays against a
+  // frozen sprite.
+  const sat = missions.find((m) => m.id === 'satellite');
+  const o = resolveLaunch(vehicle, sat, load, makeRng(3));
+  assert.equal(o.success, true);
+  const [release] = deployOf(o);
+  assert.ok(release, 'the comsat is released');
+  assert.equal(release.name, sat.deploys.name, 'the event carries the name the map labels it with');
+  assert.match(release.text, /^Comsat released into /);
+  const confirmed = o.timeline.find((e) => e.kind === 'orbit').t;
+  assert.ok(Math.abs(release.t - (confirmed + DEPLOY_COAST)) < 1e-6);
+  assert.ok(o.timeline.at(-1).t > release.t, 'and the flight runs on past it');
+  assert.ok(o.samples.at(-1).t >= release.t, 'with samples under the release');
+
+  // 2. A PHASE AFTER INSERTION, at the planet: the map view is the camera and
+  // plays at MAP_RATE, so the wait is a quarter of the target's own orbit. A
+  // dock delivers its module BY docking, so the line says berthed.
+  const dock = missions.find((m) => m.id === 'dock');
+  const target = {
+    id: 'core-1', name: 'Station core', periapsis: 160000, apoapsis: 160000, phase: 0,
+  };
+  const d = resolveLaunch(vehicle, dock, load, makeRng(3), { target });
+  assert.equal(d.docked, true);
+  const [berth] = deployOf(d);
+  assert.ok(berth, 'the lab module comes off the vehicle');
+  assert.equal(berth.text, 'Lab module berthed to Station core.');
+  const tDock = d.timeline.find((e) => e.kind === 'dock').t;
+  const quarter = elementsFrom(R_EARTH + target.periapsis, R_EARTH + target.apoapsis).period / 4;
+  assert.ok(Math.abs(berth.t - (tDock + quarter)) < 1e-6);
+  assert.ok(d.timeline.at(-1).t > berth.t, 'and the flight runs on past it');
+
+  // 3. A PHASE AFTER INSERTION, at the moon: the same argument on the moon's
+  // own period, and after the revolution rather than instead of it.
+  const depot = missions.find((m) => m.id === 'depot-deploy');
+  const p = resolveLaunch(vehicle, depot, load, makeRng(3));
+  assert.equal(p.success, true);
+  const [dropped] = deployOf(p);
+  assert.equal(dropped.text, 'Lunar depot released into lunar orbit.');
+  const revolution = p.timeline.find((e) => e.kind === 'lunar-orbit').t;
+  assert.ok(Math.abs(dropped.t - (revolution + LLO_PERIOD / 4)) < 1e-6);
+  assert.ok(p.timeline.at(-1).t > dropped.t, 'and the flight runs on past it');
+
+  // A FLIGHT THAT MISSED DEPLOYS NOTHING, which is the same test state.js
+  // applies when it decides whether the object exists at all.
+  const weak = buildVehicle(baseVehicle, []);
+  const missed = resolveLaunch(weak, sat, load, makeRng(3));
+  assert.equal(missed.success, false);
+  assert.deepEqual(deployOf(missed), []);
+});
+
+// A SURVEY IS A PASS OVER THE GROUND, so the pass is on the timeline. `survey`
+// and `orbit` fly the same two burns (LUNAR_PROFILES), and the revolution that
+// follows a capture used to be the `orbit` profile's alone — which left the one
+// profile whose subject is what it SEES from up there ending on the frame the
+// capture burn cut off. The map plays the timeline and stops at its last event,
+// so a survey reached lunar orbit and was never in one, and the instrument got
+// no pass over the site it is paid to map.
+test('a survey flies the pass it is paid for, not just the capture', () => {
+  const v = moonFixture();
+  const survey = resolveLaunch(v, MOON_MISSION('survey'), MOON_LOAD, makeRng(7));
+  const orbit = resolveLaunch(v, MOON_MISSION('orbit'), MOON_LOAD, makeRng(7));
+  assert.equal(survey.success, true);
+
+  const at = Object.fromEntries(survey.lunar.burns.map((b) => [b.kind, b.t]));
+  const passes = survey.timeline.filter((e) => e.kind === 'lunar-orbit');
+  assert.equal(passes.length, 1, 'one revolution, at the period the ladder is priced against');
+  assert.ok(Math.abs(passes[0].t - (at.loi + LLO_PERIOD)) < 1e-6);
+  // And the flight now ENDS there rather than at the capture.
+  assert.equal(survey.timeline.at(-1).kind, 'end');
+  assert.ok(Math.abs(survey.timeline.at(-1).t - (at.loi + LLO_PERIOD)) < 1e-6);
+
+  // It says so in the survey's own terms, and the orbit rung keeps its line.
+  assert.match(passes[0].text, /survey pass/i);
+  assert.match(
+    orbit.timeline.find((e) => e.kind === 'lunar-orbit').text, /one revolution of the moon/i,
+  );
+
+  // The two are otherwise the SAME FLIGHT — that identity is the whole of the
+  // resolver's part in a survey, and an event is not a step.
+  assert.deepEqual(survey.lunar.burns.map((b) => b.kind), orbit.lunar.burns.map((b) => b.kind));
+  assert.equal(survey.lunar.dvUsed, orbit.lunar.dvUsed);
+  assert.equal(survey.lunar.reached, orbit.lunar.reached);
+
+  // Nothing else gains one on the way out: a flyby makes no capture to coast
+  // after, and a landing has its own reason to still be there.
+  for (const profile of ['flyby', 'land']) {
+    const o = resolveLaunch(v, MOON_MISSION(profile), MOON_LOAD, makeRng(7));
+    assert.equal(o.timeline.filter((e) => e.kind === 'lunar-orbit').length, 0, profile);
+  }
 });
 
 // ---------------------------------------------------------------------------

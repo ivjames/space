@@ -517,3 +517,42 @@ test('playOrbital: the landing, the liftoff and the way home are all shot at the
     assert.ok(SHOT_RATE < 60, `shot rate: ${SHOT_RATE}`);
   });
 });
+
+// THE APPROACH AND THE LIFTOFF HAVE TIME IN THEM, in real seconds, and this is
+// arithmetic rather than a rendering: how long each leg takes to watch follows
+// from its own duration (js/core/moon.js), the altitude the shot takes over at
+// (SURFACE_ALT), and the two rates. The shapes are the module's own —
+// `poweredAt` puts the descent's altitude at (1-u)^2 of the orbit's and the
+// ascent's at u^2 — so the fraction of each leg the camera on the ground owns
+// is fixed by SURFACE_ALT alone, and the seconds follow.
+//
+// The numbers exist because the first pair did not: the whole trip from lunar
+// orbit to the ground took nine seconds, of which the part with ground in it
+// was seven, and the approach the tier is named for was over before it read as
+// an approach. The floors below are what "flown rather than cut" means here,
+// and anything that raises the rates again has to move them.
+test('the descent, the climb home and the entry are watched rather than cut', async () => {
+  const { SHOT_RATE, LUNAR_BURN_RATE, ENTRY_RATE } = await import('../js/ui/map.js');
+  const { SURFACE_ALT } = await import('../js/ui/surface.js');
+  const { ASCENT_TIME, DESCENT_TIME, LLO_ALT } = await import('../js/core/moon.js');
+
+  // Where in each leg the cut to the shot on the ground falls.
+  const uCut = Math.sqrt(SURFACE_ALT / LLO_ALT);
+  // Real seconds: the high part at the burn rate, the part with a ground in it
+  // at the shot's own.
+  const descent = ((1 - uCut) * DESCENT_TIME) / LUNAR_BURN_RATE
+    + (uCut * DESCENT_TIME) / SHOT_RATE;
+  const ascent = (uCut * ASCENT_TIME) / SHOT_RATE
+    + ((1 - uCut) * ASCENT_TIME) / LUNAR_BURN_RATE;
+  const onGround = (uCut * DESCENT_TIME) / SHOT_RATE;
+
+  assert.ok(descent > 15, `descent takes ${descent.toFixed(1)}s to watch`);
+  assert.ok(onGround > 10, `the last ${SURFACE_ALT / 1000} km takes ${onGround.toFixed(1)}s`);
+  assert.ok(ascent > 9, `the climb home takes ${ascent.toFixed(1)}s to watch`);
+  // The liftoff is shorter than the landing, because ASCENT_TIME is: a lander
+  // that hovers looking for somewhere to sit takes longer than one leaving.
+  assert.ok(ascent < descent, 'the climb is the shorter of the two');
+  // Coming home is the same picture at the other body, so it is watched at the
+  // same pair of rates and never faster.
+  assert.ok(ENTRY_RATE <= LUNAR_BURN_RATE, `entry rate: ${ENTRY_RATE}`);
+});

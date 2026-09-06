@@ -278,8 +278,9 @@ const CISLUNAR_MIN_FRAC = 0.01;
  *                    what sets the number.
  *   LUNAR_BURN_RATE  the powered descent and the powered ascent — the two legs
  *                    that are a trip rather than an instant, and the only ones
- *                    worth watching closely. A twelve-minute descent takes
- *                    three seconds of it.
+ *                    worth watching closely. It covers the part of them that
+ *                    is above the surface shot's own scale: the first ninety
+ *                    kilometres of a descent, in about four seconds.
  *   SURFACE_RATE     the stay, which is a day of doing nothing (there is no
  *                    surface activity in phase 3) and is over in two seconds.
  *
@@ -290,33 +291,46 @@ const CISLUNAR_MIN_FRAC = 0.01;
  * overrides `speed` still scales all four together.
  */
 export const LUNAR_RATE = 800;
-export const LUNAR_BURN_RATE = 240;
+export const LUNAR_BURN_RATE = 120;
 export const SURFACE_RATE = 43200;
 
 /**
  * Simulated seconds per real second inside the SURFACE SHOT — the fourth rate,
  * and the slowest of them, for the same reason the other three exist: what the
  * vehicle is doing has changed, and the number that read the last leg does not
- * read this one. `LUNAR_BURN_RATE` plays the whole descent in three seconds,
- * which is right while a hundred kilometres of it is on screen at once and
- * wrong for the last eight, where the picture is a kilometre and a half of
- * canvas: at 240x the lander crosses it in a fifth of a second. At this value
- * the last 8 km of a descent take about seven seconds and the first 8 km of the
- * ascent home about four, which is a landing and a liftoff rather than two
- * cuts. Keyed on the drawn altitude, which is an observable — the same licence
+ * read this one. `LUNAR_BURN_RATE` plays the high part of the descent in a few
+ * seconds, which is right while ninety kilometres of it are on screen at once
+ * and wrong for the last eight, where the picture is a kilometre and a half of
+ * canvas: at the burn rate the lander crosses it in a fraction of a second.
+ *
+ * At this value the last 8 km of a descent take about fourteen seconds and the
+ * first 8 km of the ascent home about eight, which is a landing and a liftoff
+ * — an approach with time to watch the ground come up, a touchdown that
+ * arrives rather than lands between two frames — instead of two cuts. Both
+ * rates here and LUNAR_BURN_RATE above were halved once the descent was
+ * actually watched: at the old pair the whole trip from orbit to the ground
+ * was nine seconds, of which the part with ground in it was seven, and the
+ * approach the tier is named for was over before it read as one.
+ *
+ * Keyed on the drawn altitude, which is an observable — the same licence
  * `rateNow`'s radius scaling takes, and it says nothing about how the flight
- * ends. The stay keeps SURFACE_RATE: a day at 30x is nine hours of watching.
+ * ends. The stay keeps SURFACE_RATE: a day at this rate is an hour and a half
+ * of watching a lander sit still.
  */
-export const SHOT_RATE = 30;
+export const SHOT_RATE = 15;
 
 /**
  * Simulated seconds per real second down the first hundred kilometres of the
  * flight home, before the surface shot's own scale means anything. The same
- * argument LUNAR_BURN_RATE makes at the moon: 120 km at 30x is a minute of
- * watching a capsule fall through an empty sky, and the part worth watching is
- * the part with a ground in it, which SHOT_RATE plays.
+ * argument LUNAR_BURN_RATE makes at the moon: the whole 120 km at SHOT_RATE is
+ * minutes of watching a capsule fall through an empty sky, and the part worth
+ * watching is the part with a ground in it, which SHOT_RATE plays. Halved
+ * alongside its two siblings: the fall from the interface now takes about four
+ * seconds and the last eight kilometres — the plasma gone, the canopy out —
+ * about ten, so the landing at the far end of a return is as long as the one
+ * at the moon rather than a third of it.
  */
-export const ENTRY_RATE = 240;
+export const ENTRY_RATE = 120;
 
 /**
  * THE ENTRY, drawn. The resolver prices the way home as one burn and says how
@@ -380,14 +394,49 @@ const drawLunar = (r) => R_MOON + (r - R_MOON) * LUNAR_ALT_EXAGGERATION;
 const ZOOM_TAU = 0.42;
 
 /**
- * How long the last frame is held when the flight ends at the moon, real
- * seconds. Every lunar profile ends on a picture that is still moving — a
+ * How long the last frame is held when the flight ends, real seconds. Every
+ * sequence this view plays ends on a picture that is still moving — a lunar
  * landing's last event is the touchdown, an orbit's is a revolution, a
- * return's is the burn that starts the camera pulling back — so without this
- * the view cuts to the result screen mid-move. It is real time with the
- * simulation stopped, so it shows nothing that had not already happened.
+ * return's is the burn that starts the camera pulling back, a dock's is the
+ * module coming off the vehicle a quarter of an orbit after contact — so
+ * without this the view cuts to the result screen mid-move. It is real time
+ * with the simulation stopped, so it shows nothing that had not already
+ * happened.
+ *
+ * IT APPLIES TO THE PLANET-CENTRED FRAME TOO, which it did not used to: the
+ * hold was written for the lunar close-up and guarded on `cislunar`, so tier
+ * 3 — the rendezvous that ends at closest approach, the dock that ends on the
+ * frame the two touch, the lab module released a quarter of an orbit after
+ * that — got no beat at all and cut on the instant of arrival every time.
+ * There is nothing lunar about wanting to see the thing you flew to.
  */
-const LUNAR_HOLD_S = 1.6;
+const END_HOLD_S = 1.6;
+
+/**
+ * The same hold, for a flight that ENDS WITH THE SHOT ON THE GROUND live —
+ * a landing on the moon, an abort a few hundred metres above one, a capsule
+ * down at the planet. Longer than END_HOLD_S, because these are the only
+ * endings whose last frame is the thing the mission was about rather than a
+ * picture on the way to it: a `land` profile's timeline stops AT the
+ * touchdown, so a hold sized for a camera still easing cut away from the
+ * lander about a second after it arrived, and a base landing put a base on the
+ * moon in less time than the player had to notice it was down.
+ *
+ * Still real time with the simulation stopped, so what it holds is the frame
+ * the flight finished on: the dust settling under the lander, the capsule on
+ * its side under a spent canopy. Nothing new happens in it, and a tap skips
+ * it like everything else.
+ */
+const SURFACE_HOLD_S = 3.2;
+
+/**
+ * How far a released payload eases back along its own orbit, radians, and over
+ * how many real seconds — see the note where it is used. On the drawn lunar
+ * orbit this is about forty pixels of arc, which is a marker's width several
+ * times over and reads at a glance as two objects rather than one.
+ */
+const RELEASE_LAG = 0.22;
+const RELEASE_LAG_S = 1.4;
 
 /**
  * How long the cut to and from the surface shot takes, real seconds.
@@ -748,6 +797,15 @@ export function playOrbital(canvas, outcome, opts = {}) {
   // the only time the vehicle is not on the ring. Both are set by burns that
   // have happened.
   let lunarRef = null;              // { t, theta }
+  // WHAT THE FLIGHT LEFT IN LUNAR ORBIT, once the `deploy` event has said so
+  // (js/core/resolver.js, THE RELEASE): the angle round the moon it was let go
+  // at, the instant, and the name the event carries. It keeps orbiting from
+  // there at the same rate everything else in this orbit does — a depot is not
+  // a thing that stops — so the vehicle pulls away from it and the picture
+  // shows two objects where a moment ago there was one. Set by an event that
+  // has already been read out, like everything else here; null on every flight
+  // that deploys nothing, which is all but one of them.
+  let released = null;              // { t, theta, name }
   let powered = null;               // { t, theta, span, kind }
   let touchdownTheta = 0;
   // THE SURFACE SHOT (js/ui/surface.js). How far the cut to it has gone, 0..1,
@@ -1453,6 +1511,33 @@ export function playOrbital(canvas, outcome, opts = {}) {
       // the same few pixels.
       if (atMoon === 'surface') drawMarker(vpt, color, null, true);
       else drawCraft(vpt, lunarHeading(simT, mp), color, null);
+      // What was left behind, coasting the same orbit it was let go into. Drawn
+      // after the ring and before the labels so it sits on the orbit rather
+      // than under it, and only in the close-up: at the wide scale it and the
+      // vehicle are the same pixel as the moon.
+      if (released && near > FRAME_CUTOFF) {
+        // The lag is presentational and has to be, for the reason the whole
+        // picture is otherwise honest about: a payload let go with no burn
+        // stays in the orbit it was let go from, so the depot and the vehicle
+        // share a position for ever and the picture has one marker in it where
+        // two objects are. A spring push of a few centimetres a second does
+        // separate them, over hours and by metres — sub-pixel here, and the
+        // flight is over in seconds. So the release eases back along its own
+        // track by RELEASE_LAG and then holds, which is what "it came off"
+        // looks like at a scale where the truth is invisible. The same licence,
+        // and the same sentence, as js/ui/ascent.js's DEPLOY_DRIFT_PX.
+        // Real seconds since it was let go — a skipped playback has settled
+        // completely, exactly as a skipped separation has in the ascent view.
+        const age = skipped ? RELEASE_LAG_S : realT - released.at;
+        const lag = RELEASE_LAG * Math.min(Math.max(age, 0), RELEASE_LAG_S) / RELEASE_LAG_S;
+        const rpt = screenOf(toWorld(
+          { r: rLLO, theta: released.theta + lunarOmega * (simT - released.t) - lag }, mp,
+        ));
+        drawMarker(rpt, colors.muted, null, true);
+        if (near > 0.5 && released.name) {
+          drawLabel(rpt, colors.muted, released.name.toUpperCase(), 11, moonSide);
+        }
+      }
       // In the close-up the vehicle is its own marker, a moon's radius clear of
       // the moon's label, so its own goes beside it. While the picture is wide
       // the two are the same few pixels and nothing horizontal separates them,
@@ -1756,6 +1841,14 @@ export function playOrbital(canvas, outcome, opts = {}) {
       // coasting the transfer it departed on, which is the whole point of a
       // free return — so this only says the corner word out loud.
       else if (ev.kind === 'flyby') flewBy = true;
+      // The release. Only the close-up has anywhere to put it: in the
+      // planet-centred frame a deploy is a module coming off a vehicle that is
+      // already docked to the station, so the two markers it would be drawn
+      // between are the same two pixels and there is nothing new in space to
+      // show. The ticker carries that one; this draws the other.
+      else if (ev.kind === 'deploy' && atMoon) {
+        released = { t: ev.t, at: realT, theta: lunarPoint(ev.t).theta, name: ev.name ?? null };
+      }
       try {
         onEvent(ev);
       } catch (err) {
@@ -1776,9 +1869,17 @@ export function playOrbital(canvas, outcome, opts = {}) {
     // last frame for a beat rather than cutting to the result screen mid-move.
     // Real time with the simulation stopped, so nothing that had not already
     // happened is shown — and a tap skips it like everything else.
-    if (!skipped && cislunar && (atMoon || entering || zoom > FRAME_CUTOFF)) {
+    // The planet-centred frame always ends on something worth a beat; the
+    // cislunar one holds only once it is AT the moon, because a lunar flight
+    // that failed in the parking orbit ends on the wide picture with nothing in
+    // it that the beat would show.
+    const endsOnAnArrival = cislunar ? (atMoon || entering || zoom > FRAME_CUTOFF) : true;
+    if (!skipped && endsOnAnArrival) {
       holding = true;
-      holdLeft = LUNAR_HOLD_S;
+      // The shot on the ground gets the longer beat (SURFACE_HOLD_S). Asked of
+      // the same predicate the cut itself is asked of, so the hold and the
+      // picture cannot disagree about which camera the flight ended on.
+      holdLeft = nearSurface() ? SURFACE_HOLD_S : END_HOLD_S;
       dwellUntil = 0;
       frame();
       raf = requestAnimationFrame(tick);

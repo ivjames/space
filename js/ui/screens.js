@@ -1406,10 +1406,59 @@ export function mountScreens(ctx) {
       pinTicker();
     };
 
+    /**
+     * What the flight LEFT BEHIND, as the ticker's last line — or null when it
+     * left nothing, which is every flight below the moon.
+     *
+     * Phase 3b's two consequences are the only things a flight does that its
+     * own readout cannot say. The resolver deliberately knows nothing about
+     * sites (js/core/resolver.js, LUNAR_PROFILES), so it can announce "Survey
+     * complete: the site is mapped" and "Landed on the moon" and no more; the
+     * SITE is the mission's, and whether a base is now standing on it is
+     * js/core/state.js's. So a survey named no ground and a base landing —
+     * which is the whole reason the base tab exists — ended on a sentence
+     * indistinguishable from the tier rung it copies. The player was told they
+     * had landed on the moon and never that they now had a base.
+     *
+     * Read off the mission and the two states, never off the outcome's
+     * internals: the site comes from the requirement, and "this flight did it"
+     * is the field being absent before the launch and present after. So a
+     * second survey of ground already mapped, or a landing at a site that
+     * already has a base, says nothing — which is correct, because it did
+     * nothing.
+     */
+    const consequenceLine = () => {
+      const site = mission.requirement.moon?.site;
+      if (!site || !outcome.success) return null;
+      const before = getState();
+      const after = view.pending;
+      if (!after) return null;
+      const name = SITES.find((s) => s.id === site)?.name ?? site;
+      if (!before.sites?.[site]?.surveyed && after.sites?.[site]?.surveyed) {
+        return `${name} is mapped. Its water and metals are on the BASE tab.`;
+      }
+      if (!before.bases?.[site] && after.bases?.[site]) {
+        return `Base established at ${name}. Build it out on the BASE tab.`;
+      }
+      return null;
+    };
+
     /** Playback is over — on whichever view was last holding the canvas. */
     const flightDone = () => {
       view.playing = false;
       view.handle = null;
+      // The last line of the flight is what it left behind, and it goes in
+      // BEFORE the commit: `consequenceLine` reads the state the launch has
+      // not been written into yet against the one it will be, which is how it
+      // knows this flight is what changed it.
+      const consequence = consequenceLine();
+      if (consequence) {
+        appendTicker({
+          // The flight's own last instant, so the line is stamped where the
+          // flight ended rather than at T+0.
+          t: outcome.timeline?.at(-1)?.t ?? 0, kind: 'end', text: consequence,
+        });
+      }
       // The outcome is committed when the flight finishes, not when it is
       // resolved: the HUD would otherwise announce the payout before the
       // player has watched the rocket earn it.

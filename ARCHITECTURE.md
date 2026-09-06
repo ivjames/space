@@ -795,7 +795,25 @@ state.objects = [
 A mission with `deploys: { kind, name }` adds an object on success, in a
 circular orbit at the mission's required periapsis when it has an orbit
 requirement (the object settles at its design altitude), else at the
-achieved periapsis. Objects are always circular: an elliptical or
+achieved periapsis.
+
+**The release is also an event on the timeline**, `kind: 'deploy'`, carrying
+the object's `name` as a field beside its sentence. It is not a step: no
+delta-v, no restart, no roll, and success is decided before it — a flight that
+missed its orbit deploys nothing, the same test `state.js` applies. It exists
+because a deployment contract is not paid for reaching an orbit but for leaving
+something in one, and without it the object appeared on another screen after a
+flight that never showed it come off the stack. The flight runs on past the
+release rather than ending on it, and the wait in front of it is set by
+**which camera is watching**: `DEPLOY_COAST` seconds where there is no phase
+after insertion (the ascent view has no notion of an orbit, plays a coast at a
+fixed rate, and draws from the sample stream — so the integrator coasts far
+enough to have samples under the release); a quarter of the target's own orbit
+where the map view is playing at `MAP_RATE`; a quarter of `LLO_PERIOD` at the
+moon. `js/ui/ascent.js` draws the payload easing off the stack; `js/ui/map.js`
+draws it as a marker in the lunar close-up, lagging its own track by
+`RELEASE_LAG` for the same presentational reason (a payload let go with no burn
+stays exactly where the vehicle is, which is one marker where two objects are). Objects are always circular: an elliptical or
 arbitrarily high deploy would be unmatchable by a later launch. `unique: true` on a template means it is offered
 only while no undocked object of that kind exists. A template with
 `requiresObject: 'core'` is offered only while one exists. Contracts get
@@ -1379,7 +1397,11 @@ is the capture, so without this its flight ends on the frame the engine cuts
 off: a vehicle that reached lunar orbit and was never in one. A completed
 capture is therefore followed by a `lunar-orbit` event one `LLO_PERIOD` later.
 It spends nothing, uses no restart, does not move `reached` and does not touch
-success. Only `orbit` gets it: `land` and `return` have their own reasons to
+success. `survey` gets the same event, with its own line — the two profiles are
+the same two burns by construction, and the pass over the ground is the one
+thing a survey is FOR, so leaving the revolution to `orbit` alone ended the
+mapping flight on the frame the capture cut off and gave the instrument nothing
+to look at. `land` and `return` do not get it: they have their own reasons to
 still be there afterwards, and two hours added to a flight that is about to
 descend would delay the descent to say what the descent says better.
 
@@ -1717,13 +1739,18 @@ is removed. `data.test.js` checks both against the real resolver.
   within a thousandth of `A_MOON` — so three more rates take over, keyed on
   what the vehicle is DOING, which a burn or an event has already said:
   `LUNAR_RATE` coasting (a two-hour revolution in about nine seconds),
-  `LUNAR_BURN_RATE` on the two powered legs (a twelve-minute descent in three),
-  and `SURFACE_RATE` for the stay, which is a day of nothing in two. A fourth,
-  `SHOT_RATE`, takes over inside the surface shot: 240× plays the last eight
-  kilometres of a descent in a fifth of a second, where this plays them in
-  about seven. `ENTRY_RATE` is the fifth and last, for the empty hundred
+  `LUNAR_BURN_RATE` on the high part of the two powered legs (the first ninety
+  kilometres of a descent in about four seconds), and `SURFACE_RATE` for the
+  stay, which is a day of nothing in two. A fourth, `SHOT_RATE`, takes over
+  inside the surface shot: the burn rate would put the last eight kilometres of
+  a descent inside a fraction of a second, where this plays them in about
+  fourteen. `ENTRY_RATE` is the fifth and last, for the empty hundred
   kilometres between the interface and the part of the entry with a ground in
-  it, which `SHOT_RATE` plays. All of them are applied as a fraction of the
+  it, which `SHOT_RATE` plays. The three that are not `LUNAR_RATE` or
+  `SURFACE_RATE` were halved once the descent was watched end to end: the whole
+  trip from lunar orbit to the ground took nine seconds, of which the part with
+  ground in it was seven, so the approach the tier is named for was over before
+  it read as an approach. All of them are applied as a fraction of the
   playback rate, so an overridden `speed` still scales everything together.
   A rate is only valid up to the next thing that changes it, so a frame never
   carries the clock past a burn or an event: one frame of `SURFACE_RATE` is
@@ -2231,6 +2258,15 @@ for the propellant `p` the depot can transfer into the stage of mass `m`. It is
 the same Tsiolkovsky term the budget is already built out of, so a refuel is
 not a new kind of number — it is more of the one number the whole game is
 about (DESIGN.md §4).
+
+**It is a stop, so it takes time on the timeline.** The `refuel` event sits at
+`loi + LLO_PERIOD / 8` — squarely between the capture and the descent burn a
+quarter of a lunar orbit after it — and not one second after the capture, which
+is where it used to be: at the map view's cislunar rate that put the two on the
+same playback frame, so the flight arrived at the moon and refuelled in one
+instant, three hundred and eighty thousand kilometres away with the camera
+still wide. Nothing about the pricing moves; the delta-v is still credited the
+moment the sequence walks past that line.
 
 **What it does to the ladders already measured.** Nothing to the ladders: they
 are properties of the bodies. What moves is the budget they are spent out of —
