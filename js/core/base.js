@@ -250,29 +250,57 @@ export function yieldAt(quality) {
  * can reason about — "this fills overnight" — even though the accrual itself
  * is continuous.
  *
+ * A PROCESSOR CANNOT PROCESS WATER THAT IS NOT THERE, and this is the whole
+ * reason `waterProcessed` is a minimum rather than a level times a rate. The
+ * processor's CAPACITY is `level * PROCESS_RATE`; what it actually runs on is
+ * the water in front of it, which is this hour's extraction plus whatever is
+ * already in the tank. On a site whose water plentitude is below 1 those two
+ * are not the same number — a level-n extractor at plentitude 0.4 hands a
+ * level-n processor 40% of what it could take — so quoting the capacity
+ * overstated the fuel rate by up to 2.5x and understated the fill time by the
+ * same factor. `accrue` has always done this arithmetic correctly, so the
+ * quote and the accrual disagreed and the player believed the quote.
+ *
+ * THE MINIMUM IS EXACTLY WHAT `accrue` DOES OVER ONE HOUR, which is what makes
+ * the two agree by construction rather than by inspection: the quote is the
+ * hour in front of the base, stockpile included. Over a longer horizon the
+ * stockpile runs out and the rate settles to the extraction-limited one — see
+ * `fillTime`, which asks the question over many hours and so asks it of a base
+ * whose stockpile is already gone.
+ *
  * `water` is the NET rate: extracted less what the processor consumes. It goes
- * negative on a base whose processor outruns its extractor, which is a real
- * state (the processor is eating a stockpile) and is shown as such rather than
- * clamped away.
+ * negative on a base whose processor outruns its extractor AND has a stockpile
+ * to eat, which is a real state and is shown as such rather than clamped away.
+ * It is zero — with `waterLimited` true — on a base whose processor is simply
+ * starved: nothing is piling up and nothing is being drawn down, the processor
+ * is idle part of every hour, and that is the legible mistake DESIGN.md §8's
+ * chain is built to show.
  *
  * @param {object} base
  * @param {object} site from js/data/sites.js
- * @returns {{ water, metals, fuel, oxidizer, waterExtracted, waterProcessed }}
+ * @returns {{ water, metals, fuel, oxidizer, waterExtracted, waterProcessed,
+ *   processorCapacity, waterLimited }}
  */
 export function rates(base, site) {
   const { ratio } = powerBalance(base);
   const wp = site?.resources?.water?.plentitude ?? 0;
   const wq = site?.resources?.water?.quality ?? 0;
   const mp = site?.resources?.metals?.plentitude ?? 0;
+  const stock = Math.max(0, base?.store?.water ?? 0);
 
   const waterExtracted = lvl(base, 'extractor') * EXTRACT_RATE * wp * ratio;
   const metals = lvl(base, 'extractor') * METALS_RATE * mp * ratio;
-  const waterProcessed = lvl(base, 'processor') * PROCESS_RATE * ratio;
+  const processorCapacity = lvl(base, 'processor') * PROCESS_RATE * ratio;
+  const waterProcessed = Math.min(processorCapacity, waterExtracted + stock);
   const product = waterProcessed * yieldAt(wq);
 
   return {
     waterExtracted,
     waterProcessed,
+    processorCapacity,
+    // "The processor could take more than it is being given." A base with no
+    // processor at all is not water-limited — it has no appetite to starve.
+    waterLimited: processorCapacity > 0 && waterProcessed < processorCapacity - 1e-9,
     water: waterExtracted - waterProcessed,
     metals,
     fuel: product * FUEL_FRACTION,
@@ -392,7 +420,13 @@ function fullTanks(store, caps) {
  */
 export function fillTime(base, site, resource) {
   const caps = capacity(base);
-  const r = rates(base, site);
+  // THE SUSTAINED RATE, NOT THE HOUR IN FRONT OF THE BASE. `rates` quotes the
+  // next hour and will spend a water stockpile inside it; a tank that takes
+  // thirty hours to fill will not have one for twenty-nine of them. So the
+  // question "when is this full" is asked of the base in the state it
+  // converges to — stockpile gone, the extractor feeding the processor
+  // directly — which is the rate that actually decides the answer.
+  const r = rates({ ...base, store: { ...(base?.store ?? {}), water: 0 } }, site);
   const rate = resource === 'water' ? r.water : r[resource];
   if (!(rate > 0) || !(caps[resource] > 0)) return Infinity;
   return caps[resource] / rate;

@@ -2010,6 +2010,43 @@ and oxidizer at `quality × processor level × YIELD`, capped by the water the
 extractor actually delivers — a processor larger than its extractor is idle
 capacity, which is a legible mistake rather than a hidden one.
 
+**That cap is `min(processor capacity, extraction + stockpile)`, and for a
+while it was only written down here.** `rates` quoted the processor's capacity
+outright, so on any site with a water plentitude below 1 the extractor could
+not feed it and the quote was too high — by 1.8× at Aristarchus and 2.5× at Far
+Side Flats, with `fillTime` too low by the same factor. `accrue` had always
+done the arithmetic correctly, so the number the base tab showed and the number
+the game banked disagreed, and the tab was the one the player believed.
+The minimum is exactly what `accrue` does over one hour, which is what makes
+them agree by construction; `test/base.test.js` walks every site and level and
+asserts the quote equals the accrual. `rates` also returns `processorCapacity`
+and `waterLimited`, because a starved processor has net water zero — nothing
+piling up, nothing drawn down — so neither of the base tab's two water
+diagnoses fired, and the one state a player cannot infer from the four bars was
+the one nothing said.
+
+**"Every propellant tank fills inside the clamp" is not true at every site, and
+was never the requirement.** It held only under the overstated rate. Fill time
+is `storage level / extractor level` times a constant the site sets, so a base
+whose storage keeps pace with a starved extractor holds more than a day of its
+own output at *every* level, and no single `STORE_PER_LEVEL` fixes that without
+making the good sites fill in five hours. What is true is in two halves, and
+`test/base.test.js` and `tools/balance.mjs` measure both: where the extractor
+keeps the processor fed, every equal-level tank fills inside the clamp; where
+it cannot, the tank fills more slowly in exact proportion — that is what makes
+a site water-poor — and what must hold is that the storage LADDER still starts
+as a real limit. It does: with the rest of the base maxed, Mare Tranquillitatis
+and Shackleton Rim fill all five storage levels inside a day, Aristarchus four,
+Far Side Flats two. Above those, the propellant half of a storage upgrade is
+capacity a daily player cannot reach; the metals half still binds everywhere,
+which is what keeps storage from ever being a dead purchase.
+
+**`fillTime` asks the sustained rate, not the hour in front of the base.**
+`rates` will spend a water stockpile inside the hour it quotes; a tank that
+takes thirty hours to fill will not have one for twenty-nine of them. So
+`fillTime` asks the base in the state it converges to — stockpile gone, the
+extractor feeding the processor directly.
+
 **Storage caps offline accrual, per resource** (DESIGN.md §3). `accrue` fills
 toward `capacity(base)` and stops; the surplus is not banked, not queued, and
 not lost with a warning — it simply was never produced, which is what a full

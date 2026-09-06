@@ -1199,6 +1199,16 @@ export function mountScreens(ctx) {
         diagnosis = 'No processor: water comes out of the ground and stays water.';
       } else if (r.water < 0) {
         diagnosis = 'The processor outruns the extractor — it is eating the water tank.';
+      } else if (r.waterLimited) {
+        // THE STARVED CASE, WHICH USED TO SAY NOTHING. A processor with no
+        // stockpile left and an extractor that cannot fill it is not eating
+        // anything and is not piling anything up, so both of the water tests
+        // either side of this one are false — and the rate row reads zero
+        // water while the fuel row runs at a fraction of the level the player
+        // paid for. It is the one state on this screen the player cannot infer
+        // from the four bars, so it is the one that has to be said.
+        diagnosis = `The ground cannot keep the processor fed — it runs at ${
+          Math.round((r.waterProcessed / r.processorCapacity) * 100)}% and the rest of it is idle.`;
       } else if (r.water > 0) {
         diagnosis = 'The extractor outruns the processor — water is piling up unprocessed.';
       }

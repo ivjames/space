@@ -125,11 +125,46 @@ test('the chain is balanced at equal levels: water in equals water processed', (
   }
 });
 
-test('a processor that outruns its extractor shows a negative net water rate', () => {
+test('a processor that outruns its extractor eats the stockpile, and the rate says so', () => {
+  const b = newBase();
+  b.equipment = { power: 3, extractor: 1, processor: 2, storage: 1, transport: 0 };
+  b.store = { ...b.store, water: 200 };
+  const r = rates(b, reference);
+  assert.ok(r.water < 0, 'the processor is eating a stockpile, and the rate says so');
+  assert.equal(r.waterLimited, false, 'there is water in front of it, so it is not starved');
+  assert.equal(r.waterProcessed, r.processorCapacity, 'and it runs flat out on it');
+});
+
+// THE CASE THE RATE USED TO GET WRONG. The same base with an EMPTY water tank
+// is not eating anything: the extractor hands the processor 40 kg an hour and
+// the processor could take 80, so it is idle half of every hour. Quoting the
+// capacity said it made twice the fuel it makes.
+test('a processor with nothing to eat is starved, not negative', () => {
   const b = newBase();
   b.equipment = { power: 3, extractor: 1, processor: 2, storage: 1, transport: 0 };
   const r = rates(b, reference);
-  assert.ok(r.water < 0, 'the processor is eating a stockpile, and the rate says so');
+  assert.equal(r.water, 0, 'nothing piles up and nothing is drawn down');
+  assert.equal(r.waterLimited, true);
+  assert.equal(r.waterProcessed, r.waterExtracted, 'it runs on what comes out of the ground');
+  assert.ok(r.waterProcessed < r.processorCapacity, 'and that is less than it could take');
+});
+
+// THE QUOTE AND THE ACCRUAL ARE THE SAME ARITHMETIC, which is the property
+// that makes a wrong rate impossible rather than merely absent: `rates` quotes
+// the hour in front of the base, and `accrue` over exactly one hour must bank
+// exactly that.
+test('the hourly rate is what accrue does in an hour, at every site', () => {
+  for (const site of SITES) {
+    for (const n of [1, 3, 5]) {
+      const b = level(n);
+      const r = rates(b, site);
+      const { produced } = accrue(b, site, HOUR);
+      for (const res of ['fuel', 'oxidizer', 'metals']) {
+        assert.ok(Math.abs(produced[res] - r[res]) < 1e-6,
+          `${site.id} level ${n}: ${res} quoted ${r[res]}, accrued ${produced[res]}`);
+      }
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -144,19 +179,51 @@ test('the propellant tanks are sized to the mixture ratio, so they fill together
     `fuel fills in ${fuelHours}h and oxidizer in ${oxHours}h; the tanks are mis-sized`);
 });
 
-test('every PROPELLANT tank fills inside the elapsed clamp, at every level and site', () => {
-  // Storage is meant to be the binding constraint on propellant and the clamp
-  // the backstop (js/core/clock.js). A tank that took longer than a day to
-  // fill would never bind, and the storage upgrade would be selling nothing.
-  const clampHours = ELAPSED_CLAMP / HOUR;
+// STORAGE IS MEANT TO BE THE BINDING CONSTRAINT ON PROPELLANT and the clamp
+// the backstop (js/core/clock.js): a tank that takes longer than a day to fill
+// never binds, and that much of the storage upgrade sells nothing.
+//
+// THE OLD FORM OF THIS TEST — every level, every site, inside the clamp — was
+// only ever passing because `rates` quoted a processor capacity the ground
+// could not feed. With the rate honest it is FALSE, and it is false because it
+// was the wrong requirement rather than because the numbers drifted: fill time
+// is `storage level / extractor level` times a constant set by the site, so a
+// base with storage running level with a starved extractor holds more than a
+// day of its own output at EVERY level, and no single STORE_PER_LEVEL can fix
+// that without making the good sites fill in five hours. What is true, and is
+// what the requirement was reaching for, is the two tests below.
+const clampHours = ELAPSED_CLAMP / HOUR;
+
+test('where water is not the constraint, every propellant tank fills inside the clamp', () => {
   for (const n of [1, 2, 3, 4, 5]) {
     for (const site of SITES) {
+      if (rates(level(n), site).waterLimited) continue;
       for (const res of ['fuel', 'oxidizer']) {
         const hours = fillTime(level(n), site, res);
         assert.ok(hours < clampHours,
           `${site.id} level ${n}: ${res} takes ${hours.toFixed(1)}h, over the ${clampHours}h clamp`);
       }
     }
+  }
+});
+
+// AND WHERE IT IS THE CONSTRAINT, THE LADDER STILL STARTS AS A REAL LIMIT.
+// A water-poor site fills its tanks more slowly in exact proportion to how
+// poor it is — that is what makes it poor — but the first rung of the storage
+// ladder must still be a cap the player runs into, or storage is a purchase
+// with nothing behind it. Measured with the rest of the base maxed, which is
+// the shape the question is asked in: the extractor is what fills the tank.
+test('every site supports at least one storage level inside the clamp', () => {
+  for (const site of SITES) {
+    let highest = 0;
+    for (let s = 1; s <= MAX_LEVEL; s += 1) {
+      const b = level(MAX_LEVEL);
+      b.equipment.storage = s;
+      const hours = Math.max(fillTime(b, site, 'fuel'), fillTime(b, site, 'oxidizer'));
+      if (hours < clampHours) highest = s;
+    }
+    assert.ok(highest >= 1,
+      `${site.id}: no storage level fills inside the ${clampHours}h clamp`);
   }
 });
 
